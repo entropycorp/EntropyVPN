@@ -187,9 +187,7 @@ class AppStateStore {
   ) async {
     try {
       await _writeStateFile(file, state);
-    } on FileSystemException {
-      // Returning the recovered state is still better than dropping it.
-    }
+    } on FileSystemException {}
   }
 
   Future<void> _deleteIfExists(File file) async {
@@ -197,9 +195,7 @@ class AppStateStore {
       if (await file.exists()) {
         await file.delete();
       }
-    } on FileSystemException {
-      // Stale temp/backup files are ignored by normal loads when primary is valid.
-    }
+    } on FileSystemException {}
   }
 
   Future<File> _stateFile() async {

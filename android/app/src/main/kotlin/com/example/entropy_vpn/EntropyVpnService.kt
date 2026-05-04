@@ -660,7 +660,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         try {
             executor.execute { block() }
         } catch (_: RejectedExecutionException) {
-            // The service is already tearing down; late native callbacks can be ignored.
+
         }
     }
 
@@ -908,7 +908,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
     }
 
     override fun clearLogs() {
-        // Keep start diagnostics visible in the Flutter UI.
+
     }
 
     override fun writeLogs(messageList: LogIterator?) {

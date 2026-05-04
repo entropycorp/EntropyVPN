@@ -36,8 +36,7 @@ void main() {
     stopwatch.stop();
 
     final perBuildMicros = stopwatch.elapsedMicroseconds / 500;
-    // This print is intentional: the test is a tiny benchmark for startup work.
-    // ignore: avoid_print
+
     print(
       'Xray TUN config build timing: total=${stopwatch.elapsedMicroseconds}us, per_build=${perBuildMicros.toStringAsFixed(1)}us.',
     );
@@ -50,19 +49,16 @@ void main() {
     'starts real Windows Xray TUN when elevated',
     () async {
       if (!Platform.isWindows) {
-        // ignore: avoid_print
         print('Xray TUN startup timing: skipped because this is not Windows.');
         return;
       }
       if (Platform.environment['ENTROPYVPN_RUN_XRAY_TUN_STARTUP_TEST'] == '0') {
-        // ignore: avoid_print
         print(
           'Xray TUN startup timing: real start skipped because ENTROPYVPN_RUN_XRAY_TUN_STARTUP_TEST=0.',
         );
         return;
       }
       if (!await _isRunningAsAdministrator()) {
-        // ignore: avoid_print
         print(
           'Xray TUN startup timing: real start skipped because the test process is not elevated.',
         );
@@ -122,12 +118,11 @@ void main() {
       final timingLines = observedLogs
           .where((line) => line.contains('Startup timing:'))
           .toList(growable: false);
-      // ignore: avoid_print
+
       print(
         'Xray TUN startup wall timing: ${stopwatch.elapsedMilliseconds}ms.',
       );
       for (final line in timingLines) {
-        // ignore: avoid_print
         print(line);
       }
 
@@ -158,7 +153,6 @@ void main() {
       expect(source, isNot(contains(r'Routes = @($routeResults)')));
 
       if (!Platform.isWindows) {
-        // ignore: avoid_print
         print(
           'Xray TUN PowerShell serialization: skipped because this is not Windows.',
         );
@@ -210,7 +204,6 @@ $timings.Add('wait_adapter=0ms')
 
   test('prints Xray process startup timing smoke test', () async {
     if (!Platform.isWindows) {
-      // ignore: avoid_print
       print(
         'Xray process startup timing: skipped because this is not Windows.',
       );
@@ -263,12 +256,11 @@ $timings.Add('wait_adapter=0ms')
     final timingLines = observedLogs
         .where((line) => line.contains('Startup timing:'))
         .toList(growable: false);
-    // ignore: avoid_print
+
     print(
       'Xray process startup smoke timing: ${stopwatch.elapsedMilliseconds}ms.',
     );
     for (final line in timingLines) {
-      // ignore: avoid_print
       print(line);
     }
 

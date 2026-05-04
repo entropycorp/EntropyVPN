@@ -61,7 +61,8 @@ class ShareLinkParser {
       host: _emptyToNull(query['host']),
       path: _normalizePath(query['path']),
       serviceName: _resolveServiceName(transport, query),
-      authority: _emptyToNull(query['authority']) ?? _emptyToNull(query['host']),
+      authority:
+          _emptyToNull(query['authority']) ?? _emptyToNull(query['host']),
       fingerprint: _emptyToNull(query['fp']),
       publicKey: _emptyToNull(query['pbk']),
       shortId: _emptyToNull(query['sid']),
@@ -86,9 +87,8 @@ class ShareLinkParser {
       _stringValue(json['net']) ?? _stringValue(json['type']),
     );
     final path = _normalizePath(_stringValue(json['path']));
-    final security = _stringValue(json['scy']) ??
-        _stringValue(json['security']) ??
-        'auto';
+    final security =
+        _stringValue(json['scy']) ?? _stringValue(json['security']) ?? 'auto';
     final tlsFlag =
         (_stringValue(json['tls']) ?? _stringValue(json['security']) ?? '')
             .toLowerCase();
@@ -101,8 +101,8 @@ class ShareLinkParser {
       tlsMode: tlsFlag == 'tls'
           ? TlsMode.tls
           : tlsFlag == 'reality'
-              ? TlsMode.reality
-              : TlsMode.none,
+          ? TlsMode.reality
+          : TlsMode.none,
       remark: _stringValue(json['ps']),
       userId: userId,
       security: security,
@@ -144,7 +144,8 @@ class ShareLinkParser {
       host: _emptyToNull(query['host']),
       path: _normalizePath(query['path']),
       serviceName: _resolveServiceName(transport, query),
-      authority: _emptyToNull(query['authority']) ?? _emptyToNull(query['host']),
+      authority:
+          _emptyToNull(query['authority']) ?? _emptyToNull(query['host']),
       fingerprint: _emptyToNull(query['fp']),
       publicKey: _emptyToNull(query['pbk']),
       shortId: _emptyToNull(query['sid']),
@@ -156,16 +157,20 @@ class ShareLinkParser {
   ParsedVpnProfile _parseShadowsocks(String link) {
     final withoutScheme = link.substring('ss://'.length);
     final hashIndex = withoutScheme.indexOf('#');
-    final encodedPart =
-        hashIndex >= 0 ? withoutScheme.substring(0, hashIndex) : withoutScheme;
-    final remark =
-        hashIndex >= 0 ? _decodeFragment(withoutScheme.substring(hashIndex + 1)) : null;
+    final encodedPart = hashIndex >= 0
+        ? withoutScheme.substring(0, hashIndex)
+        : withoutScheme;
+    final remark = hashIndex >= 0
+        ? _decodeFragment(withoutScheme.substring(hashIndex + 1))
+        : null;
 
     final queryIndex = encodedPart.indexOf('?');
-    final mainPart =
-        queryIndex >= 0 ? encodedPart.substring(0, queryIndex) : encodedPart;
-    final queryString =
-        queryIndex >= 0 ? encodedPart.substring(queryIndex + 1) : '';
+    final mainPart = queryIndex >= 0
+        ? encodedPart.substring(0, queryIndex)
+        : encodedPart;
+    final queryString = queryIndex >= 0
+        ? encodedPart.substring(queryIndex + 1)
+        : '';
     final query = Uri.splitQueryString(queryString);
 
     late final String method;
@@ -339,7 +344,10 @@ class ShareLinkParser {
   }
 
   List<int> _decodeBase64(String rawValue) {
-    final normalized = rawValue.trim().replaceAll('\n', '').replaceAll('\r', '');
+    final normalized = rawValue
+        .trim()
+        .replaceAll('\n', '')
+        .replaceAll('\r', '');
     final remainder = normalized.length % 4;
     final padded = remainder == 0
         ? normalized

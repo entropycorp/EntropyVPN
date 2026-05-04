@@ -510,9 +510,7 @@ class VpnController extends ChangeNotifier {
     if (Platform.isAndroid) {
       try {
         await _syncAndroidRuntimeState(notify: false);
-      } catch (_) {
-        // Starting normally is still possible if a launch-time state sync fails.
-      }
+      } catch (_) {}
       if (isConnected) {
         notifyListeners();
         return;
@@ -675,9 +673,7 @@ class VpnController extends ChangeNotifier {
       await _hydration;
       await _saveAndroidStartPayload();
       await _syncAndroidRuntimeState();
-    } catch (_) {
-      // Ignore launch-time sync failures; explicit connect/disconnect can retry.
-    }
+    } catch (_) {}
   }
 
   Future<void> _syncAndroidRuntimeState({bool notify = true}) async {
@@ -986,9 +982,7 @@ class VpnController extends ChangeNotifier {
           : (state.sources.isEmpty ? null : state.sources.first.id);
 
       notifyListeners();
-    } catch (_) {
-      // Ignore broken state files and start with a clean session.
-    }
+    } catch (_) {}
   }
 
   void _queuePersistState() {

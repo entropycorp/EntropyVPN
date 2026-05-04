@@ -18,7 +18,8 @@ class SystemProxyService {
       r"HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
   Future<SystemProxySnapshot> capture() async {
-    final script = '''
+    final script =
+        '''
 \$settings = Get-ItemProperty -Path '$_registryPath'
 [PSCustomObject]@{
   ProxyEnable = [int](\$settings.ProxyEnable)
@@ -40,7 +41,8 @@ class SystemProxyService {
     required int port,
     String host = '127.0.0.1',
   }) async {
-    final script = '''
+    final script =
+        '''
 Set-ItemProperty -Path '$_registryPath' -Name ProxyEnable -Value 1
 Set-ItemProperty -Path '$_registryPath' -Name ProxyServer -Value '$host:$port'
 Set-ItemProperty -Path '$_registryPath' -Name ProxyOverride -Value '<local>'
@@ -57,7 +59,8 @@ ${_refreshScript()}
         ? "Remove-ItemProperty -Path '$_registryPath' -Name ProxyOverride -ErrorAction SilentlyContinue"
         : "Set-ItemProperty -Path '$_registryPath' -Name ProxyOverride -Value '${snapshot.override}'";
 
-    final script = '''
+    final script =
+        '''
 Set-ItemProperty -Path '$_registryPath' -Name ProxyEnable -Value ${snapshot.enabled ? 1 : 0}
 $serverLine
 $overrideLine
@@ -67,22 +70,17 @@ ${_refreshScript()}
   }
 
   Future<ProcessResult> _runPowerShell(String script) {
-    return Process.run(
-      'powershell.exe',
-      <String>[
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        script,
-      ],
-    ).then((result) {
+    return Process.run('powershell.exe', <String>[
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      script,
+    ]).then((result) {
       if (result.exitCode != 0) {
         final error = result.stderr.toString().trim();
-        throw StateError(
-          error.isEmpty ? 'PowerShell command failed.' : error,
-        );
+        throw StateError(error.isEmpty ? 'PowerShell command failed.' : error);
       }
       return result;
     });
