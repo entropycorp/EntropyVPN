@@ -30,3 +30,9 @@ core assets for `arm64-v8a` and `armeabi-v7a` devices.
 This repository contains the Flutter application, platform-specific Windows and
 Android integration code, bundled UI assets, tests, and release packaging
 scripts.
+
+## License
+
+EntropyVPN is licensed under the GNU General Public License v3.0. See
+`LICENSE` for the full license text. Source code for release binaries is
+available from this repository at the matching release tag.
