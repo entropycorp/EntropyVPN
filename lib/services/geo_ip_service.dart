@@ -67,33 +67,21 @@ class GeoIpService {
   GeoIpService({
     HttpClient? httpClient,
     Future<File> Function()? cacheFileProvider,
-    String? ip2LocationApiKey,
-    Uri? ip2LocationEndpoint,
+    Uri? ipWhoIsEndpoint,
   }) : _httpClient = httpClient ?? HttpClient(),
        _cacheFileProvider = cacheFileProvider ?? _defaultCacheFile,
-       _ip2LocationApiKey = _normalizeApiKey(
-         ip2LocationApiKey ?? _defaultIp2LocationApiKey,
-       ),
-       _ip2LocationEndpoint =
-           ip2LocationEndpoint ?? _defaultIp2LocationEndpoint;
+       _ipWhoIsEndpoint = ipWhoIsEndpoint ?? _defaultIpWhoIsEndpoint;
 
   static const MethodChannel _androidControlChannel = MethodChannel(
     'entropy_vpn/control',
   );
-  static const String _defaultIp2LocationApiKey = String.fromEnvironment(
-    'IP2LOCATION_API_KEY',
-  );
-  static final Uri _defaultIp2LocationEndpoint = Uri.https(
-    'api.ip2location.io',
-    '/',
-  );
+  static final Uri _defaultIpWhoIsEndpoint = Uri.https('ipwho.is', '/');
   static const int _cacheVersion = 2;
-  static const String _cacheProvider = 'ip2location.io';
+  static const String _cacheProvider = 'ipwho.is';
 
   final HttpClient _httpClient;
   final Future<File> Function() _cacheFileProvider;
-  final String? _ip2LocationApiKey;
-  final Uri _ip2LocationEndpoint;
+  final Uri _ipWhoIsEndpoint;
   final Map<String, GeoIpInfo> _serverCache = <String, GeoIpInfo>{};
   final Map<String, GeoIpInfo> _ipCache = <String, GeoIpInfo>{};
   final Map<String, Future<GeoIpInfo?>> _pendingServerLookups =
@@ -203,7 +191,7 @@ class GeoIpService {
 
     try {
       final request = await _httpClient
-          .getUrl(_buildIp2LocationUri(ipAddress))
+          .getUrl(_buildIpWhoIsUri(ipAddress))
           .timeout(const Duration(seconds: 5));
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       request.headers.set(HttpHeaders.userAgentHeader, 'EntropyVPN/1.0');
@@ -222,31 +210,50 @@ class GeoIpService {
       if (decoded is! Map<String, dynamic>) {
         return null;
       }
+      if (decoded['success'] == false) {
+        return null;
+      }
 
+      final geo = decoded['geo'];
+      final asInfo = decoded['as'];
+      final asnInfo = decoded['asn'];
+      final timeZoneInfo = decoded['timezone'];
+      final connectionInfo = decoded['connection'];
       final countryCode = _normalizeCountryCode(
-        _readText(decoded['country_code']),
+        _readText(decoded['country_code']) ??
+            _readNestedText(geo, 'country_code') ??
+            _readText(decoded['country']),
       );
       if (countryCode == null) {
         return null;
       }
 
-      final timeZoneInfo = decoded['time_zone_info'];
-      final asInfo = decoded['as_info'];
       final info = GeoIpInfo(
         countryCode: countryCode,
-        resolvedIp: ipAddress,
+        resolvedIp: _readText(decoded['ip']) ?? ipAddress,
         city:
+            _readText(decoded['city']) ??
+            _readNestedText(geo, 'city') ??
             _readText(decoded['city_name']) ??
             _readNestedText(decoded['city'], 'name'),
         subdivision:
+            _readText(decoded['region']) ??
+            _readNestedText(geo, 'region') ??
             _readText(decoded['region_name']) ??
             _readNestedText(decoded['region'], 'name'),
         timeZone:
-            _readNestedText(timeZoneInfo, 'olson') ??
+            _readNestedText(timeZoneInfo, 'id') ??
+            _readNestedText(geo, 'timezone') ??
+            _readText(decoded['timezone']) ??
             _readText(decoded['time_zone']),
         asnOrganization:
+            _readNestedText(connectionInfo, 'org') ??
+            _readNestedText(connectionInfo, 'isp') ??
+            _readNestedText(asnInfo, 'name') ??
+            _readNestedText(asInfo, 'name') ??
+            _readText(decoded['as_name']) ??
+            _readText(decoded['org']) ??
             _readText(decoded['as']) ??
-            _readNestedText(asInfo, 'as_name') ??
             _readText(decoded['isp']),
       );
       await _rememberIpInfo(ipAddress, info);
@@ -264,19 +271,18 @@ class GeoIpService {
     }
   }
 
-  Uri _buildIp2LocationUri(String ipAddress) {
+  Uri _buildIpWhoIsUri(String ipAddress) {
     final queryParameters = <String, String>{
-      ..._ip2LocationEndpoint.queryParameters,
-      'ip': ipAddress,
-      'format': 'json',
+      ..._ipWhoIsEndpoint.queryParameters,
     };
 
-    final apiKey = _ip2LocationApiKey;
-    if (apiKey != null) {
-      queryParameters['key'] = apiKey;
-    }
-
-    return _ip2LocationEndpoint.replace(queryParameters: queryParameters);
+    return _ipWhoIsEndpoint.replace(
+      pathSegments: <String>[
+        ..._ipWhoIsEndpoint.pathSegments.where((segment) => segment.isNotEmpty),
+        ipAddress,
+      ],
+      queryParameters: queryParameters,
+    );
   }
 
   Future<void> _rememberServerInfo(String cacheKey, GeoIpInfo info) async {
@@ -482,20 +488,15 @@ class GeoIpService {
   }
 
   String? _readText(Object? value) {
+    if (value is Map || value is Iterable) {
+      return null;
+    }
     final text = value?.toString().trim();
     if (text == null || text.isEmpty) {
       return null;
     }
     return text;
   }
-}
-
-String? _normalizeApiKey(String? apiKey) {
-  final normalized = apiKey?.trim();
-  if (normalized == null || normalized.isEmpty) {
-    return null;
-  }
-  return normalized;
 }
 
 String? flagEmojiFromCountryCode(String? countryCode) {

@@ -116,6 +116,10 @@ val copyReleaseApksForFlutter by tasks.registering(Copy::class) {
             flutterApkDir.get().file("entropyvpn.apk"),
             flutterApkDir.get().file("entropyvpn-arm64-v8a.apk"),
             flutterApkDir.get().file("entropyvpn-armeabi-v7a.apk"),
+            fileTree(flutterApkDir.get().asFile) {
+                include("entropyvpn-*-arm64-v8a.apk")
+                include("entropyvpn-*-armeabi-v7a.apk")
+            },
         )
     }
 
@@ -123,11 +127,11 @@ val copyReleaseApksForFlutter by tasks.registering(Copy::class) {
 
     from(layout.buildDirectory.dir("outputs/apk/release")) {
         include("*arm64-v8a*.apk")
-        rename { "entropyvpn-arm64-v8a.apk" }
+        rename { "entropyvpn-${flutter.versionName}-arm64-v8a.apk" }
     }
     from(layout.buildDirectory.dir("outputs/apk/release")) {
         include("*armeabi-v7a*.apk")
-        rename { "entropyvpn-armeabi-v7a.apk" }
+        rename { "entropyvpn-${flutter.versionName}-armeabi-v7a.apk" }
     }
 }
 

@@ -20,7 +20,7 @@ void main() {
   });
 
   group('GeoIpService', () {
-    test('queries IP2Location.io endpoint when resolving an IP', () async {
+    test('queries IPWHOIS endpoint when resolving an IP', () async {
       final tempDir = await Directory.systemTemp.createTemp(
         'entropy_geo_ip_test_',
       );
@@ -39,16 +39,19 @@ void main() {
       final requests = <HttpRequest>[];
       server.listen((request) async {
         requests.add(request);
+        final resolvedIp = request.uri.pathSegments.length >= 2
+            ? request.uri.pathSegments[1]
+            : null;
         request.response.headers.contentType = ContentType.json;
         request.response.write(
           jsonEncode(<String, Object?>{
-            'ip': request.uri.queryParameters['ip'],
+            'success': true,
+            'ip': resolvedIp,
+            'city': 'Frankfurt am Main',
+            'region': 'Hesse',
             'country_code': 'DE',
-            'country_name': 'Germany',
-            'region_name': 'Hesse',
-            'city_name': 'Frankfurt am Main',
-            'time_zone': '+01:00',
-            'as': 'Example Network',
+            'timezone': <String, Object?>{'id': 'Europe/Berlin'},
+            'connection': <String, Object?>{'org': 'Example Network'},
           }),
         );
         await request.response.close();
@@ -59,8 +62,7 @@ void main() {
       final service = GeoIpService(
         httpClient: httpClient,
         cacheFileProvider: () async => cacheFile,
-        ip2LocationApiKey: 'test-key',
-        ip2LocationEndpoint: Uri(
+        ipWhoIsEndpoint: Uri(
           scheme: 'http',
           host: server.address.address,
           port: server.port,
@@ -73,15 +75,11 @@ void main() {
       expect(info?.countryCode, 'DE');
       expect(info?.city, 'Frankfurt am Main');
       expect(info?.subdivision, 'Hesse');
-      expect(info?.timeZone, '+01:00');
+      expect(info?.timeZone, 'Europe/Berlin');
       expect(info?.asnOrganization, 'Example Network');
       expect(requests, hasLength(1));
-      expect(requests.single.uri.path, '/geo');
-      expect(requests.single.uri.queryParameters, <String, String>{
-        'ip': '8.8.8.8',
-        'format': 'json',
-        'key': 'test-key',
-      });
+      expect(requests.single.uri.path, '/geo/8.8.8.8');
+      expect(requests.single.uri.queryParameters, isEmpty);
       expect(
         requests.single.headers.value(HttpHeaders.acceptHeader),
         'application/json',
@@ -103,7 +101,7 @@ void main() {
       await cacheFile.writeAsString(
         const JsonEncoder.withIndent('  ').convert(<String, Object?>{
           'version': 2,
-          'provider': 'ip2location.io',
+          'provider': 'ipwho.is',
           'servers': <String, Object?>{
             'vpn.example.com': const GeoIpInfo(
               countryCode: 'CH',
@@ -160,10 +158,10 @@ void main() {
         request.response.headers.contentType = ContentType.json;
         request.response.write(
           jsonEncode(<String, Object?>{
+            'success': true,
+            'city': 'Helsinki',
+            'region': 'Uusimaa',
             'country_code': 'FI',
-            'country_name': 'Finland',
-            'region_name': 'Uusimaa',
-            'city_name': 'Helsinki',
           }),
         );
         await request.response.close();
@@ -174,7 +172,7 @@ void main() {
       final service = GeoIpService(
         httpClient: httpClient,
         cacheFileProvider: () async => cacheFile,
-        ip2LocationEndpoint: Uri(
+        ipWhoIsEndpoint: Uri(
           scheme: 'http',
           host: server.address.address,
           port: server.port,
