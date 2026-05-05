@@ -869,10 +869,22 @@ class VpnController extends ChangeNotifier {
       return CoreFlavor.singBox;
     }
 
+    switch (profile.protocol) {
+      case LinkProtocol.hysteria:
+      case LinkProtocol.hysteria2:
+        return CoreFlavor.singBox;
+      case LinkProtocol.vless:
+      case LinkProtocol.vmess:
+      case LinkProtocol.trojan:
+      case LinkProtocol.shadowsocks:
+        break;
+    }
+
     if (profile.tlsMode == TlsMode.reality) {
       switch (profile.transport) {
         case TransportMode.raw:
         case TransportMode.grpc:
+        case TransportMode.xhttp:
           return CoreFlavor.xray;
         case TransportMode.ws:
         case TransportMode.http:
@@ -886,6 +898,8 @@ class VpnController extends ChangeNotifier {
       case TransportMode.http:
       case TransportMode.quic:
         return CoreFlavor.singBox;
+      case TransportMode.xhttp:
+        return CoreFlavor.xray;
       case TransportMode.raw:
       case TransportMode.ws:
       case TransportMode.grpc:

@@ -340,9 +340,50 @@ class CoreConfigBuilder {
           outbound['plugin'] = profile.plugin;
           outbound['plugin_opts'] = profile.pluginOpts ?? '';
         }
+      case LinkProtocol.hysteria:
+        outbound.addAll(<String, dynamic>{
+          'type': 'hysteria',
+          'server': profile.server,
+          'server_port': profile.port,
+          'up_mbps': _requirePositiveInt(
+            profile.uploadMbps,
+            'Hysteria upload bandwidth',
+          ),
+          'down_mbps': _requirePositiveInt(
+            profile.downloadMbps,
+            'Hysteria download bandwidth',
+          ),
+          if (profile.password != null) 'auth_str': profile.password,
+          if (profile.hysteriaNetwork != null)
+            'network': profile.hysteriaNetwork,
+          if (profile.obfsPassword != null) 'obfs': profile.obfsPassword,
+        });
+      case LinkProtocol.hysteria2:
+        outbound.addAll(<String, dynamic>{
+          'type': 'hysteria2',
+          'server': profile.server,
+          if (profile.serverPorts.isEmpty) 'server_port': profile.port,
+          if (profile.serverPorts.isNotEmpty)
+            'server_ports': profile.serverPorts,
+          if (profile.password != null) 'password': profile.password,
+          if (profile.uploadMbps != null) 'up_mbps': profile.uploadMbps,
+          if (profile.downloadMbps != null) 'down_mbps': profile.downloadMbps,
+          if (profile.hysteriaNetwork != null)
+            'network': profile.hysteriaNetwork,
+          if (profile.obfs != null || profile.obfsPassword != null)
+            'obfs': <String, dynamic>{
+              'type': profile.obfs ?? 'salamander',
+              'password': _require(
+                profile.obfsPassword,
+                'Hysteria2 obfs password',
+              ),
+            },
+        });
     }
 
-    final transport = _buildSingBoxTransport(profile);
+    final transport = _supportsSingBoxV2RayTransport(profile.protocol)
+        ? _buildSingBoxTransport(profile)
+        : null;
     if (transport != null) {
       outbound['transport'] = transport;
     }
@@ -438,6 +479,11 @@ class CoreConfigBuilder {
             ],
           },
         });
+      case LinkProtocol.hysteria:
+      case LinkProtocol.hysteria2:
+        throw StateError(
+          '${profile.protocol.name} links must be run with sing-box.',
+        );
     }
 
     outbound['streamSettings'] = _buildXrayStreamSettings(
@@ -538,8 +584,9 @@ class CoreConfigBuilder {
         'path': profile.path ?? '/',
         if (profile.host != null) 'host': profile.host,
       },
-      TransportMode.quic => throw StateError(
-        'QUIC transport is not supported by this desktop wrapper yet.',
+      TransportMode.quic => <String, dynamic>{'type': 'quic'},
+      TransportMode.xhttp => throw StateError(
+        'XHTTP transport is only supported by Xray.',
       ),
     };
   }
@@ -548,11 +595,6 @@ class CoreConfigBuilder {
     ParsedVpnProfile profile, {
     String? bindInterface,
   }) {
-    if (profile.transport == TransportMode.http) {
-      throw StateError(
-        'HTTP transport is not supported for Xray in this desktop wrapper yet.',
-      );
-    }
     if (profile.transport == TransportMode.quic) {
       throw StateError(
         'QUIC transport is not supported for Xray in this desktop wrapper yet.',
@@ -566,6 +608,7 @@ class CoreConfigBuilder {
         TransportMode.grpc => 'grpc',
         TransportMode.httpUpgrade => 'httpupgrade',
         TransportMode.http => 'xhttp',
+        TransportMode.xhttp => 'xhttp',
         TransportMode.quic => 'quic',
       },
       'security': switch (profile.tlsMode) {
@@ -608,11 +651,25 @@ class CoreConfigBuilder {
           if (profile.host != null) 'host': profile.host,
         };
       case TransportMode.http:
+      case TransportMode.xhttp:
+        stream['xhttpSettings'] = <String, dynamic>{
+          'path': profile.path ?? '/',
+          if (profile.host != null) 'host': profile.host,
+        };
       case TransportMode.quic:
         break;
     }
 
     return stream;
+  }
+
+  bool _supportsSingBoxV2RayTransport(LinkProtocol protocol) {
+    return switch (protocol) {
+      LinkProtocol.vless || LinkProtocol.vmess || LinkProtocol.trojan => true,
+      LinkProtocol.shadowsocks ||
+      LinkProtocol.hysteria ||
+      LinkProtocol.hysteria2 => false,
+    };
   }
 
   Map<String, dynamic> _buildXrayTlsSettings(ParsedVpnProfile profile) {
@@ -636,6 +693,13 @@ class CoreConfigBuilder {
 
   String _require(String? value, String name) {
     if (value == null || value.trim().isEmpty) {
+      throw StateError('$name is missing in the provided link.');
+    }
+    return value;
+  }
+
+  int _requirePositiveInt(int? value, String name) {
+    if (value == null || value <= 0) {
       throw StateError('$name is missing in the provided link.');
     }
     return value;

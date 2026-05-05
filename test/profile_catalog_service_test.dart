@@ -56,6 +56,22 @@ void main() {
       expect(catalog.profiles.last.protocol, LinkProtocol.shadowsocks);
     });
 
+    test('extracts Hysteria links from subscription payloads', () {
+      final catalog = service.resolveInline(
+        [
+          'hy2://secret@hy2.example.com:443/?obfs=salamander&obfs-password=obfs-secret&sni=sni.example.com#Hy2',
+          'hysteria://hy.example.com:8443?auth=secret&upmbps=100&downmbps=200#Hy',
+        ].join('\n'),
+      );
+
+      expect(catalog.isSubscription, isTrue);
+      expect(catalog.profiles, hasLength(2));
+      expect(catalog.profiles.first.protocol, LinkProtocol.hysteria2);
+      expect(catalog.profiles.first.server, 'hy2.example.com');
+      expect(catalog.profiles.last.protocol, LinkProtocol.hysteria);
+      expect(catalog.profiles.last.uploadMbps, 100);
+    });
+
     test('resolves inline sing-box JSON configs', () {
       final catalog = service.resolveInline(
         jsonEncode(<String, dynamic>{
@@ -568,6 +584,8 @@ void main() {
       expect(catalog.profiles.single.remark, 'Office');
       expect(catalog.profiles.single.server, 'hy2.example.com');
       expect(catalog.profiles.single.port, 443);
+      expect(catalog.profiles.single.protocol, LinkProtocol.hysteria2);
+      expect(catalog.profiles.single.singBoxOutboundType, 'hysteria2');
     });
   });
 }

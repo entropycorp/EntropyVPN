@@ -16,9 +16,9 @@ enum ConnectionPhase {
   error,
 }
 
-enum LinkProtocol { vless, vmess, trojan, shadowsocks }
+enum LinkProtocol { vless, vmess, trojan, shadowsocks, hysteria, hysteria2 }
 
-enum TransportMode { raw, ws, grpc, http, httpUpgrade, quic }
+enum TransportMode { raw, ws, grpc, http, httpUpgrade, quic, xhttp }
 
 enum TlsMode { none, tls, reality }
 
@@ -62,6 +62,12 @@ class ParsedVpnProfile {
     this.allowInsecure = false,
     this.plugin,
     this.pluginOpts,
+    this.serverPorts = const <String>[],
+    this.uploadMbps,
+    this.downloadMbps,
+    this.hysteriaNetwork,
+    this.obfs,
+    this.obfsPassword,
     this.singBoxOutboundType,
     this.singBoxConfigJson,
     this.singBoxConfigDirectory,
@@ -95,6 +101,12 @@ class ParsedVpnProfile {
     bool allowInsecure = false,
     String? singBoxOutboundType,
     String? configDirectory,
+    List<String> serverPorts = const <String>[],
+    int? uploadMbps,
+    int? downloadMbps,
+    String? hysteriaNetwork,
+    String? obfs,
+    String? obfsPassword,
   }) {
     return ParsedVpnProfile(
       protocol: protocol,
@@ -118,6 +130,12 @@ class ParsedVpnProfile {
       publicKey: publicKey,
       shortId: shortId,
       allowInsecure: allowInsecure,
+      serverPorts: serverPorts,
+      uploadMbps: uploadMbps,
+      downloadMbps: downloadMbps,
+      hysteriaNetwork: hysteriaNetwork,
+      obfs: obfs,
+      obfsPassword: obfsPassword,
       singBoxOutboundType: singBoxOutboundType,
       singBoxConfigJson: configJson,
       singBoxConfigDirectory: configDirectory,
@@ -207,6 +225,12 @@ class ParsedVpnProfile {
   final bool allowInsecure;
   final String? plugin;
   final String? pluginOpts;
+  final List<String> serverPorts;
+  final int? uploadMbps;
+  final int? downloadMbps;
+  final String? hysteriaNetwork;
+  final String? obfs;
+  final String? obfsPassword;
   final String? singBoxOutboundType;
   final String? singBoxConfigJson;
   final String? singBoxConfigDirectory;
@@ -274,6 +298,12 @@ class ParsedVpnProfile {
       'allowInsecure': allowInsecure,
       'plugin': plugin,
       'pluginOpts': pluginOpts,
+      'serverPorts': serverPorts,
+      'uploadMbps': uploadMbps,
+      'downloadMbps': downloadMbps,
+      'hysteriaNetwork': hysteriaNetwork,
+      'obfs': obfs,
+      'obfsPassword': obfsPassword,
       'singBoxOutboundType': singBoxOutboundType,
       'singBoxConfigJson': singBoxConfigJson,
       'singBoxConfigDirectory': singBoxConfigDirectory,
@@ -324,6 +354,16 @@ class ParsedVpnProfile {
       allowInsecure: json['allowInsecure'] == true,
       plugin: json['plugin'] as String?,
       pluginOpts: json['pluginOpts'] as String?,
+      serverPorts:
+          ((json['serverPorts'] as List<dynamic>?) ?? const <dynamic>[])
+              .map((item) => item?.toString().trim() ?? '')
+              .where((item) => item.isNotEmpty)
+              .toList(growable: false),
+      uploadMbps: (json['uploadMbps'] as num?)?.toInt(),
+      downloadMbps: (json['downloadMbps'] as num?)?.toInt(),
+      hysteriaNetwork: json['hysteriaNetwork'] as String?,
+      obfs: json['obfs'] as String?,
+      obfsPassword: json['obfsPassword'] as String?,
       singBoxOutboundType: json['singBoxOutboundType'] as String?,
       singBoxConfigJson: json['singBoxConfigJson'] as String?,
       singBoxConfigDirectory: json['singBoxConfigDirectory'] as String?,

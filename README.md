@@ -11,7 +11,8 @@ through system proxy or TUN modes where supported.
 ## Features
 
 - Windows and Android client UI
-- Support for `vless://`, `vmess://`, `trojan://`, and `ss://` profiles
+- Support for `vless://`, `vmess://`, `trojan://`, `ss://`,
+  `hysteria://`, and `hy2://` profiles
 - Support for HTTP/HTTPS subscription links
 - Xray-core and sing-box runtime support
 - System proxy and TUN connection modes

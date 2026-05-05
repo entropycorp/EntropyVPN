@@ -52,6 +52,56 @@ void main() {
       expect(profile.password, 'secret');
       expect(profile.remark, 'SS');
     });
+
+    test('parses XHTTP transport share links', () {
+      final profile = parser.parse(
+        'vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none&security=tls&type=xhttp&host=cdn.example.com&path=%2Fxhttp&sni=server.example.com&alpn=h3#XHTTP',
+      );
+
+      expect(profile.protocol, LinkProtocol.vless);
+      expect(profile.transport, TransportMode.xhttp);
+      expect(profile.tlsMode, TlsMode.tls);
+      expect(profile.host, 'cdn.example.com');
+      expect(profile.path, '/xhttp');
+      expect(profile.alpn, <String>['h3']);
+      expect(profile.remark, 'XHTTP');
+    });
+
+    test('parses Hysteria share links', () {
+      final profile = parser.parse(
+        'hysteria://hy.example.com:8443?protocol=udp&auth=secret&peer=sni.example.com&insecure=1&upmbps=100&downmbps=200&alpn=hysteria&obfs=xplus&obfsParam=obfs-secret#Hy',
+      );
+
+      expect(profile.protocol, LinkProtocol.hysteria);
+      expect(profile.server, 'hy.example.com');
+      expect(profile.port, 8443);
+      expect(profile.transport, TransportMode.quic);
+      expect(profile.password, 'secret');
+      expect(profile.sni, 'sni.example.com');
+      expect(profile.allowInsecure, isTrue);
+      expect(profile.uploadMbps, 100);
+      expect(profile.downloadMbps, 200);
+      expect(profile.hysteriaNetwork, 'udp');
+      expect(profile.obfs, 'xplus');
+      expect(profile.obfsPassword, 'obfs-secret');
+    });
+
+    test('parses Hysteria2 share links', () {
+      final profile = parser.parse(
+        'hysteria2://user%3Asecret@hy2.example.com:443/?insecure=1&obfs=salamander&obfs-password=obfs-secret&sni=sni.example.com#Hy2',
+      );
+
+      expect(profile.protocol, LinkProtocol.hysteria2);
+      expect(profile.server, 'hy2.example.com');
+      expect(profile.port, 443);
+      expect(profile.transport, TransportMode.quic);
+      expect(profile.password, 'user:secret');
+      expect(profile.sni, 'sni.example.com');
+      expect(profile.allowInsecure, isTrue);
+      expect(profile.obfs, 'salamander');
+      expect(profile.obfsPassword, 'obfs-secret');
+      expect(profile.remark, 'Hy2');
+    });
   });
 
   group('CoreConfigBuilder', () {
@@ -74,6 +124,61 @@ void main() {
         'publicKey',
       );
       expect((tls['utls'] as Map<String, dynamic>)['fingerprint'], 'chrome');
+    });
+
+    test('builds sing-box QUIC transport config', () {
+      final profile = parser.parse(
+        'vless://11111111-1111-1111-1111-111111111111@quic.example.com:443?encryption=none&security=tls&type=quic&sni=server.example.com#QUIC',
+      );
+
+      final config = builder.buildSingBox(profile);
+      final outbound =
+          (config['outbounds'] as List<dynamic>).first as Map<String, dynamic>;
+
+      expect(outbound['type'], 'vless');
+      expect(outbound['transport'], <String, dynamic>{'type': 'quic'});
+      expect((outbound['tls'] as Map<String, dynamic>)['enabled'], isTrue);
+    });
+
+    test('builds sing-box Hysteria config', () {
+      final profile = parser.parse(
+        'hysteria://hy.example.com:8443?protocol=udp&auth=secret&peer=sni.example.com&upmbps=100&downmbps=200&obfsParam=obfs-secret#Hy',
+      );
+
+      final config = builder.buildSingBox(profile);
+      final outbound =
+          (config['outbounds'] as List<dynamic>).first as Map<String, dynamic>;
+      final tls = outbound['tls'] as Map<String, dynamic>;
+
+      expect(outbound['type'], 'hysteria');
+      expect(outbound['server'], 'hy.example.com');
+      expect(outbound['server_port'], 8443);
+      expect(outbound['auth_str'], 'secret');
+      expect(outbound['up_mbps'], 100);
+      expect(outbound['down_mbps'], 200);
+      expect(outbound['network'], 'udp');
+      expect(outbound['obfs'], 'obfs-secret');
+      expect(tls['server_name'], 'sni.example.com');
+    });
+
+    test('builds sing-box Hysteria2 config', () {
+      final profile = parser.parse(
+        'hy2://secret@hy2.example.com:443/?obfs=salamander&obfs-password=obfs-secret&sni=sni.example.com#Hy2',
+      );
+
+      final config = builder.buildSingBox(profile);
+      final outbound =
+          (config['outbounds'] as List<dynamic>).first as Map<String, dynamic>;
+      final tls = outbound['tls'] as Map<String, dynamic>;
+      final obfs = outbound['obfs'] as Map<String, dynamic>;
+
+      expect(outbound['type'], 'hysteria2');
+      expect(outbound['server'], 'hy2.example.com');
+      expect(outbound['server_port'], 443);
+      expect(outbound['password'], 'secret');
+      expect(obfs['type'], 'salamander');
+      expect(obfs['password'], 'obfs-secret');
+      expect(tls['server_name'], 'sni.example.com');
     });
 
     test('builds sing-box TUN config for VLESS REALITY Vision', () {
@@ -476,6 +581,26 @@ void main() {
       expect(stream['network'], 'ws');
       expect(stream['security'], 'tls');
       expect((stream['wsSettings'] as Map<String, dynamic>)['path'], '/vpn');
+    });
+
+    test('builds Xray XHTTP config', () {
+      final profile = parser.parse(
+        'vless://11111111-1111-1111-1111-111111111111@xhttp.example.com:443?encryption=none&security=tls&type=xhttp&host=cdn.example.com&path=%2Fxhttp&sni=server.example.com&alpn=h3#XHTTP',
+      );
+
+      final config = builder.buildXray(profile);
+      final outbound =
+          (config['outbounds'] as List<dynamic>).first as Map<String, dynamic>;
+      final stream = outbound['streamSettings'] as Map<String, dynamic>;
+      final xhttp = stream['xhttpSettings'] as Map<String, dynamic>;
+
+      expect(stream['network'], 'xhttp');
+      expect(stream['security'], 'tls');
+      expect(xhttp['path'], '/xhttp');
+      expect(xhttp['host'], 'cdn.example.com');
+      expect((stream['tlsSettings'] as Map<String, dynamic>)['alpn'], <String>[
+        'h3',
+      ]);
     });
 
     test('builds Xray TCP config for raw transport like v2rayNG', () {

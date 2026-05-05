@@ -157,7 +157,7 @@ class ProfileCatalogService {
   }) async {
     final client = _httpClientFactory();
     client.connectionTimeout = const Duration(seconds: 15);
-    client.userAgent = 'EntropyVPN/1.0';
+    client.userAgent = 'EntropyVPN/1.0.1';
 
     try {
       final request = await client.getUrl(Uri.parse(url));
@@ -405,12 +405,16 @@ class ProfileCatalogService {
 
   List<String> _extractShareLinks(String text) {
     final normalized = text.replaceAll('\uFEFF', '');
-    final matches = RegExp(r'(vless|vmess|trojan|ss)://', caseSensitive: false)
-        .allMatches(normalized)
-        .where((match) {
-          return _isLikelyShareLinkBoundary(normalized, match.start);
-        })
-        .toList(growable: false);
+    final matches =
+        RegExp(
+              r'(hysteria2|hysteria|vless|vmess|trojan|hy2|ss)://',
+              caseSensitive: false,
+            )
+            .allMatches(normalized)
+            .where((match) {
+              return _isLikelyShareLinkBoundary(normalized, match.start);
+            })
+            .toList(growable: false);
 
     if (matches.isEmpty) {
       return const <String>[];
@@ -553,6 +557,12 @@ class ProfileCatalogService {
       publicKey: endpoint?.publicKey,
       shortId: endpoint?.shortId,
       allowInsecure: endpoint?.allowInsecure ?? false,
+      serverPorts: endpoint?.serverPorts ?? const <String>[],
+      uploadMbps: endpoint?.uploadMbps,
+      downloadMbps: endpoint?.downloadMbps,
+      hysteriaNetwork: endpoint?.hysteriaNetwork,
+      obfs: endpoint?.obfs,
+      obfsPassword: endpoint?.obfsPassword,
       singBoxOutboundType: endpoint?.outboundType,
       configDirectory: configDirectory,
     );
@@ -1011,7 +1021,10 @@ class ProfileCatalogService {
 
     return _ConfigEndpoint(
       server: server,
-      port: _intValue(outbound['server_port']),
+      port:
+          _intValueOrNull(outbound['server_port']) ??
+          _firstServerPort(_stringList(outbound['server_ports'])) ??
+          0,
       outboundType: outboundType,
       protocol: _protocolForSingBoxOutbound(outboundType),
       transport: _transportForSingBoxOutbound(transport),
@@ -1033,6 +1046,15 @@ class ProfileCatalogService {
       publicKey: _nonEmpty(reality?['public_key']?.toString()),
       shortId: _nonEmpty(reality?['short_id']?.toString()),
       allowInsecure: tls?['insecure'] == true,
+      serverPorts: _stringList(outbound['server_ports']),
+      uploadMbps:
+          _intValueOrNull(outbound['up_mbps']) ?? _mbpsValue(outbound['up']),
+      downloadMbps:
+          _intValueOrNull(outbound['down_mbps']) ??
+          _mbpsValue(outbound['down']),
+      hysteriaNetwork: _nonEmpty(outbound['network']?.toString()),
+      obfs: _singBoxObfsType(outbound),
+      obfsPassword: _singBoxObfsPassword(outbound),
     );
   }
 
@@ -1045,6 +1067,8 @@ class ProfileCatalogService {
       'vmess' => LinkProtocol.vmess,
       'trojan' => LinkProtocol.trojan,
       'shadowsocks' => LinkProtocol.shadowsocks,
+      'hysteria' => LinkProtocol.hysteria,
+      'hysteria2' => LinkProtocol.hysteria2,
       _ => LinkProtocol.vless,
     };
   }
@@ -1059,6 +1083,7 @@ class ProfileCatalogService {
       'http' => TransportMode.http,
       'httpupgrade' || 'http-upgrade' => TransportMode.httpUpgrade,
       'quic' => TransportMode.quic,
+      'xhttp' || 'splithttp' || 'split-http' => TransportMode.xhttp,
       _ => TransportMode.raw,
     };
   }
@@ -1185,6 +1210,9 @@ class ProfileCatalogService {
       'ws' || 'websocket' => _mapValue(streamSettings?['wsSettings']),
       'grpc' => _mapValue(streamSettings?['grpcSettings']),
       'http' => _mapValue(streamSettings?['httpSettings']),
+      'xhttp' ||
+      'splithttp' ||
+      'split-http' => _mapValue(streamSettings?['xhttpSettings']),
       'httpupgrade' ||
       'http-upgrade' => _mapValue(streamSettings?['httpupgradeSettings']),
       'quic' => _mapValue(streamSettings?['quicSettings']),
@@ -1200,6 +1228,7 @@ class ProfileCatalogService {
       'http' => TransportMode.http,
       'httpupgrade' || 'http-upgrade' => TransportMode.httpUpgrade,
       'quic' => TransportMode.quic,
+      'xhttp' || 'splithttp' || 'split-http' => TransportMode.xhttp,
       _ => TransportMode.raw,
     };
   }
@@ -1289,6 +1318,57 @@ class ProfileCatalogService {
       return int.tryParse(value.trim()) ?? 0;
     }
     return 0;
+  }
+
+  int? _intValueOrNull(Object? value) {
+    if (value is num) {
+      return value.toInt();
+    }
+    if (value is String) {
+      return int.tryParse(value.trim());
+    }
+    return null;
+  }
+
+  int? _mbpsValue(Object? value) {
+    final raw = _nonEmpty(value?.toString());
+    if (raw == null) {
+      return null;
+    }
+    final match = RegExp(
+      r'^(\d+)\s*mbps$',
+      caseSensitive: false,
+    ).firstMatch(raw);
+    return int.tryParse(match?.group(1) ?? '');
+  }
+
+  int? _firstServerPort(List<String> ports) {
+    for (final item in ports) {
+      final first = item.split('-').first.trim();
+      final parsed = int.tryParse(first);
+      if (parsed != null && parsed > 0) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
+  String? _singBoxObfsType(Map<String, dynamic> outbound) {
+    final obfs = outbound['obfs'];
+    final obfsMap = _mapValue(obfs);
+    if (obfsMap != null) {
+      return _nonEmpty(obfsMap['type']?.toString());
+    }
+    return null;
+  }
+
+  String? _singBoxObfsPassword(Map<String, dynamic> outbound) {
+    final obfs = outbound['obfs'];
+    final obfsMap = _mapValue(obfs);
+    if (obfsMap != null) {
+      return _nonEmpty(obfsMap['password']?.toString());
+    }
+    return _nonEmpty(obfs?.toString());
   }
 
   Map<String, dynamic>? _mapValue(Object? value) {
@@ -1465,6 +1545,12 @@ class _ConfigEndpoint {
     this.shortId,
     this.spiderX,
     this.allowInsecure = false,
+    this.serverPorts = const <String>[],
+    this.uploadMbps,
+    this.downloadMbps,
+    this.hysteriaNetwork,
+    this.obfs,
+    this.obfsPassword,
   });
 
   final String server;
@@ -1490,6 +1576,12 @@ class _ConfigEndpoint {
   final String? shortId;
   final String? spiderX;
   final bool allowInsecure;
+  final List<String> serverPorts;
+  final int? uploadMbps;
+  final int? downloadMbps;
+  final String? hysteriaNetwork;
+  final String? obfs;
+  final String? obfsPassword;
 }
 
 class _SingBoxRemoteProfile {

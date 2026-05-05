@@ -20,6 +20,8 @@ class ShareLinkParser {
       'vmess' => _parseVmess(raw),
       'trojan' => _parseTrojan(raw),
       'ss' => _parseShadowsocks(raw),
+      'hysteria' => _parseHysteria(raw),
+      'hysteria2' || 'hy2' => _parseHysteria2(raw),
       _ => throw FormatException('Unsupported protocol: $scheme'),
     };
   }
@@ -233,6 +235,73 @@ class ShareLinkParser {
     );
   }
 
+  ParsedVpnProfile _parseHysteria(String link) {
+    final parts = _parseServerLink(link, defaultPort: null);
+    if (parts.host.isEmpty || parts.port <= 0) {
+      throw const FormatException('Hysteria link is incomplete.');
+    }
+
+    final upMbps = _requirePositiveInt(parts.query, 'upmbps');
+    final downMbps = _requirePositiveInt(parts.query, 'downmbps');
+    final network = _normalizeHysteriaNetwork(parts.query['protocol']);
+    final obfsPassword =
+        _emptyToNull(parts.query['obfsParam']) ??
+        _emptyToNull(parts.query['obfs-param']) ??
+        _emptyToNull(parts.query['obfs-password']);
+
+    return ParsedVpnProfile(
+      protocol: LinkProtocol.hysteria,
+      server: parts.host,
+      port: parts.port,
+      transport: TransportMode.quic,
+      tlsMode: TlsMode.tls,
+      remark: _decodeFragment(parts.fragment),
+      password: _emptyToNull(parts.query['auth']),
+      sni:
+          _emptyToNull(parts.query['peer']) ?? _emptyToNull(parts.query['sni']),
+      alpn: _splitList(parts.query['alpn']),
+      allowInsecure: _toBool(parts.query['insecure']),
+      uploadMbps: upMbps,
+      downloadMbps: downMbps,
+      hysteriaNetwork: network,
+      obfs: _emptyToNull(parts.query['obfs']),
+      obfsPassword: obfsPassword,
+    );
+  }
+
+  ParsedVpnProfile _parseHysteria2(String link) {
+    final parts = _parseServerLink(link, defaultPort: 443);
+    if (parts.host.isEmpty) {
+      throw const FormatException('Hysteria2 link is incomplete.');
+    }
+
+    final auth = Uri.decodeComponent(parts.userInfo);
+    final obfs = _emptyToNull(parts.query['obfs']);
+    final obfsPassword =
+        _emptyToNull(parts.query['obfs-password']) ??
+        _emptyToNull(parts.query['obfsPassword']) ??
+        _emptyToNull(parts.query['obfs-param']) ??
+        _emptyToNull(parts.query['obfsParam']);
+
+    return ParsedVpnProfile(
+      protocol: LinkProtocol.hysteria2,
+      server: parts.host,
+      port: parts.port,
+      transport: TransportMode.quic,
+      tlsMode: TlsMode.tls,
+      remark: _decodeFragment(parts.fragment),
+      password: auth.isEmpty ? null : auth,
+      sni: _emptyToNull(parts.query['sni']),
+      allowInsecure: _toBool(parts.query['insecure']),
+      serverPorts: parts.serverPorts,
+      uploadMbps: _positiveInt(parts.query['upmbps']),
+      downloadMbps: _positiveInt(parts.query['downmbps']),
+      hysteriaNetwork: _normalizeHysteriaNetwork(parts.query['network']),
+      obfs: obfs,
+      obfsPassword: obfsPassword,
+    );
+  }
+
   TransportMode _parseTransport(String? rawTransport) {
     final normalized = (rawTransport ?? '').trim().toLowerCase();
     return switch (normalized) {
@@ -240,8 +309,9 @@ class ShareLinkParser {
       'ws' => TransportMode.ws,
       'grpc' => TransportMode.grpc,
       'h2' || 'http' => TransportMode.http,
-      'httpupgrade' => TransportMode.httpUpgrade,
+      'httpupgrade' || 'http-upgrade' => TransportMode.httpUpgrade,
       'quic' => TransportMode.quic,
+      'xhttp' || 'splithttp' || 'split-http' => TransportMode.xhttp,
       _ => throw FormatException('Unsupported transport: $normalized'),
     };
   }
@@ -343,6 +413,143 @@ class ShareLinkParser {
         normalized == 'on';
   }
 
+  int _requirePositiveInt(Map<String, String> query, String key) {
+    final parsed = _positiveInt(query[key]);
+    if (parsed == null) {
+      throw FormatException('Field $key must be a positive integer.');
+    }
+    return parsed;
+  }
+
+  int? _positiveInt(String? raw) {
+    final value = int.tryParse(raw?.trim() ?? '');
+    if (value == null || value <= 0) {
+      return null;
+    }
+    return value;
+  }
+
+  String? _normalizeHysteriaNetwork(String? raw) {
+    final normalized = raw?.trim().toLowerCase();
+    return switch (normalized) {
+      'tcp' => 'tcp',
+      'udp' => 'udp',
+      _ => null,
+    };
+  }
+
+  _ParsedServerLink _parseServerLink(String link, {required int? defaultPort}) {
+    final schemeSeparator = link.indexOf('://');
+    if (schemeSeparator <= 0) {
+      throw const FormatException('Unsupported link format.');
+    }
+
+    var remainder = link.substring(schemeSeparator + 3);
+    var fragment = '';
+    final fragmentIndex = remainder.indexOf('#');
+    if (fragmentIndex >= 0) {
+      fragment = remainder.substring(fragmentIndex + 1);
+      remainder = remainder.substring(0, fragmentIndex);
+    }
+
+    var query = const <String, String>{};
+    final queryIndex = remainder.indexOf('?');
+    if (queryIndex >= 0) {
+      query = Uri.splitQueryString(remainder.substring(queryIndex + 1));
+      remainder = remainder.substring(0, queryIndex);
+    }
+
+    final pathIndex = remainder.indexOf('/');
+    if (pathIndex >= 0) {
+      remainder = remainder.substring(0, pathIndex);
+    }
+
+    var userInfo = '';
+    final atIndex = remainder.lastIndexOf('@');
+    if (atIndex >= 0) {
+      userInfo = remainder.substring(0, atIndex);
+      remainder = remainder.substring(atIndex + 1);
+    }
+
+    final endpoint = _parseEndpoint(remainder, defaultPort: defaultPort);
+    return _ParsedServerLink(
+      host: endpoint.host,
+      port: endpoint.port,
+      serverPorts: endpoint.serverPorts,
+      userInfo: userInfo,
+      query: query,
+      fragment: fragment,
+    );
+  }
+
+  _ParsedEndpoint _parseEndpoint(String raw, {required int? defaultPort}) {
+    final value = raw.trim();
+    if (value.isEmpty) {
+      return const _ParsedEndpoint(host: '', port: 0);
+    }
+
+    late final String host;
+    String? portText;
+    if (value.startsWith('[')) {
+      final end = value.indexOf(']');
+      if (end <= 1) {
+        throw const FormatException('IPv6 endpoint is invalid.');
+      }
+      host = value.substring(1, end);
+      final rest = value.substring(end + 1);
+      if (rest.startsWith(':')) {
+        portText = rest.substring(1);
+      }
+    } else {
+      final colon = value.lastIndexOf(':');
+      if (colon > 0) {
+        host = value.substring(0, colon);
+        portText = value.substring(colon + 1);
+      } else {
+        host = value;
+      }
+    }
+
+    final parsedPorts = _parseServerPorts(portText);
+    final serverPorts = _isServerPortRange(portText)
+        ? parsedPorts
+        : const <String>[];
+    final port = _firstServerPort(parsedPorts) ?? defaultPort ?? 0;
+    return _ParsedEndpoint(
+      host: Uri.decodeComponent(host),
+      port: port,
+      serverPorts: serverPorts,
+    );
+  }
+
+  List<String> _parseServerPorts(String? raw) {
+    final value = raw?.trim();
+    if (value == null || value.isEmpty) {
+      return const <String>[];
+    }
+    return value
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+  }
+
+  bool _isServerPortRange(String? raw) {
+    final value = raw?.trim();
+    return value != null && (value.contains(',') || value.contains('-'));
+  }
+
+  int? _firstServerPort(List<String> ports) {
+    for (final item in ports) {
+      final first = item.split('-').first.trim();
+      final parsed = int.tryParse(first);
+      if (parsed != null && parsed > 0) {
+        return parsed;
+      }
+    }
+    return null;
+  }
+
   List<int> _decodeBase64(String rawValue) {
     final normalized = rawValue
         .trim()
@@ -358,4 +565,34 @@ class ShareLinkParser {
       return base64Url.decode(padded);
     }
   }
+}
+
+class _ParsedServerLink {
+  const _ParsedServerLink({
+    required this.host,
+    required this.port,
+    required this.serverPorts,
+    required this.userInfo,
+    required this.query,
+    required this.fragment,
+  });
+
+  final String host;
+  final int port;
+  final List<String> serverPorts;
+  final String userInfo;
+  final Map<String, String> query;
+  final String fragment;
+}
+
+class _ParsedEndpoint {
+  const _ParsedEndpoint({
+    required this.host,
+    required this.port,
+    this.serverPorts = const <String>[],
+  });
+
+  final String host;
+  final int port;
+  final List<String> serverPorts;
 }

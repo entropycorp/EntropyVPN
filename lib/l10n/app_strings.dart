@@ -50,8 +50,8 @@ class AppStrings {
   String get inputLabel =>
       _ru ? 'Добавить конфиг или подписку' : 'Add a config or subscription';
   String get inputHint => _ru
-      ? 'Вставьте ссылку vless://, vmess://, trojan://, ss:// или http(s)-подписку'
-      : 'Paste a vless://, vmess://, trojan://, ss:// link, sing-box:// import link, sing-box JSON, or an http(s) subscription URL';
+      ? 'Вставьте ссылку vless://, vmess://, trojan://, ss://, hysteria://, hy2:// или http(s)-подписку'
+      : 'Paste a vless://, vmess://, trojan://, ss://, hysteria://, hy2:// link, sing-box:// import link, sing-box JSON, or an http(s) subscription URL';
   String get addSourceAction => _ru ? 'Добавить' : 'Add';
   String get pasteFromClipboardAction =>
       _ru ? 'Вставить из буфера' : 'Paste from clipboard';
@@ -147,6 +147,8 @@ class AppStrings {
     LinkProtocol.vmess => 'VMess',
     LinkProtocol.trojan => 'Trojan',
     LinkProtocol.shadowsocks => 'Shadowsocks',
+    LinkProtocol.hysteria => 'Hysteria',
+    LinkProtocol.hysteria2 => 'Hysteria2',
   };
 
   String transportName(TransportMode transport) => switch (transport) {
@@ -156,6 +158,7 @@ class AppStrings {
     TransportMode.http => 'HTTP',
     TransportMode.httpUpgrade => 'HTTPUpgrade',
     TransportMode.quic => 'QUIC',
+    TransportMode.xhttp => 'XHTTP',
   };
 
   String tlsName(TlsMode tlsMode) => switch (tlsMode) {

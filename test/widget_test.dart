@@ -44,7 +44,7 @@ void main() {
     await tester.pump();
 
     const hint =
-        'Paste a vless://, vmess://, trojan://, ss:// link, sing-box:// import link, sing-box JSON, or an http(s) subscription URL';
+        'Paste a vless://, vmess://, trojan://, ss://, hysteria://, hy2:// link, sing-box:// import link, sing-box JSON, or an http(s) subscription URL';
 
     expect(find.text(hint), findsOneWidget);
     expect(find.text('Import from JSON'), findsOneWidget);
