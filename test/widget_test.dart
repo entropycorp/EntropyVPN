@@ -358,6 +358,52 @@ void main() {
     }
   });
 
+  testWidgets('desktop source rail is not clipped by short config pages', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(860, 620));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _manyConfigSourceController();
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(860, 620)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final railFinder = find.byKey(
+        const ValueKey<String>('desktop-source-page-rail'),
+      );
+      final pagerStackFinder = find.byKey(
+        const ValueKey<String>('desktop-source-pager-stack'),
+      );
+      expect(railFinder, findsOneWidget);
+      expect(pagerStackFinder, findsOneWidget);
+      expect(find.text('Config 1'), findsOneWidget);
+
+      final railRect = tester.getRect(railFinder);
+      final pagerStackRect = tester.getRect(pagerStackFinder);
+      expect(railRect.bottom, lessThanOrEqualTo(pagerStackRect.bottom + 0.1));
+
+      await tester.tap(
+        find.byKey(const ValueKey<String>('desktop-source-page-dot-4')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Config 5'), findsOneWidget);
+      final switchedRailRect = tester.getRect(railFinder);
+      final switchedPagerStackRect = tester.getRect(pagerStackFinder);
+      expect(
+        switchedRailRect.bottom,
+        lessThanOrEqualTo(switchedPagerStackRect.bottom + 0.1),
+      );
+    } finally {
+      controller.dispose();
+    }
+  });
+
   testWidgets('split power button stays fixed across source page selection', (
     WidgetTester tester,
   ) async {
@@ -1152,6 +1198,39 @@ VpnController _configController() {
               ),
             ],
           ),
+        ],
+      ),
+    ),
+  );
+}
+
+VpnController _manyConfigSourceController() {
+  return VpnController(
+    appStateStore: _WidgetMemoryAppStateStore(
+      PersistedAppState(
+        language: AppLanguage.en,
+        trafficMode: TrafficMode.systemProxy,
+        tunIpMode: TunIpMode.ipv4,
+        selectedSourceId: 'config-0',
+        sources: <ConfigSource>[
+          for (var index = 0; index < 5; index += 1)
+            ConfigSource(
+              id: 'config-$index',
+              rawInput:
+                  'vless://11111111-1111-1111-1111-111111111111@config-$index.example.com',
+              kind: ConfigSourceKind.config,
+              profiles: <ParsedVpnProfile>[
+                ParsedVpnProfile(
+                  protocol: LinkProtocol.vless,
+                  server: 'config-$index.example.com',
+                  port: 443,
+                  transport: TransportMode.raw,
+                  tlsMode: TlsMode.reality,
+                  userId: '11111111-1111-1111-1111-111111111111',
+                  remark: 'Config ${index + 1}',
+                ),
+              ],
+            ),
         ],
       ),
     ),

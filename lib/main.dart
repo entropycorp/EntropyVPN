@@ -1461,44 +1461,67 @@ class _DesktopSourcePagerState extends State<_DesktopSourcePager> {
     final pageIndex = _currentPage.clamp(0, sources.length - 1).toInt();
     final source = sources[pageIndex];
     final hasPager = sources.length > 1;
+    final minHeight = hasPager
+        ? _desktopSourceRailStackHeight(sources.length)
+        : 0.0;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
-      child: Stack(
-        children: <Widget>[
-          Padding(
-            padding: EdgeInsets.only(left: hasPager ? 54 : 0),
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 180),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              layoutBuilder: (currentChild, previousChildren) {
-                return currentChild ?? const SizedBox.shrink();
-              },
-              child: _DesktopSourcePage(
-                key: ValueKey<String>('desktop-source-page-${source.id}'),
-                controller: widget.controller,
-                strings: widget.strings,
-                source: source,
-                selected: widget.controller.selectedSource?.id == source.id,
-                cardKey: widget.cardKey,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: minHeight),
+        child: Stack(
+          key: const ValueKey<String>('desktop-source-pager-stack'),
+          clipBehavior: Clip.none,
+          children: <Widget>[
+            Padding(
+              padding: EdgeInsets.only(left: hasPager ? 54 : 0),
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                layoutBuilder: (currentChild, previousChildren) {
+                  return currentChild ?? const SizedBox.shrink();
+                },
+                child: _DesktopSourcePage(
+                  key: ValueKey<String>('desktop-source-page-${source.id}'),
+                  controller: widget.controller,
+                  strings: widget.strings,
+                  source: source,
+                  selected: widget.controller.selectedSource?.id == source.id,
+                  cardKey: widget.cardKey,
+                ),
               ),
             ),
-          ),
-          if (hasPager)
-            Positioned(
-              top: 8,
-              left: 0,
-              child: _DesktopSourcePageRail(
-                sources: sources,
-                selected: pageIndex,
-                onSelected: _handlePageSelected,
+            if (hasPager)
+              Positioned(
+                top: _desktopSourceRailTopInset,
+                left: 0,
+                child: _DesktopSourcePageRail(
+                  sources: sources,
+                  selected: pageIndex,
+                  onSelected: _handlePageSelected,
+                ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
+}
+
+const double _desktopSourceRailTopInset = 8;
+const double _desktopSourceRailItemSize = 34;
+const double _desktopSourceRailItemGap = 4;
+const double _desktopSourceRailVerticalPadding = 6;
+
+double _desktopSourceRailStackHeight(int sourceCount) {
+  if (sourceCount <= 0) {
+    return 0;
+  }
+  return _desktopSourceRailTopInset +
+      _desktopSourceRailVerticalPadding * 2 +
+      sourceCount * _desktopSourceRailItemSize +
+      math.max(0, sourceCount - 1) * _desktopSourceRailItemGap;
 }
 
 class _DesktopSourcePageRail extends StatelessWidget {
@@ -1533,7 +1556,10 @@ class _DesktopSourcePageRail extends StatelessWidget {
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 6),
+        padding: const EdgeInsets.symmetric(
+          horizontal: 5,
+          vertical: _desktopSourceRailVerticalPadding,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
@@ -1552,8 +1578,8 @@ class _DesktopSourcePageRail extends StatelessWidget {
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 160),
                         curve: Curves.easeOutCubic,
-                        width: 34,
-                        height: 34,
+                        width: _desktopSourceRailItemSize,
+                        height: _desktopSourceRailItemSize,
                         decoration: BoxDecoration(
                           color: isSelected
                               ? scheme.primary.withValues(alpha: 0.16)
@@ -1589,7 +1615,8 @@ class _DesktopSourcePageRail extends StatelessWidget {
                   );
                 },
               ),
-              if (i != sources.length - 1) const SizedBox(height: 4),
+              if (i != sources.length - 1)
+                const SizedBox(height: _desktopSourceRailItemGap),
             ],
           ],
         ),
