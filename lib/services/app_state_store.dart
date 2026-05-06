@@ -16,6 +16,7 @@ class PersistedAppState {
     required this.sources,
     required this.selectedSourceId,
     this.splitTunnelSettings = const SplitTunnelSettings(),
+    this.domainSplitTunnelSettings = const DomainSplitTunnelSettings(),
   });
 
   final AppLanguage language;
@@ -24,15 +25,17 @@ class PersistedAppState {
   final List<ConfigSource> sources;
   final String? selectedSourceId;
   final SplitTunnelSettings splitTunnelSettings;
+  final DomainSplitTunnelSettings domainSplitTunnelSettings;
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
-      'version': 4,
+      'version': 5,
       'language': language.name,
       'trafficMode': trafficMode.name,
       'tunIpMode': tunIpMode.name,
       'selectedSourceId': selectedSourceId,
       'splitTunnel': splitTunnelSettings.normalized.toJson(),
+      'domainSplitTunnel': domainSplitTunnelSettings.normalized.toJson(),
       'sources': sources
           .map((source) => source.toJson())
           .toList(growable: false),
@@ -69,6 +72,9 @@ class PersistedAppState {
       selectedSourceId: json['selectedSourceId'] as String?,
       splitTunnelSettings: SplitTunnelSettings.fromJson(
         (json['splitTunnel'] as Map?)?.cast<String, dynamic>(),
+      ),
+      domainSplitTunnelSettings: DomainSplitTunnelSettings.fromJson(
+        (json['domainSplitTunnel'] as Map?)?.cast<String, dynamic>(),
       ),
     );
   }

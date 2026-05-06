@@ -43,6 +43,21 @@ class AppStrings {
   String get splitTunnelTunHint => _ru
       ? 'При включении сплита приложение использует TUN-режим.'
       : 'Enabling split tunneling switches the app to TUN mode.';
+  String get appSplitTunnelLabel =>
+      _ru ? 'Сплит-туннелинг приложений' : 'App split tunneling';
+  String get domainSplitTunnelLabel =>
+      _ru ? 'Сплит-туннелинг доменов' : 'Domain split tunneling';
+  String get domainSplitTunnelDomainsLabel => _ru ? 'Домены' : 'Domains';
+  String get domainSplitTunnelInputHint => 'domain.ru, www.domain.ru, *.ru';
+  String get domainSplitTunnelAddTooltip =>
+      _ru ? 'Добавить домен' : 'Add domain';
+  String domainSplitTunnelSelectedCount(int count) =>
+      _ru ? 'Выбрано: $count' : 'Selected: $count';
+  String get domainSplitTunnelNoDomains =>
+      _ru ? 'Домены не добавлены.' : 'No domains added.';
+  String get domainSplitTunnelTunHint => _ru
+      ? 'Сплит-туннелинг доменов использует TUN-режим.'
+      : 'Domain split tunneling uses TUN mode.';
   String get logsLabel => _ru ? 'Логи' : 'Logs';
   String get copyLogsAction => _ru ? 'Копировать логи' : 'Copy logs';
   String get noLogsYet => _ru ? 'Логи пока не появились.' : 'No logs yet.';

@@ -39,6 +39,13 @@ void main() {
           ),
         ],
       ),
+      domainSplitTunnelSettings: DomainSplitTunnelSettings(
+        mode: SplitTunnelMode.whitelist,
+        domains: <SplitTunnelDomain>[
+          SplitTunnelDomain.fromInput('www.Example.ru'),
+          SplitTunnelDomain.fromInput('*.рф'),
+        ],
+      ),
       sources: <ConfigSource>[
         ConfigSource(
           id: 'source-1',
@@ -76,6 +83,11 @@ void main() {
     expect(
       restored.splitTunnelSettings.apps.single.path,
       r'C:\Apps\browser.exe',
+    );
+    expect(restored.domainSplitTunnelSettings.mode, SplitTunnelMode.whitelist);
+    expect(
+      restored.domainSplitTunnelSettings.domains.map((domain) => domain.value),
+      <String>['example.ru', '*.рф'],
     );
     expect(restored.sources, hasLength(2));
     expect(restored.sources.first.rawInput, 'vless://demo');

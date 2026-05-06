@@ -73,6 +73,8 @@ class CoreRuntimeService {
     required AppLanguage language,
     required TunIpMode tunIpMode,
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
   }) async {
     if (!Platform.isAndroid) {
       return;
@@ -89,6 +91,7 @@ class CoreRuntimeService {
       serverCountryCode: await _resolveAndroidServerCountryCode(profile),
       tunIpMode: tunIpMode,
       splitTunnelSettings: splitTunnelSettings,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
     );
     await bridge.saveStartPayload(
       core: payload.core,
@@ -109,6 +112,8 @@ class CoreRuntimeService {
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
   }) async {
     if (Platform.isAndroid) {
       await _startOnAndroid(
@@ -117,6 +122,7 @@ class CoreRuntimeService {
         language: language,
         tunIpMode: tunIpMode,
         splitTunnelSettings: splitTunnelSettings,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
       );
       return;
     }
@@ -137,11 +143,17 @@ class CoreRuntimeService {
             ? await _expandSplitTunnelSettings(splitTunnelSettings)
             : splitTunnelSettings.normalized,
       );
+      final effectiveDomainSplitTunnelSettings = trafficMode == TrafficMode.tun
+          ? domainSplitTunnelSettings.normalized
+          : const DomainSplitTunnelSettings();
 
       if (trafficMode == TrafficMode.tun) {
         _rememberAppLog('Selected TUN IP mode: ${tunIpMode.name}.');
         _rememberAppLog(
           'Split tunneling: ${effectiveSplitTunnelSettings.mode.name}, selected apps: ${effectiveSplitTunnelSettings.apps.length}.',
+        );
+        _rememberAppLog(
+          'Domain split tunneling: ${effectiveDomainSplitTunnelSettings.mode.name}, selected domains: ${effectiveDomainSplitTunnelSettings.domains.length}.',
         );
       }
       _rememberAppLog('Selected profile: ${_describeProfile(profile)}');
@@ -221,6 +233,7 @@ class CoreRuntimeService {
           trafficMode: trafficMode,
           tunIpMode: tunIpMode,
           splitTunnelSettings: effectiveSplitTunnelSettings,
+          domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
           tunInterfaceName: tunInterfaceName,
           runtimeDirectory: currentRuntimeDirectory,
           outboundBindInterface: outboundBindInterface,
@@ -421,6 +434,7 @@ class CoreRuntimeService {
     required AppLanguage language,
     required TunIpMode tunIpMode,
     required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
   }) async {
     final bridge = _androidBridge;
     if (bridge == null) {
@@ -437,6 +451,7 @@ class CoreRuntimeService {
       serverCountryCode: await _resolveAndroidServerCountryCode(profile),
       tunIpMode: tunIpMode,
       splitTunnelSettings: splitTunnelSettings,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
     );
     await bridge.start(
       core: payload.core,
@@ -457,6 +472,7 @@ class CoreRuntimeService {
     required String? serverCountryCode,
     required TunIpMode tunIpMode,
     required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
   }) {
     if (profile.isSingBoxConfig) {
       final config = _buildNativeSingBoxRuntimeConfig(
@@ -496,6 +512,7 @@ class CoreRuntimeService {
       profile,
       trafficMode: effectiveTrafficMode,
       tunIpMode: tunIpMode,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
     );
     return _AndroidStartPayload(
       core: core.name,
@@ -543,6 +560,7 @@ class CoreRuntimeService {
     required TrafficMode trafficMode,
     required TunIpMode tunIpMode,
     required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
     String? tunInterfaceName,
     required Directory runtimeDirectory,
     String? outboundBindInterface,
@@ -555,6 +573,7 @@ class CoreRuntimeService {
       trafficMode: trafficMode,
       tunIpMode: tunIpMode,
       splitTunnelSettings: splitTunnelSettings,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
       tunInterfaceName: tunInterfaceName,
       outboundBindInterface: outboundBindInterface,
       xrayServerAddressOverride: xrayServerAddressOverride,
@@ -608,6 +627,7 @@ class CoreRuntimeService {
     required TrafficMode trafficMode,
     required TunIpMode tunIpMode,
     required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
     String? tunInterfaceName,
     String? outboundBindInterface,
     String? xrayServerAddressOverride,
@@ -621,7 +641,8 @@ class CoreRuntimeService {
         tunIpMode: tunIpMode,
         tunInterfaceName: tunInterfaceName,
       );
-      if (splitTunnelSettings.isEnabled) {
+      if (splitTunnelSettings.isEnabled ||
+          domainSplitTunnelSettings.isEnabled) {
         _rememberAppLog(
           'Native sing-box JSON profile is used as-is; split tunneling is only injected into generated TUN configs.',
         );
@@ -633,7 +654,8 @@ class CoreRuntimeService {
         throw StateError('Native Xray configs must be run with Xray.');
       }
       final decoded = _buildNativeXrayRuntimeConfig(profile: profile);
-      if (splitTunnelSettings.isEnabled) {
+      if (splitTunnelSettings.isEnabled ||
+          domainSplitTunnelSettings.isEnabled) {
         _rememberAppLog(
           'Native Xray JSON profile is used as-is; split tunneling is only injected into generated TUN configs.',
         );
@@ -647,6 +669,7 @@ class CoreRuntimeService {
       trafficMode: trafficMode,
       tunIpMode: tunIpMode,
       splitTunnelSettings: splitTunnelSettings,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
       tunInterfaceName: tunInterfaceName,
       outboundBindInterface:
           core == CoreFlavor.xray || trafficMode != TrafficMode.tun

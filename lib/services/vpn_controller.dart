@@ -59,6 +59,8 @@ class VpnController extends ChangeNotifier {
       : TrafficMode.systemProxy;
   TunIpMode _tunIpMode = TunIpMode.ipv4;
   SplitTunnelSettings _splitTunnelSettings = const SplitTunnelSettings();
+  DomainSplitTunnelSettings _domainSplitTunnelSettings =
+      const DomainSplitTunnelSettings();
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   String _rawInput = '';
   String? _selectedSourceId;
@@ -88,6 +90,13 @@ class VpnController extends ChangeNotifier {
   SplitTunnelMode get splitTunnelMode => _splitTunnelSettings.mode;
   List<SplitTunnelApp> get splitTunnelApps =>
       List<SplitTunnelApp>.unmodifiable(_splitTunnelSettings.normalized.apps);
+  DomainSplitTunnelSettings get domainSplitTunnelSettings =>
+      _domainSplitTunnelSettings.normalized;
+  SplitTunnelMode get domainSplitTunnelMode => _domainSplitTunnelSettings.mode;
+  List<SplitTunnelDomain> get domainSplitTunnelDomains =>
+      List<SplitTunnelDomain>.unmodifiable(
+        _domainSplitTunnelSettings.normalized.domains,
+      );
   ConnectionPhase get phase => _phase;
   String get rawInput => _rawInput;
   List<ConfigSource> get sources => List<ConfigSource>.unmodifiable(_sources);
@@ -158,11 +167,18 @@ class VpnController extends ChangeNotifier {
     }
     final previousTrafficMode = _trafficMode;
     final previousSplitTunnelSettings = _splitTunnelSettings;
+    final previousDomainSplitTunnelSettings = _domainSplitTunnelSettings;
     _trafficMode = mode;
     if (mode != TrafficMode.tun &&
         _splitTunnelSettings.mode != SplitTunnelMode.off) {
       _splitTunnelSettings = SplitTunnelSettings(
         apps: _splitTunnelSettings.apps,
+      );
+    }
+    if (mode != TrafficMode.tun &&
+        _domainSplitTunnelSettings.mode != SplitTunnelMode.off) {
+      _domainSplitTunnelSettings = DomainSplitTunnelSettings(
+        domains: _domainSplitTunnelSettings.domains,
       );
     }
     _setRuntimeError(null);
@@ -173,6 +189,7 @@ class VpnController extends ChangeNotifier {
       await _ensureWindowsTunPrivilegesOrRollback(
         previousTrafficMode: previousTrafficMode,
         previousSplitTunnelSettings: previousSplitTunnelSettings,
+        previousDomainSplitTunnelSettings: previousDomainSplitTunnelSettings,
       );
       return;
     }
@@ -247,6 +264,7 @@ class VpnController extends ChangeNotifier {
 
     final previousTrafficMode = _trafficMode;
     final previousSplitTunnelSettings = _splitTunnelSettings;
+    final previousDomainSplitTunnelSettings = _domainSplitTunnelSettings;
     _splitTunnelSettings = SplitTunnelSettings(
       mode: mode,
       apps: _splitTunnelSettings.apps,
@@ -262,6 +280,7 @@ class VpnController extends ChangeNotifier {
       await _ensureWindowsTunPrivilegesOrRollback(
         previousTrafficMode: previousTrafficMode,
         previousSplitTunnelSettings: previousSplitTunnelSettings,
+        previousDomainSplitTunnelSettings: previousDomainSplitTunnelSettings,
       );
       return;
     }
@@ -290,6 +309,101 @@ class VpnController extends ChangeNotifier {
     _splitTunnelSettings = SplitTunnelSettings(
       mode: _splitTunnelSettings.mode,
       apps: apps,
+    ).normalized;
+    _setRuntimeError(null);
+    _queuePersistState();
+    notifyListeners();
+  }
+
+  Future<void> setDomainSplitTunnelMode(
+    SplitTunnelMode mode, {
+    bool ensureWindowsTunPrivileges = false,
+  }) async {
+    if (!canChangeSplitTunnel) {
+      return;
+    }
+    if (_domainSplitTunnelSettings.mode == mode) {
+      return;
+    }
+
+    final previousTrafficMode = _trafficMode;
+    final previousSplitTunnelSettings = _splitTunnelSettings;
+    final previousDomainSplitTunnelSettings = _domainSplitTunnelSettings;
+    _domainSplitTunnelSettings = DomainSplitTunnelSettings(
+      mode: mode,
+      domains: _domainSplitTunnelSettings.domains,
+    ).normalized;
+    if (mode != SplitTunnelMode.off) {
+      _trafficMode = TrafficMode.tun;
+    }
+    _setRuntimeError(null);
+    notifyListeners();
+
+    if (ensureWindowsTunPrivileges && _trafficMode == TrafficMode.tun) {
+      await _persistStateAfterHydration();
+      await _ensureWindowsTunPrivilegesOrRollback(
+        previousTrafficMode: previousTrafficMode,
+        previousSplitTunnelSettings: previousSplitTunnelSettings,
+        previousDomainSplitTunnelSettings: previousDomainSplitTunnelSettings,
+      );
+      return;
+    }
+
+    _queuePersistState();
+  }
+
+  void addDomainSplitTunnelInput(String input) {
+    if (!canChangeSplitTunnel ||
+        _domainSplitTunnelSettings.mode == SplitTunnelMode.off) {
+      return;
+    }
+
+    final domainsById = <String, SplitTunnelDomain>{
+      for (final domain in _domainSplitTunnelSettings.normalized.domains)
+        domain.id: domain,
+    };
+    var changed = false;
+    for (final item in _splitDomainInput(input)) {
+      try {
+        final domain = SplitTunnelDomain.fromInput(item);
+        if (domainsById.containsKey(domain.id)) {
+          continue;
+        }
+        domainsById[domain.id] = domain;
+        changed = true;
+      } on FormatException {
+        continue;
+      }
+    }
+    if (!changed) {
+      return;
+    }
+
+    _domainSplitTunnelSettings = DomainSplitTunnelSettings(
+      mode: _domainSplitTunnelSettings.mode,
+      domains: domainsById.values.toList(growable: false),
+    ).normalized;
+    _setRuntimeError(null);
+    _queuePersistState();
+    notifyListeners();
+  }
+
+  void removeDomainSplitTunnelDomain(SplitTunnelDomain domain) {
+    if (!canChangeSplitTunnel) {
+      return;
+    }
+
+    final domains = <SplitTunnelDomain>[
+      ..._domainSplitTunnelSettings.normalized.domains,
+    ]..removeWhere((item) => item.id == domain.id);
+    if (domains.length ==
+        _domainSplitTunnelSettings.normalized.domains.length) {
+      return;
+    }
+
+    _domainSplitTunnelSettings = DomainSplitTunnelSettings(
+      mode: _domainSplitTunnelSettings.mode,
+      domains: domains,
     ).normalized;
     _setRuntimeError(null);
     _queuePersistState();
@@ -548,6 +662,7 @@ class VpnController extends ChangeNotifier {
         trafficMode: _trafficMode,
         tunIpMode: _tunIpMode,
         splitTunnelSettings: splitTunnelSettings,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
       );
       _activeProfile = profile;
       _activeSourceId = source.id;
@@ -663,6 +778,15 @@ class VpnController extends ChangeNotifier {
         .split(RegExp(r'[\r\n]+'))
         .map((line) => line.trim())
         .firstWhere((line) => line.isNotEmpty, orElse: () => '');
+  }
+
+  List<String> _splitDomainInput(String rawInput) {
+    return rawInput
+        .replaceAll('\uFEFF', '')
+        .split(RegExp(r'[\s,;]+'))
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
   }
 
   Future<void> _syncAndroidRuntimeAfterRestore() async {
@@ -981,7 +1105,11 @@ class VpnController extends ChangeNotifier {
       _splitTunnelSettings = Platform.isWindows || Platform.isAndroid
           ? state.splitTunnelSettings.normalized
           : const SplitTunnelSettings();
-      if (_splitTunnelSettings.mode != SplitTunnelMode.off) {
+      _domainSplitTunnelSettings = Platform.isWindows || Platform.isAndroid
+          ? state.domainSplitTunnelSettings.normalized
+          : const DomainSplitTunnelSettings();
+      if (_splitTunnelSettings.mode != SplitTunnelMode.off ||
+          _domainSplitTunnelSettings.mode != SplitTunnelMode.off) {
         _trafficMode = TrafficMode.tun;
       }
       _sources
@@ -1013,6 +1141,7 @@ class VpnController extends ChangeNotifier {
         sources: List<ConfigSource>.unmodifiable(_sources),
         selectedSourceId: _selectedSourceId,
         splitTunnelSettings: _splitTunnelSettings.normalized,
+        domainSplitTunnelSettings: _domainSplitTunnelSettings.normalized,
       ),
     );
     await _saveAndroidStartPayload();
@@ -1037,12 +1166,14 @@ class VpnController extends ChangeNotifier {
       language: _language,
       tunIpMode: _tunIpMode,
       splitTunnelSettings: _splitTunnelSettings,
+      domainSplitTunnelSettings: _domainSplitTunnelSettings,
     );
   }
 
   Future<void> _ensureWindowsTunPrivilegesOrRollback({
     required TrafficMode previousTrafficMode,
     required SplitTunnelSettings previousSplitTunnelSettings,
+    required DomainSplitTunnelSettings previousDomainSplitTunnelSettings,
   }) async {
     if (!Platform.isWindows || _trafficMode != TrafficMode.tun) {
       return;
@@ -1055,6 +1186,7 @@ class VpnController extends ChangeNotifier {
 
     _trafficMode = previousTrafficMode;
     _splitTunnelSettings = previousSplitTunnelSettings;
+    _domainSplitTunnelSettings = previousDomainSplitTunnelSettings;
     _setRuntimeError(
       'Administrator privileges are required for Windows TUN mode.',
     );

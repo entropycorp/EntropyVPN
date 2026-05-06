@@ -540,6 +540,14 @@ class _MobileShellState extends State<_MobileShell> {
     widget.onChanged(_homeSections[index]);
   }
 
+  void _handleConnectSourcePagerOverflow() {
+    final currentIndex = _homeSections.indexOf(widget.selected);
+    if (currentIndex < 0 || currentIndex >= _homeSections.length - 1) {
+      return;
+    }
+    widget.onChanged(_homeSections[currentIndex + 1]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -595,6 +603,7 @@ class _MobileShellState extends State<_MobileShell> {
                     _ConnectPageBody(
                       controller: widget.controller,
                       strings: widget.strings,
+                      onSwipePastLastSource: _handleConnectSourcePagerOverflow,
                     ),
                     _AddSourcePageBody(
                       controller: widget.controller,
@@ -630,6 +639,18 @@ class _FastPageSwipePhysics extends ScrollPhysics {
 
   @override
   SpringDescription get spring => _mobilePageSwipeSpring;
+}
+
+class _ProgrammaticPageSwipePhysics extends ScrollPhysics {
+  const _ProgrammaticPageSwipePhysics({super.parent});
+
+  @override
+  _ProgrammaticPageSwipePhysics applyTo(ScrollPhysics? ancestor) {
+    return _ProgrammaticPageSwipePhysics(parent: buildParent(ancestor));
+  }
+
+  @override
+  bool shouldAcceptUserOffset(ScrollMetrics position) => false;
 }
 
 class _SectionContentSwitcher extends StatelessWidget {
@@ -972,10 +993,12 @@ class _ConnectPageBody extends StatefulWidget {
     super.key,
     required this.controller,
     required this.strings,
+    this.onSwipePastLastSource,
   });
 
   final VpnController controller;
   final AppStrings strings;
+  final VoidCallback? onSwipePastLastSource;
 
   @override
   State<_ConnectPageBody> createState() => _ConnectPageBodyState();
@@ -1017,6 +1040,7 @@ class _ConnectPageBodyState extends State<_ConnectPageBody> {
               controller: widget.controller,
               strings: widget.strings,
               fillMobileSwipeArea: useMobileSourcePager,
+              onSwipePastLastMobileSource: widget.onSwipePastLastSource,
             ),
           ),
         );
@@ -1199,6 +1223,9 @@ class _SettingsPageBody extends StatelessWidget {
             : constraints.maxWidth >= 1250
             ? 960.0
             : 760.0;
+        final settingsHorizontalPadding = isCompact ? 6.0 : 24.0;
+        final settingsVerticalPadding = isCompact ? 4.0 : 6.0;
+        final settingsGap = isCompact ? 4.0 : 6.0;
 
         return SingleChildScrollView(
           key: const PageStorageKey<String>('settings-scroll'),
@@ -1213,41 +1240,52 @@ class _SettingsPageBody extends StatelessWidget {
                   if (controller.supportsTrafficModeSelection) ...<Widget>[
                     Padding(
                       padding: EdgeInsets.symmetric(
-                        horizontal: isCompact ? 6 : 24,
-                        vertical: isCompact ? 6 : 12,
+                        horizontal: settingsHorizontalPadding,
+                        vertical: settingsVerticalPadding,
                       ),
                       child: _TrafficModeSelector(
                         controller: controller,
                         strings: strings,
                       ),
                     ),
-                    SizedBox(height: isCompact ? 8 : 14),
+                    SizedBox(height: settingsGap),
                   ],
                   if (controller.supportsTunIpModeSelection) ...<Widget>[
                     Padding(
                       padding: EdgeInsets.symmetric(
-                        horizontal: isCompact ? 6 : 24,
-                        vertical: isCompact ? 6 : 12,
+                        horizontal: settingsHorizontalPadding,
+                        vertical: settingsVerticalPadding,
                       ),
                       child: _TunIpModeSelector(
                         controller: controller,
                         strings: strings,
                       ),
                     ),
-                    SizedBox(height: isCompact ? 8 : 14),
+                    SizedBox(height: settingsGap),
                   ],
                   if (controller.supportsSplitTunneling) ...<Widget>[
                     Padding(
                       padding: EdgeInsets.symmetric(
-                        horizontal: isCompact ? 6 : 24,
-                        vertical: isCompact ? 6 : 12,
+                        horizontal: settingsHorizontalPadding,
+                        vertical: settingsVerticalPadding,
                       ),
                       child: _SplitTunnelSettingsTile(
                         controller: controller,
                         strings: strings,
                       ),
                     ),
-                    SizedBox(height: isCompact ? 8 : 14),
+                    SizedBox(height: settingsGap),
+                    Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: settingsHorizontalPadding,
+                        vertical: settingsVerticalPadding,
+                      ),
+                      child: _DomainSplitTunnelSettingsTile(
+                        controller: controller,
+                        strings: strings,
+                      ),
+                    ),
+                    SizedBox(height: settingsGap),
                   ],
                 ],
               ),
@@ -1342,12 +1380,14 @@ class _QuickSwitchPanel extends StatelessWidget {
     required this.strings,
     this.firstTileCardKey,
     this.fillMobileSwipeArea = false,
+    this.onSwipePastLastMobileSource,
   });
 
   final VpnController controller;
   final AppStrings strings;
   final Key? firstTileCardKey;
   final bool fillMobileSwipeArea;
+  final VoidCallback? onSwipePastLastMobileSource;
 
   @override
   Widget build(BuildContext context) {
@@ -1357,6 +1397,7 @@ class _QuickSwitchPanel extends StatelessWidget {
         controller: controller,
         strings: strings,
         fillSwipeArea: fillMobileSwipeArea,
+        onSwipePastLastPage: onSwipePastLastMobileSource,
       );
     }
 
@@ -1509,7 +1550,7 @@ class _DesktopSourcePagerState extends State<_DesktopSourcePager> {
   }
 }
 
-const double _desktopSourceRailTopInset = 8;
+const double _desktopSourceRailTopInset = 0;
 const double _desktopSourceRailItemSize = 34;
 const double _desktopSourceRailItemGap = 4;
 const double _desktopSourceRailVerticalPadding = 6;
@@ -1676,11 +1717,13 @@ class _MobileSourcePager extends StatefulWidget {
     required this.controller,
     required this.strings,
     required this.fillSwipeArea,
+    this.onSwipePastLastPage,
   });
 
   final VpnController controller;
   final AppStrings strings;
   final bool fillSwipeArea;
+  final VoidCallback? onSwipePastLastPage;
 
   @override
   State<_MobileSourcePager> createState() => _MobileSourcePagerState();
@@ -1690,6 +1733,7 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
   late final PageController _pageController;
   late int _currentPage;
   String? _lastSelectedSourceId;
+  double _sourceDragDx = 0;
 
   @override
   void initState() {
@@ -1782,6 +1826,60 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
     });
   }
 
+  void _handleSourceDragStart(DragStartDetails details) {
+    _sourceDragDx = 0;
+  }
+
+  void _handleSourceDragUpdate(DragUpdateDetails details) {
+    _sourceDragDx += details.primaryDelta ?? details.delta.dx;
+  }
+
+  void _handleSourceDragCancel() {
+    _sourceDragDx = 0;
+  }
+
+  void _handleSourceDragEnd(DragEndDetails details) {
+    if (!widget.controller.canBrowseSources) {
+      _sourceDragDx = 0;
+      return;
+    }
+
+    final sources = widget.controller.sources;
+    if (sources.isEmpty) {
+      _sourceDragDx = 0;
+      return;
+    }
+
+    final velocityDx =
+        details.primaryVelocity ?? details.velocity.pixelsPerSecond.dx;
+    int direction = 0;
+    if (velocityDx.abs() >= _mobileSourcePagerSwipeVelocityThreshold) {
+      direction = velocityDx < 0 ? -1 : 1;
+    } else if (_sourceDragDx.abs() >=
+        _mobileSourcePagerSwipeDistanceThreshold) {
+      direction = _sourceDragDx < 0 ? -1 : 1;
+    }
+    _sourceDragDx = 0;
+
+    if (direction == 0) {
+      return;
+    }
+
+    final pageIndex = _currentPage.clamp(0, sources.length - 1).toInt();
+    if (direction < 0) {
+      if (pageIndex < sources.length - 1) {
+        _showPage(pageIndex + 1);
+      } else {
+        widget.onSwipePastLastPage?.call();
+      }
+      return;
+    }
+
+    if (pageIndex > 0) {
+      _showPage(pageIndex - 1);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final sources = widget.controller.sources;
@@ -1789,11 +1887,7 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
       return const SizedBox.shrink();
     }
 
-    final pagePhysics = widget.controller.canBrowseSources
-        ? _FastPageSwipePhysics(
-            parent: ScrollConfiguration.of(context).getScrollPhysics(context),
-          )
-        : const NeverScrollableScrollPhysics();
+    const pagePhysics = _ProgrammaticPageSwipePhysics();
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -1887,34 +1981,43 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
     required bool fillViewport,
     required double availableWidth,
   }) {
-    return PageView.builder(
-      controller: _pageController,
-      key: const ValueKey<String>('mobile-connect-source-bottom-swipe-area'),
-      physics: physics,
-      onPageChanged: _handlePageChanged,
-      itemCount: sources.length,
-      itemBuilder: (context, index) {
-        final source = sources[index];
-        final selected = widget.controller.selectedSource?.id == source.id;
-        final page = _buildSourcePage(source: source, selected: selected);
-        if (!fillViewport) {
-          return page;
-        }
+    final canBrowseSources = widget.controller.canBrowseSources;
 
-        return Align(
-          alignment: Alignment.topCenter,
-          child: SizedBox(
-            height: _mobileSourcePageHeight(
-              context,
-              source,
-              controller: widget.controller,
-              strings: widget.strings,
-              maxWidth: availableWidth,
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragStart: canBrowseSources ? _handleSourceDragStart : null,
+      onHorizontalDragUpdate: canBrowseSources ? _handleSourceDragUpdate : null,
+      onHorizontalDragEnd: canBrowseSources ? _handleSourceDragEnd : null,
+      onHorizontalDragCancel: canBrowseSources ? _handleSourceDragCancel : null,
+      child: PageView.builder(
+        controller: _pageController,
+        key: const ValueKey<String>('mobile-connect-source-bottom-swipe-area'),
+        physics: physics,
+        onPageChanged: _handlePageChanged,
+        itemCount: sources.length,
+        itemBuilder: (context, index) {
+          final source = sources[index];
+          final selected = widget.controller.selectedSource?.id == source.id;
+          final page = _buildSourcePage(source: source, selected: selected);
+          if (!fillViewport) {
+            return page;
+          }
+
+          return Align(
+            alignment: Alignment.topCenter,
+            child: SizedBox(
+              height: _mobileSourcePageHeight(
+                context,
+                source,
+                controller: widget.controller,
+                strings: widget.strings,
+                maxWidth: availableWidth,
+              ),
+              child: page,
             ),
-            child: page,
-          ),
-        );
-      },
+          );
+        },
+      ),
     );
   }
 
@@ -1976,6 +2079,8 @@ const double _mobileSourcePagerDotGap = 10;
 const double _mobileSourcePagerDotHeight = 6;
 const double _mobileSourcePagerHeaderHeight =
     _mobileSourcePagerDotHeight + _mobileSourcePagerDotGap;
+const double _mobileSourcePagerSwipeDistanceThreshold = 56;
+const double _mobileSourcePagerSwipeVelocityThreshold = 500;
 const double _mobileProfileCardHeight = 72;
 const double _mobileProfileCardSpacing = 10;
 const double _mobileSubscriptionPanelPadding = 8;
@@ -3467,61 +3572,36 @@ class _TrafficModeSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-
     return LayoutBuilder(
       builder: (context, constraints) {
-        final compact = constraints.maxWidth < 520;
-
-        return Column(
-          children: <Widget>[
-            if (!compact) ...<Widget>[
-              Text(strings.trafficModeLabel, style: theme.textTheme.titleSmall),
-              const SizedBox(height: 10),
-            ],
-            SegmentedButton<TrafficMode>(
-              segments: <ButtonSegment<TrafficMode>>[
-                ButtonSegment<TrafficMode>(
-                  value: TrafficMode.systemProxy,
-                  label: Text(strings.systemProxyModeLabel),
-                ),
-                ButtonSegment<TrafficMode>(
-                  value: TrafficMode.tun,
-                  label: Text(strings.tunModeLabel),
-                ),
-              ],
-              selected: <TrafficMode>{controller.trafficMode},
-              showSelectedIcon: false,
-              multiSelectionEnabled: false,
-              style: SegmentedButton.styleFrom(
-                foregroundColor: scheme.onSurface,
-                selectedForegroundColor: scheme.onPrimaryContainer,
-                selectedBackgroundColor: scheme.primaryContainer,
-                backgroundColor: Colors.transparent,
-                side: BorderSide(
-                  color: scheme.outlineVariant.withValues(alpha: 0.3),
-                ),
-                padding: EdgeInsets.symmetric(
-                  horizontal: compact ? 24 : 16,
-                  vertical: compact ? 12 : 14,
-                ),
-                textStyle: theme.textTheme.titleSmall,
-              ),
-              onSelectionChanged: controller.canChangeTrafficMode
-                  ? (selection) {
-                      if (selection.isNotEmpty) {
-                        unawaited(
-                          controller.setTrafficMode(
-                            selection.first,
-                            ensureWindowsTunPrivileges: true,
-                          ),
-                        );
-                      }
-                    }
-                  : null,
+        return DropdownButtonFormField<TrafficMode>(
+          key: ValueKey<TrafficMode>(controller.trafficMode),
+          initialValue: controller.trafficMode,
+          isExpanded: true,
+          decoration: InputDecoration(labelText: strings.trafficModeLabel),
+          icon: const Icon(Icons.keyboard_arrow_down_rounded),
+          items: <DropdownMenuItem<TrafficMode>>[
+            DropdownMenuItem<TrafficMode>(
+              value: TrafficMode.systemProxy,
+              child: Text(strings.systemProxyModeLabel),
+            ),
+            DropdownMenuItem<TrafficMode>(
+              value: TrafficMode.tun,
+              child: Text(strings.tunModeLabel),
             ),
           ],
+          onChanged: controller.canChangeTrafficMode
+              ? (mode) {
+                  if (mode != null) {
+                    unawaited(
+                      controller.setTrafficMode(
+                        mode,
+                        ensureWindowsTunPrivileges: true,
+                      ),
+                    );
+                  }
+                }
+              : null,
         );
       },
     );
@@ -3602,7 +3682,7 @@ class _SplitTunnelSettingsTile extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Text(
-                      strings.splitTunnelLabel,
+                      strings.appSplitTunnelLabel,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.titleSmall?.copyWith(
@@ -3679,6 +3759,8 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
     final controller = widget.controller;
     final selectedApps = controller.splitTunnelApps;
     final selectedAppIds = <String>{for (final app in selectedApps) app.id};
+    final splitTunnelEnabled =
+        controller.splitTunnelMode != SplitTunnelMode.off;
     final dialogSize = MediaQuery.sizeOf(context);
     final dialogWidth = (dialogSize.width * 0.82)
         .clamp(360.0, 720.0)
@@ -3690,12 +3772,13 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
     return AlertDialog(
       title: Row(
         children: <Widget>[
-          Expanded(child: Text(strings.splitTunnelLabel)),
-          IconButton(
-            tooltip: strings.splitTunnelRefreshTooltip,
-            onPressed: _reloadApps,
-            icon: const Icon(Icons.refresh_rounded),
-          ),
+          Expanded(child: Text(strings.appSplitTunnelLabel)),
+          if (splitTunnelEnabled)
+            IconButton(
+              tooltip: strings.splitTunnelRefreshTooltip,
+              onPressed: _reloadApps,
+              icon: const Icon(Icons.refresh_rounded),
+            ),
         ],
       ),
       content: SizedBox(
@@ -3727,10 +3810,14 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
                       if (selection.isEmpty) {
                         return;
                       }
+                      final mode = selection.first;
+                      if (mode == SplitTunnelMode.off) {
+                        _searchController.clear();
+                      }
                       setState(() {
                         unawaited(
                           controller.setSplitTunnelMode(
-                            selection.first,
+                            mode,
                             ensureWindowsTunPrivileges: true,
                           ),
                         );
@@ -3738,107 +3825,101 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
                     }
                   : null,
             ),
-            const SizedBox(height: 12),
-            Text(
-              strings.splitTunnelTunHint,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                prefixIcon: const Icon(Icons.search_rounded),
-                hintText: strings.splitTunnelSearchHint,
-              ),
-            ),
-            const SizedBox(height: 14),
-            Row(
-              children: <Widget>[
-                Expanded(
-                  child: Text(
-                    strings.splitTunnelAppsLabel,
-                    style: theme.textTheme.titleSmall,
-                  ),
+            if (splitTunnelEnabled) ...<Widget>[
+              const SizedBox(height: 14),
+              TextField(
+                controller: _searchController,
+                decoration: InputDecoration(
+                  hintText: strings.splitTunnelSearchHint,
                 ),
-                Text(
-                  strings.splitTunnelSelectedCount(selectedApps.length),
-                  style: theme.textTheme.labelLarge?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Expanded(
-              child: FutureBuilder<List<SplitTunnelApp>>(
-                future: _appsFuture,
-                builder: (context, snapshot) {
-                  final apps = _filterApps(
-                    _mergeApps(
-                      snapshot.data ?? const <SplitTunnelApp>[],
-                      selectedApps,
-                      selectedAppIds,
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      strings.splitTunnelAppsLabel,
+                      style: theme.textTheme.titleSmall,
                     ),
-                  );
-
-                  if (snapshot.connectionState == ConnectionState.waiting &&
-                      apps.isEmpty) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-
-                  if (apps.isEmpty) {
-                    return Center(
-                      child: Text(
-                        strings.splitTunnelNoAppsFound,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                        ),
+                  ),
+                  Text(
+                    strings.splitTunnelSelectedCount(selectedApps.length),
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: FutureBuilder<List<SplitTunnelApp>>(
+                  future: _appsFuture,
+                  builder: (context, snapshot) {
+                    final apps = _filterApps(
+                      _mergeApps(
+                        snapshot.data ?? const <SplitTunnelApp>[],
+                        selectedApps,
+                        selectedAppIds,
                       ),
                     );
-                  }
 
-                  return ListView.separated(
-                    itemCount: apps.length,
-                    separatorBuilder: (context, index) =>
-                        const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
-                      final app = apps[index];
-                      final selected = selectedAppIds.contains(app.id);
-                      final enabled =
-                          controller.canChangeSplitTunnel &&
-                          controller.splitTunnelMode != SplitTunnelMode.off;
-                      return CheckboxListTile(
-                        value: selected,
-                        enabled: enabled,
-                        onChanged: enabled
-                            ? (_) {
-                                setState(() {
-                                  controller.toggleSplitTunnelApp(app);
-                                });
-                              }
-                            : null,
-                        title: Text(
-                          app.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          app.path,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        controlAffinity: ListTileControlAffinity.leading,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 4,
+                    if (snapshot.connectionState == ConnectionState.waiting &&
+                        apps.isEmpty) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    if (apps.isEmpty) {
+                      return Center(
+                        child: Text(
+                          strings.splitTunnelNoAppsFound,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
                         ),
                       );
-                    },
-                  );
-                },
+                    }
+
+                    return ListView.separated(
+                      itemCount: apps.length,
+                      separatorBuilder: (context, index) =>
+                          const SizedBox(height: 2),
+                      itemBuilder: (context, index) {
+                        final app = apps[index];
+                        final selected = selectedAppIds.contains(app.id);
+                        final enabled =
+                            controller.canChangeSplitTunnel &&
+                            controller.splitTunnelMode != SplitTunnelMode.off;
+                        return CheckboxListTile(
+                          value: selected,
+                          enabled: enabled,
+                          dense: true,
+                          visualDensity: VisualDensity.compact,
+                          onChanged: enabled
+                              ? (_) {
+                                  setState(() {
+                                    controller.toggleSplitTunnelApp(app);
+                                  });
+                                }
+                              : null,
+                          title: Text(
+                            app.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontSize: 15.5,
+                            ),
+                          ),
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 4,
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
               ),
-            ),
+            ],
           ],
         ),
       ),
@@ -3905,6 +3986,295 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
               app.path.toLowerCase().contains(query),
         )
         .toList(growable: false);
+  }
+}
+
+class _DomainSplitTunnelSettingsTile extends StatelessWidget {
+  const _DomainSplitTunnelSettingsTile({
+    required this.controller,
+    required this.strings,
+  });
+
+  final VpnController controller;
+  final AppStrings strings;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final canChange = controller.canChangeSplitTunnel;
+    final disabledColor = scheme.onSurface.withValues(alpha: 0.38);
+    final titleColor = canChange ? scheme.onSurface : disabledColor;
+    final statusColor = canChange ? scheme.onSurfaceVariant : disabledColor;
+    final iconColor = canChange ? scheme.primary : disabledColor;
+
+    return Material(
+      color: scheme.surfaceContainer,
+      borderRadius: BorderRadius.circular(18),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: canChange
+            ? () => unawaited(_showDomainSplitTunnelDialog(context))
+            : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            children: <Widget>[
+              Icon(Icons.public_rounded, color: iconColor),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      strings.domainSplitTunnelLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: titleColor,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      strings.splitTunnelModeName(
+                        controller.domainSplitTunnelMode,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: statusColor,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              Icon(Icons.chevron_right_rounded, color: statusColor),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showDomainSplitTunnelDialog(BuildContext context) {
+    return showDialog<void>(
+      context: context,
+      builder: (context) =>
+          _DomainSplitTunnelDialog(controller: controller, strings: strings),
+    );
+  }
+}
+
+class _DomainSplitTunnelDialog extends StatefulWidget {
+  const _DomainSplitTunnelDialog({
+    required this.controller,
+    required this.strings,
+  });
+
+  final VpnController controller;
+  final AppStrings strings;
+
+  @override
+  State<_DomainSplitTunnelDialog> createState() =>
+      _DomainSplitTunnelDialogState();
+}
+
+class _DomainSplitTunnelDialogState extends State<_DomainSplitTunnelDialog> {
+  late final TextEditingController _domainController;
+
+  @override
+  void initState() {
+    super.initState();
+    _domainController = TextEditingController()
+      ..addListener(() {
+        if (mounted) {
+          setState(() {});
+        }
+      });
+  }
+
+  @override
+  void dispose() {
+    _domainController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final strings = widget.strings;
+    final controller = widget.controller;
+    final domains = controller.domainSplitTunnelDomains;
+    final domainSplitTunnelEnabled =
+        controller.domainSplitTunnelMode != SplitTunnelMode.off;
+    final dialogSize = MediaQuery.sizeOf(context);
+    final dialogWidth = (dialogSize.width * 0.82)
+        .clamp(360.0, 640.0)
+        .toDouble();
+    final dialogHeight = (dialogSize.height * 0.62)
+        .clamp(360.0, 520.0)
+        .toDouble();
+    final canEditDomains =
+        controller.canChangeSplitTunnel &&
+        controller.domainSplitTunnelMode != SplitTunnelMode.off;
+    final canAddDomain =
+        canEditDomains && _domainController.text.trim().isNotEmpty;
+
+    return AlertDialog(
+      title: Text(strings.domainSplitTunnelLabel),
+      content: SizedBox(
+        width: dialogWidth,
+        height: dialogHeight,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            SegmentedButton<SplitTunnelMode>(
+              segments: <ButtonSegment<SplitTunnelMode>>[
+                ButtonSegment<SplitTunnelMode>(
+                  value: SplitTunnelMode.off,
+                  label: Text(strings.splitTunnelOffModeLabel),
+                ),
+                ButtonSegment<SplitTunnelMode>(
+                  value: SplitTunnelMode.whitelist,
+                  label: Text(strings.splitTunnelWhitelistModeLabel),
+                ),
+                ButtonSegment<SplitTunnelMode>(
+                  value: SplitTunnelMode.blacklist,
+                  label: Text(strings.splitTunnelBlacklistModeLabel),
+                ),
+              ],
+              selected: <SplitTunnelMode>{controller.domainSplitTunnelMode},
+              showSelectedIcon: false,
+              multiSelectionEnabled: false,
+              onSelectionChanged: controller.canChangeSplitTunnel
+                  ? (selection) {
+                      if (selection.isEmpty) {
+                        return;
+                      }
+                      final mode = selection.first;
+                      if (mode == SplitTunnelMode.off) {
+                        _domainController.clear();
+                      }
+                      setState(() {
+                        unawaited(
+                          controller.setDomainSplitTunnelMode(
+                            mode,
+                            ensureWindowsTunPrivileges: true,
+                          ),
+                        );
+                      });
+                    }
+                  : null,
+            ),
+            if (domainSplitTunnelEnabled) ...<Widget>[
+              const SizedBox(height: 14),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: TextField(
+                      controller: _domainController,
+                      enabled: canEditDomains,
+                      decoration: InputDecoration(
+                        hintText: strings.domainSplitTunnelInputHint,
+                      ),
+                      onSubmitted: canEditDomains ? (_) => _addDomain() : null,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filledTonal(
+                    tooltip: strings.domainSplitTunnelAddTooltip,
+                    onPressed: canAddDomain ? _addDomain : null,
+                    icon: const Icon(Icons.add_rounded),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      strings.domainSplitTunnelDomainsLabel,
+                      style: theme.textTheme.titleSmall,
+                    ),
+                  ),
+                  Text(
+                    strings.domainSplitTunnelSelectedCount(domains.length),
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: domains.isEmpty
+                    ? Center(
+                        child: Text(
+                          strings.domainSplitTunnelNoDomains,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      )
+                    : ListView.separated(
+                        itemCount: domains.length,
+                        separatorBuilder: (context, index) =>
+                            const SizedBox(height: 6),
+                        itemBuilder: (context, index) {
+                          final domain = domains[index];
+                          return ListTile(
+                            contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 4,
+                            ),
+                            leading: const Icon(Icons.language_rounded),
+                            title: Text(
+                              domain.value,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              domain.matchSuffix,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: IconButton(
+                              onPressed: controller.canChangeSplitTunnel
+                                  ? () {
+                                      setState(() {
+                                        controller
+                                            .removeDomainSplitTunnelDomain(
+                                              domain,
+                                            );
+                                      });
+                                    }
+                                  : null,
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(MaterialLocalizations.of(context).closeButtonLabel),
+        ),
+      ],
+    );
+  }
+
+  void _addDomain() {
+    final input = _domainController.text;
+    setState(() {
+      widget.controller.addDomainSplitTunnelInput(input);
+      _domainController.clear();
+    });
   }
 }
 

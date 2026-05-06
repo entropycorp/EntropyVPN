@@ -795,6 +795,39 @@ void main() {
     }
   });
 
+  testWidgets('mobile last source edge swipe advances to next main page', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 820));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _manyConfigSourceController(
+      selectedSourceId: 'config-4',
+    );
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(390, 820)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final sourcePager = find.byKey(
+        const ValueKey<String>('mobile-connect-source-bottom-swipe-area'),
+      );
+      expect(sourcePager, findsOneWidget);
+      expect(find.text('Config 5'), findsOneWidget);
+
+      await tester.drag(sourcePager, const Offset(-320, 0));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Import from JSON'), findsOneWidget);
+      expect(find.text('Config 5'), findsNothing);
+    } finally {
+      controller.dispose();
+    }
+  });
+
   testWidgets('mobile top-area vertical swipe does not scroll hero away', (
     WidgetTester tester,
   ) async {
@@ -1204,14 +1237,16 @@ VpnController _configController() {
   );
 }
 
-VpnController _manyConfigSourceController() {
+VpnController _manyConfigSourceController({
+  String selectedSourceId = 'config-0',
+}) {
   return VpnController(
     appStateStore: _WidgetMemoryAppStateStore(
       PersistedAppState(
         language: AppLanguage.en,
         trafficMode: TrafficMode.systemProxy,
         tunIpMode: TunIpMode.ipv4,
-        selectedSourceId: 'config-0',
+        selectedSourceId: selectedSourceId,
         sources: <ConfigSource>[
           for (var index = 0; index < 5; index += 1)
             ConfigSource(
@@ -1288,6 +1323,8 @@ class _FakeCoreRuntimeService extends CoreRuntimeService {
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
   }) async {}
 
   @override

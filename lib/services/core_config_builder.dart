@@ -19,6 +19,8 @@ class CoreConfigBuilder {
     TrafficMode trafficMode = TrafficMode.systemProxy,
     TunIpMode tunIpMode = TunIpMode.ipv4,
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
     String? tunInterfaceName,
     String? outboundBindInterface,
     String? routeDefaultInterface,
@@ -29,6 +31,7 @@ class CoreConfigBuilder {
         profile,
         trafficMode: trafficMode,
         tunIpMode: tunIpMode,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
         tunInterfaceName: tunInterfaceName,
         outboundBindInterface: outboundBindInterface,
         serverAddressOverride: xrayServerAddressOverride,
@@ -38,6 +41,7 @@ class CoreConfigBuilder {
         trafficMode: trafficMode,
         tunIpMode: tunIpMode,
         splitTunnelSettings: splitTunnelSettings,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
         tunInterfaceName: tunInterfaceName,
         outboundBindInterface: outboundBindInterface,
         routeDefaultInterface: routeDefaultInterface,
@@ -50,6 +54,8 @@ class CoreConfigBuilder {
     TrafficMode trafficMode = TrafficMode.systemProxy,
     TunIpMode tunIpMode = TunIpMode.ipv4,
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
     String? tunInterfaceName,
     String? outboundBindInterface,
     String? routeDefaultInterface,
@@ -58,6 +64,9 @@ class CoreConfigBuilder {
     final effectiveSplitTunnel = isTunMode
         ? splitTunnelSettings.normalized
         : const SplitTunnelSettings();
+    final effectiveDomainSplitTunnel = isTunMode
+        ? domainSplitTunnelSettings.normalized
+        : const DomainSplitTunnelSettings();
     final isAndroidTunMode = isTunMode && Platform.isAndroid;
     final effectiveTunIpMode = tunIpMode;
     final tunRouteExcludes = isTunMode ? _buildTunRouteExcludes(profile) : null;
@@ -74,6 +83,7 @@ class CoreConfigBuilder {
     final routeRules = isTunMode
         ? _buildTunnelRouteRules(
             effectiveSplitTunnel,
+            domainSplitTunnelSettings: effectiveDomainSplitTunnel,
             tunIpMode: effectiveTunIpMode,
           )
         : const <Map<String, dynamic>>[];
@@ -120,7 +130,10 @@ class CoreConfigBuilder {
             'address': _buildTunAddresses(effectiveTunIpMode),
             'auto_route': true,
             if (!Platform.isAndroid)
-              'strict_route': _shouldEnableStrictRoute(effectiveSplitTunnel),
+              'strict_route': _shouldEnableStrictRoute(
+                effectiveSplitTunnel,
+                effectiveDomainSplitTunnel,
+              ),
             if (forceIpv4Tunnel || forceIpv6Tunnel)
               'route_address': _buildTunRouteAddresses(effectiveTunIpMode),
             if (tunRouteExcludes!.isNotEmpty)
@@ -134,7 +147,10 @@ class CoreConfigBuilder {
       ],
       'route': <String, dynamic>{
         if (isTunMode) 'rules': routeRules,
-        'final': _buildRouteFinal(effectiveSplitTunnel),
+        'final': _buildRouteFinal(
+          effectiveSplitTunnel,
+          effectiveDomainSplitTunnel,
+        ),
         if (isTunMode && !isAndroidTunMode)
           'default_domain_resolver': 'dns-local',
         'auto_detect_interface': isTunMode
@@ -150,13 +166,23 @@ class CoreConfigBuilder {
     ParsedVpnProfile profile, {
     TrafficMode trafficMode = TrafficMode.systemProxy,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
     String? tunInterfaceName,
     String? outboundBindInterface,
     String? serverAddressOverride,
   }) {
     final isTunMode = trafficMode == TrafficMode.tun;
+    final effectiveDomainSplitTunnel = (isTunMode || Platform.isAndroid)
+        ? domainSplitTunnelSettings.normalized
+        : const DomainSplitTunnelSettings();
     final useAndroidHevDnsRouting = Platform.isAndroid && !isTunMode;
     final useXrayDnsRouting = useAndroidHevDnsRouting || isTunMode;
+    final xrayRoutingRules = _buildXrayRoutingRules(
+      domainSplitTunnelSettings: effectiveDomainSplitTunnel,
+      useXrayDnsRouting: useXrayDnsRouting,
+      isTunMode: isTunMode,
+    );
     final normalizedTunInterfaceName = tunInterfaceName?.trim();
     final effectiveTunInterfaceName =
         normalizedTunInterfaceName == null || normalizedTunInterfaceName.isEmpty
@@ -206,6 +232,11 @@ class CoreConfigBuilder {
               'MTU': tunMtu,
               'userLevel': 0,
             },
+            if (effectiveDomainSplitTunnel.isEnabled)
+              'sniffing': <String, dynamic>{
+                'enabled': true,
+                'destOverride': <String>['http', 'tls', 'quic'],
+              },
           },
       ],
       'outbounds': <Map<String, dynamic>>[
@@ -220,25 +251,10 @@ class CoreConfigBuilder {
         ),
         <String, dynamic>{'tag': 'block', 'protocol': 'blackhole'},
       ],
-      if (useXrayDnsRouting || isTunMode)
+      if (xrayRoutingRules.isNotEmpty)
         'routing': <String, dynamic>{
           'domainStrategy': 'AsIs',
-          'rules': <Map<String, dynamic>>[
-            if (useXrayDnsRouting)
-              <String, dynamic>{
-                'type': 'field',
-                'inboundTag': <String>[isTunMode ? 'tun-in' : 'socks-in'],
-                'port': '53',
-                'outboundTag': 'dns-out',
-              },
-            if (isTunMode)
-              <String, dynamic>{
-                'type': 'field',
-                'network': 'udp',
-                'port': '443',
-                'outboundTag': 'block',
-              },
-          ],
+          'rules': xrayRoutingRules,
         },
     };
   }
@@ -765,54 +781,202 @@ class CoreConfigBuilder {
     };
   }
 
+  List<Map<String, dynamic>> _buildXrayRoutingRules({
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
+    required bool useXrayDnsRouting,
+    required bool isTunMode,
+  }) {
+    final domainSplitTunnel = domainSplitTunnelSettings.normalized;
+    final hasDomainWhitelist =
+        domainSplitTunnel.mode == SplitTunnelMode.whitelist;
+    final rules = <Map<String, dynamic>>[
+      if (useXrayDnsRouting)
+        <String, dynamic>{
+          'type': 'field',
+          'inboundTag': <String>[isTunMode ? 'tun-in' : 'socks-in'],
+          'port': '53',
+          'outboundTag': 'dns-out',
+        },
+      if (isTunMode)
+        <String, dynamic>{
+          'type': 'field',
+          'network': 'udp',
+          'port': '443',
+          'outboundTag': 'block',
+        },
+    ];
+
+    if (domainSplitTunnel.hasSelectedDomains) {
+      switch (domainSplitTunnel.mode) {
+        case SplitTunnelMode.off:
+          break;
+        case SplitTunnelMode.whitelist:
+          rules.add(
+            _buildXrayDomainRouteRule(
+              domainSplitTunnel.domains,
+              outboundTag: 'proxy',
+            ),
+          );
+        case SplitTunnelMode.blacklist:
+          rules.add(
+            _buildXrayDomainRouteRule(
+              domainSplitTunnel.domains,
+              outboundTag: 'direct',
+            ),
+          );
+      }
+    }
+
+    if (hasDomainWhitelist) {
+      rules.add(_buildXrayCatchAllRouteRule(outboundTag: 'direct'));
+    }
+    return rules;
+  }
+
+  Map<String, dynamic> _buildXrayDomainRouteRule(
+    List<SplitTunnelDomain> domains, {
+    required String outboundTag,
+  }) {
+    return <String, dynamic>{
+      'type': 'field',
+      'domain': _buildXrayDomainMatchers(domains),
+      'outboundTag': outboundTag,
+    };
+  }
+
+  List<String> _buildXrayDomainMatchers(List<SplitTunnelDomain> domains) {
+    final matchers =
+        domains
+            .map((domain) => domain.normalized.matchSuffix)
+            .where((domain) => domain.isNotEmpty)
+            .map((domain) => 'domain:$domain')
+            .toSet()
+            .toList(growable: false)
+          ..sort();
+    return matchers;
+  }
+
+  Map<String, dynamic> _buildXrayCatchAllRouteRule({
+    required String outboundTag,
+  }) {
+    return <String, dynamic>{
+      'type': 'field',
+      'network': 'tcp,udp',
+      'outboundTag': outboundTag,
+    };
+  }
+
   List<Map<String, dynamic>> _buildTunnelRouteRules(
     SplitTunnelSettings splitTunnelSettings, {
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
     required TunIpMode tunIpMode,
   }) {
     final splitTunnel = splitTunnelSettings.normalized;
+    final domainSplitTunnel = domainSplitTunnelSettings.normalized;
+    final hasWhitelist =
+        splitTunnel.mode == SplitTunnelMode.whitelist ||
+        domainSplitTunnel.mode == SplitTunnelMode.whitelist;
+    final hasBlacklist =
+        splitTunnel.mode == SplitTunnelMode.blacklist ||
+        domainSplitTunnel.mode == SplitTunnelMode.blacklist;
     final rules = <Map<String, dynamic>>[
       <String, dynamic>{'action': 'sniff'},
       _buildResolveRule(mode: tunIpMode),
     ];
 
-    switch (splitTunnel.mode) {
-      case SplitTunnelMode.off:
-        rules
-          ..add(_buildDnsHijackRule())
-          ..add(_buildQuicRejectRule())
-          ..add(_buildPrivateDirectRule());
-      case SplitTunnelMode.whitelist:
-        rules
-          ..add(_buildQuicRejectRule())
-          ..add(_buildPrivateDirectRule());
-        if (splitTunnel.hasSelectedApps) {
-          rules
-            ..add(
-              _buildSplitTunnelAndRule(
-                splitTunnel.apps,
-                _buildDnsMatcherRule(),
-                action: 'hijack-dns',
-              ),
-            )
-            ..add(_buildProcessRouteRule(splitTunnel.apps, outbound: 'proxy'));
-        }
-      case SplitTunnelMode.blacklist:
-        rules.add(_buildPrivateDirectRule());
-        if (splitTunnel.hasSelectedApps) {
-          rules.add(
-            _buildProcessRouteRule(splitTunnel.apps, outbound: 'direct'),
-          );
-        }
-        rules
-          ..add(_buildDnsHijackRule())
-          ..add(_buildQuicRejectRule());
+    if (!hasWhitelist && !hasBlacklist) {
+      return rules
+        ..add(_buildDnsHijackRule())
+        ..add(_buildQuicRejectRule())
+        ..add(_buildPrivateDirectRule());
+    }
+
+    if (hasWhitelist) {
+      rules
+        ..add(_buildQuicRejectRule())
+        ..add(_buildPrivateDirectRule());
+      _addSplitTunnelDirectRules(rules, splitTunnel, domainSplitTunnel);
+      _addSplitTunnelProxyDnsRules(rules, splitTunnel, domainSplitTunnel);
+      _addSplitTunnelProxyRules(rules, splitTunnel, domainSplitTunnel);
+    } else {
+      rules.add(_buildPrivateDirectRule());
+      _addSplitTunnelDirectRules(rules, splitTunnel, domainSplitTunnel);
+      rules
+        ..add(_buildDnsHijackRule())
+        ..add(_buildQuicRejectRule());
     }
 
     return rules;
   }
 
-  String _buildRouteFinal(SplitTunnelSettings splitTunnelSettings) {
-    return splitTunnelSettings.mode == SplitTunnelMode.whitelist
+  void _addSplitTunnelDirectRules(
+    List<Map<String, dynamic>> rules,
+    SplitTunnelSettings splitTunnel,
+    DomainSplitTunnelSettings domainSplitTunnel,
+  ) {
+    if (splitTunnel.mode == SplitTunnelMode.blacklist &&
+        splitTunnel.hasSelectedApps) {
+      rules.add(_buildProcessRouteRule(splitTunnel.apps, outbound: 'direct'));
+    }
+    if (domainSplitTunnel.mode == SplitTunnelMode.blacklist &&
+        domainSplitTunnel.hasSelectedDomains) {
+      rules.add(
+        _buildDomainRouteRule(domainSplitTunnel.domains, outbound: 'direct'),
+      );
+    }
+  }
+
+  void _addSplitTunnelProxyDnsRules(
+    List<Map<String, dynamic>> rules,
+    SplitTunnelSettings splitTunnel,
+    DomainSplitTunnelSettings domainSplitTunnel,
+  ) {
+    if (splitTunnel.mode == SplitTunnelMode.whitelist &&
+        splitTunnel.hasSelectedApps) {
+      rules.add(
+        _buildSplitTunnelAndRule(
+          _buildProcessMatcherRule(splitTunnel.apps),
+          _buildDnsMatcherRule(),
+          action: 'hijack-dns',
+        ),
+      );
+    }
+    if (domainSplitTunnel.mode == SplitTunnelMode.whitelist &&
+        domainSplitTunnel.hasSelectedDomains) {
+      rules.add(
+        _buildSplitTunnelAndRule(
+          _buildDomainMatcherRule(domainSplitTunnel.domains),
+          _buildDnsMatcherRule(),
+          action: 'hijack-dns',
+        ),
+      );
+    }
+  }
+
+  void _addSplitTunnelProxyRules(
+    List<Map<String, dynamic>> rules,
+    SplitTunnelSettings splitTunnel,
+    DomainSplitTunnelSettings domainSplitTunnel,
+  ) {
+    if (splitTunnel.mode == SplitTunnelMode.whitelist &&
+        splitTunnel.hasSelectedApps) {
+      rules.add(_buildProcessRouteRule(splitTunnel.apps, outbound: 'proxy'));
+    }
+    if (domainSplitTunnel.mode == SplitTunnelMode.whitelist &&
+        domainSplitTunnel.hasSelectedDomains) {
+      rules.add(
+        _buildDomainRouteRule(domainSplitTunnel.domains, outbound: 'proxy'),
+      );
+    }
+  }
+
+  String _buildRouteFinal(
+    SplitTunnelSettings splitTunnelSettings,
+    DomainSplitTunnelSettings domainSplitTunnelSettings,
+  ) {
+    return splitTunnelSettings.mode == SplitTunnelMode.whitelist ||
+            domainSplitTunnelSettings.mode == SplitTunnelMode.whitelist
         ? 'direct'
         : 'proxy';
   }
@@ -824,8 +988,12 @@ class CoreConfigBuilder {
     };
   }
 
-  bool _shouldEnableStrictRoute(SplitTunnelSettings splitTunnelSettings) {
-    return splitTunnelSettings.mode != SplitTunnelMode.whitelist;
+  bool _shouldEnableStrictRoute(
+    SplitTunnelSettings splitTunnelSettings,
+    DomainSplitTunnelSettings domainSplitTunnelSettings,
+  ) {
+    return splitTunnelSettings.mode != SplitTunnelMode.whitelist &&
+        domainSplitTunnelSettings.mode != SplitTunnelMode.whitelist;
   }
 
   Map<String, dynamic> _buildDnsHijackRule() {
@@ -874,8 +1042,33 @@ class CoreConfigBuilder {
     };
   }
 
+  Map<String, dynamic> _buildDomainRouteRule(
+    List<SplitTunnelDomain> domains, {
+    required String outbound,
+  }) {
+    return <String, dynamic>{
+      ..._buildDomainMatcherRule(domains),
+      'action': 'route',
+      'outbound': outbound,
+    };
+  }
+
+  Map<String, dynamic> _buildDomainMatcherRule(
+    List<SplitTunnelDomain> domains,
+  ) {
+    final suffixes =
+        domains
+            .map((domain) => domain.normalized.matchSuffix)
+            .where((domain) => domain.isNotEmpty)
+            .toSet()
+            .toList(growable: false)
+          ..sort();
+
+    return <String, dynamic>{'domain_suffix': suffixes};
+  }
+
   Map<String, dynamic> _buildSplitTunnelAndRule(
-    List<SplitTunnelApp> apps,
+    Map<String, dynamic> firstMatcher,
     Map<String, dynamic> matcher, {
     String? action,
     String? outbound,
@@ -884,7 +1077,7 @@ class CoreConfigBuilder {
     final rule = <String, dynamic>{
       'type': 'logical',
       'mode': 'and',
-      'rules': <Map<String, dynamic>>[_buildProcessMatcherRule(apps), matcher],
+      'rules': <Map<String, dynamic>>[firstMatcher, matcher],
     };
     if (action != null) {
       rule['action'] = action;

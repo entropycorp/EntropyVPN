@@ -567,6 +567,90 @@ void main() {
       expect(routeRulesJson, contains('"outbound":"direct"'));
     });
 
+    test('builds TUN domain split tunnel whitelist rules', () {
+      final profile = parser.parse(
+        'trojan://password@example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fvpn&sni=server.example.com#Trojan',
+      );
+
+      final config = builder.buildSingBox(
+        profile,
+        trafficMode: TrafficMode.tun,
+        domainSplitTunnelSettings: DomainSplitTunnelSettings(
+          mode: SplitTunnelMode.whitelist,
+          domains: <SplitTunnelDomain>[
+            SplitTunnelDomain.fromInput('www.Domain.ru'),
+            SplitTunnelDomain.fromInput('*.рф'),
+          ],
+        ),
+      );
+      final inbound =
+          (config['inbounds'] as List<dynamic>).first as Map<String, dynamic>;
+      final route = config['route'] as Map<String, dynamic>;
+      final routeRulesJson = jsonEncode(route['rules']);
+
+      expect(inbound['strict_route'], isFalse);
+      expect(route['final'], 'direct');
+      expect(routeRulesJson, contains('"domain_suffix":["domain.ru","рф"]'));
+      expect(routeRulesJson, contains('"outbound":"proxy"'));
+    });
+
+    test('builds TUN domain split tunnel blacklist rules', () {
+      final profile = parser.parse(
+        'trojan://password@example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fvpn&sni=server.example.com#Trojan',
+      );
+
+      final config = builder.buildSingBox(
+        profile,
+        trafficMode: TrafficMode.tun,
+        domainSplitTunnelSettings: DomainSplitTunnelSettings(
+          mode: SplitTunnelMode.blacklist,
+          domains: <SplitTunnelDomain>[
+            SplitTunnelDomain.fromInput('www.Domain.ru'),
+            SplitTunnelDomain.fromInput('*.ru'),
+          ],
+        ),
+      );
+      final inbound =
+          (config['inbounds'] as List<dynamic>).first as Map<String, dynamic>;
+      final route = config['route'] as Map<String, dynamic>;
+      final routeRulesJson = jsonEncode(route['rules']);
+
+      expect(inbound['strict_route'], isTrue);
+      expect(route['final'], 'proxy');
+      expect(routeRulesJson, contains('"domain_suffix":["domain.ru","ru"]'));
+      expect(routeRulesJson, contains('"outbound":"direct"'));
+    });
+
+    test('builds Xray TUN domain split tunnel whitelist rules', () {
+      final profile = parser.parse(
+        'trojan://password@example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fvpn&sni=server.example.com#Trojan',
+      );
+
+      final config = builder.buildXray(
+        profile,
+        trafficMode: TrafficMode.tun,
+        domainSplitTunnelSettings: DomainSplitTunnelSettings(
+          mode: SplitTunnelMode.whitelist,
+          domains: <SplitTunnelDomain>[
+            SplitTunnelDomain.fromInput('www.Domain.ru'),
+            SplitTunnelDomain.fromInput('*.ru'),
+          ],
+        ),
+      );
+      final inbound =
+          (config['inbounds'] as List<dynamic>).first as Map<String, dynamic>;
+      final routing = config['routing'] as Map<String, dynamic>;
+      final routeRulesJson = jsonEncode(routing['rules']);
+
+      expect(inbound['sniffing'], isA<Map<String, dynamic>>());
+      expect(
+        routeRulesJson,
+        contains('"domain":["domain:domain.ru","domain:ru"]'),
+      );
+      expect(routeRulesJson, contains('"outboundTag":"proxy"'));
+      expect(routeRulesJson, contains('"outboundTag":"direct"'));
+    });
+
     test('builds Xray ws config', () {
       final profile = parser.parse(
         'trojan://password@example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fvpn&sni=server.example.com#Trojan',

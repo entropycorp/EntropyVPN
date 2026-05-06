@@ -314,6 +314,8 @@ class _FakeCoreRuntimeService extends CoreRuntimeService {
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
   }) async {}
 
   @override
@@ -329,6 +331,8 @@ class _ThrowingCoreRuntimeService extends CoreRuntimeService {
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
   }) async {
     throw StateError('Connection failed.');
   }
