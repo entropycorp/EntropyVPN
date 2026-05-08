@@ -29,6 +29,9 @@ object EntropyVpnRuntimeStore {
     private var profileName: String? = null
 
     @Volatile
+    private var serverCountryCode: String? = null
+
+    @Volatile
     private var error: String? = null
 
     @Volatile
@@ -42,10 +45,11 @@ object EntropyVpnRuntimeStore {
     }
 
     @Synchronized
-    fun resetForStart(nextCore: String, nextProfileName: String) {
+    fun resetForStart(nextCore: String, nextProfileName: String, nextServerCountryCode: String) {
         logs.clear()
         core = nextCore
         profileName = nextProfileName
+        serverCountryCode = nextServerCountryCode.trim().takeIf(String::isNotEmpty)
         error = null
         connectedAtEpochMillis = null
         running = false
@@ -109,6 +113,7 @@ object EntropyVpnRuntimeStore {
             "phase" to phase,
             "core" to core,
             "profileName" to profileName,
+            "serverCountryCode" to serverCountryCode,
             "error" to error,
             "connectedAtEpochMillis" to connectedAtEpochMillis,
             "logs" to logs.toList(),

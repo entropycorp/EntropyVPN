@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
+import 'dart:ffi';
 import 'dart:io';
 
+import 'package:ffi/ffi.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/vpn_profile.dart';
@@ -22,6 +25,11 @@ class CoreRuntimeService {
        _systemProxyService = systemProxyService ?? SystemProxyService();
 
   static const int _maxRecentLogs = 400;
+  static const Duration _splitTunnelExpansionCacheTtl = Duration(seconds: 30);
+  static const Duration _windowsProcessSnapshotCacheTtl = Duration(seconds: 2);
+  static const MethodChannel _windowsTunChannel = MethodChannel(
+    'entropy_vpn/windows_tun',
+  );
 
   final CoreConfigBuilder _configBuilder;
   final GeoIpService _geoIpService;
@@ -37,8 +45,11 @@ class CoreRuntimeService {
   StreamSubscription<String>? _stderrSubscription;
   SystemProxySnapshot? _savedProxySnapshot;
   bool? _cachedWindowsElevation;
+  _SplitTunnelExpansionCacheEntry? _splitTunnelExpansionCache;
+  _WindowsProcessSnapshotCacheEntry? _windowsProcessSnapshotCache;
   Future<void>? _pendingStopCleanup;
   final Set<String> _sweptWindowsTunCorePaths = <String>{};
+  final Set<String> _preparedXrayTunAdapterKeys = <String>{};
   List<_WindowsHostRoute> _temporaryServerRoutes = const <_WindowsHostRoute>[];
   List<_WindowsTunRoute> _temporaryTunRoutes = const <_WindowsTunRoute>[];
 
@@ -128,7 +139,7 @@ class CoreRuntimeService {
     }
 
     await stop();
-    await _waitForPendingStopCleanupBeforeStart();
+    await _waitForPendingStopCleanup(reason: 'before reconnecting');
     _recentLogs.clear();
     _rememberAppLog(
       'Starting ${core.name} in ${trafficMode.name} mode for ${profile.server}:${profile.port}.',
@@ -137,7 +148,7 @@ class CoreRuntimeService {
     Directory? runtimeDirectory;
 
     try {
-      final effectiveSplitTunnelSettings = await startupTiming.time(
+      final effectiveSplitTunnelFuture = startupTiming.time(
         'split_tunnel',
         () async => trafficMode == TrafficMode.tun
             ? await _expandSplitTunnelSettings(splitTunnelSettings)
@@ -149,9 +160,6 @@ class CoreRuntimeService {
 
       if (trafficMode == TrafficMode.tun) {
         _rememberAppLog('Selected TUN IP mode: ${tunIpMode.name}.');
-        _rememberAppLog(
-          'Split tunneling: ${effectiveSplitTunnelSettings.mode.name}, selected apps: ${effectiveSplitTunnelSettings.apps.length}.',
-        );
         _rememberAppLog(
           'Domain split tunneling: ${effectiveDomainSplitTunnelSettings.mode.name}, selected domains: ${effectiveDomainSplitTunnelSettings.domains.length}.',
         );
@@ -171,13 +179,17 @@ class CoreRuntimeService {
           'windows_tun_prerequisites',
           () => _ensureWindowsTunPrerequisites(binaryPath),
         );
+      }
+
+      var staleCoreSweep = Future<void>.value();
+      if (Platform.isWindows && requiresTunPrerequisites) {
         final sweepKey = p.normalize(binaryPath).toLowerCase();
         if (!_sweptWindowsTunCorePaths.contains(sweepKey)) {
-          await startupTiming.time(
+          _sweptWindowsTunCorePaths.add(sweepKey);
+          staleCoreSweep = startupTiming.time(
             'stale_core_sweep',
             () => _stopStaleWindowsTunCoreProcesses(binaryPath),
           );
-          _sweptWindowsTunCorePaths.add(sweepKey);
         }
       }
       final tunInterfaceName = Platform.isWindows && requiresTunPrerequisites
@@ -186,7 +198,8 @@ class CoreRuntimeService {
       if (tunInterfaceName != null) {
         _rememberAppLog('Selected TUN interface name: $tunInterfaceName.');
       }
-      final tunRouting = await startupTiming.time(
+
+      final tunRoutingFuture = startupTiming.time(
         'server_routing',
         () async => profile.isNativeConfig
             ? null
@@ -196,6 +209,8 @@ class CoreRuntimeService {
                 tunIpMode: tunIpMode,
               ),
       );
+      await staleCoreSweep;
+      final tunRouting = await tunRoutingFuture;
       final outboundBindInterface = tunRouting?.outboundBindInterface;
       final xrayServerAddressOverride = core == CoreFlavor.xray
           ? tunRouting?.serverAddressOverride
@@ -214,6 +229,13 @@ class CoreRuntimeService {
         await startupTiming.time(
           'tun_diagnostics',
           () => _logTunDiagnostics(binaryPath),
+        );
+      }
+
+      final effectiveSplitTunnelSettings = await effectiveSplitTunnelFuture;
+      if (trafficMode == TrafficMode.tun) {
+        _rememberAppLog(
+          'Split tunneling: ${effectiveSplitTunnelSettings.mode.name}, selected apps: ${effectiveSplitTunnelSettings.apps.length}.',
         );
       }
 
@@ -312,12 +334,15 @@ class CoreRuntimeService {
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop({bool waitForCleanup = false}) async {
     if (Platform.isAndroid) {
       _androidBridge?.onProcessExit = onProcessExit;
       _androidBridge?.onLogUpdated = onLogUpdated;
       await _androidBridge?.stop();
       return;
+    }
+    if (waitForCleanup) {
+      await _waitForPendingStopCleanup(reason: 'before exiting');
     }
 
     final process = _process;
@@ -347,29 +372,32 @@ class CoreRuntimeService {
         () => _cleanupSubscriptions(),
       );
 
-      _scheduleStopCleanup(
+      final cleanup = _scheduleStopCleanup(
         tunRoutes: tunRoutes,
         serverRoutes: serverRoutes,
         proxySnapshot: proxySnapshot,
         runtimeDirectory: runtimeDirectory,
       );
+      if (waitForCleanup) {
+        await cleanup;
+      }
     } finally {
       stopTiming.stop();
       _rememberAppLog('Stop timing: ${stopTiming.summary()}.');
     }
   }
 
-  Future<void> _waitForPendingStopCleanupBeforeStart() async {
+  Future<void> _waitForPendingStopCleanup({required String reason}) async {
     final cleanup = _pendingStopCleanup;
     if (cleanup == null) {
       return;
     }
 
-    _rememberAppLog('Waiting for previous stop cleanup before reconnecting...');
+    _rememberAppLog('Waiting for previous stop cleanup $reason...');
     await cleanup;
   }
 
-  void _scheduleStopCleanup({
+  Future<void> _scheduleStopCleanup({
     required List<_WindowsTunRoute> tunRoutes,
     required List<_WindowsHostRoute> serverRoutes,
     required SystemProxySnapshot? proxySnapshot,
@@ -379,7 +407,7 @@ class CoreRuntimeService {
         serverRoutes.isEmpty &&
         proxySnapshot == null &&
         runtimeDirectory == null) {
-      return;
+      return Future<void>.value();
     }
 
     late final Future<void> cleanup;
@@ -396,6 +424,7 @@ class CoreRuntimeService {
         });
     _pendingStopCleanup = cleanup;
     unawaited(cleanup);
+    return cleanup;
   }
 
   Future<void> _runStopCleanup({
@@ -608,7 +637,8 @@ class CoreRuntimeService {
     _rememberAppLog(
       'Starting core process: ${_formatCommand(binaryPath, args)}',
     );
-    final process = await Process.start(
+    final process = await _startTimedProcess(
+      '${core.name}_core_start',
       binaryPath,
       args,
       workingDirectory: workingDirectory,
@@ -833,7 +863,11 @@ class CoreRuntimeService {
 
     ProcessResult? pathLookup;
     try {
-      pathLookup = await Process.run('where.exe', <String>[fileName]);
+      pathLookup = await _runTimedProcess(
+        'where:$fileName',
+        'where.exe',
+        <String>[fileName],
+      );
     } on ProcessException {
       pathLookup = null;
     }
@@ -885,7 +919,8 @@ class CoreRuntimeService {
     };
 
     _rememberAppLog('Validation command: ${_formatCommand(binaryPath, args)}');
-    final result = await Process.run(
+    final result = await _runTimedProcess(
+      '${core.name}_config_validation',
       binaryPath,
       args,
       workingDirectory: workingDirectory,
@@ -988,15 +1023,51 @@ class CoreRuntimeService {
   }
 
   Future<void> _terminateWindowsProcess(Process process) async {
-    var taskkillStarted = false;
+    var usedTaskkillFallback = false;
     try {
-      taskkillStarted = true;
-      final result = await Process.run('taskkill.exe', <String>[
-        '/PID',
-        process.pid.toString(),
-        '/T',
-        '/F',
-      ]).timeout(const Duration(seconds: 2));
+      final terminatedNatively = _terminateWindowsProcessByPid(
+        process.pid,
+        timingLabel: 'native_terminate:${process.pid}',
+      );
+      if (!terminatedNatively && !await _hasProcessExited(process)) {
+        _rememberAppLog(
+          'Native termination failed for PID ${process.pid}; falling back to taskkill.',
+        );
+        usedTaskkillFallback = true;
+        await _terminateWindowsProcessWithTaskkill(process);
+      }
+    } catch (error) {
+      _rememberAppLog(
+        'Native termination failed for PID ${process.pid}: ${_describeError(error)}',
+      );
+      if (!await _hasProcessExited(process)) {
+        usedTaskkillFallback = true;
+        await _terminateWindowsProcessWithTaskkill(process);
+      }
+    }
+
+    if (!await _hasProcessExited(process)) {
+      process.kill(ProcessSignal.sigkill);
+    }
+
+    try {
+      await process.exitCode.timeout(const Duration(milliseconds: 500));
+    } on TimeoutException {
+      final method = usedTaskkillFallback ? 'native/taskkill' : 'native';
+      _rememberAppLog(
+        'Process PID ${process.pid} still did not report exit after $method termination.',
+      );
+    }
+  }
+
+  Future<void> _terminateWindowsProcessWithTaskkill(Process process) async {
+    try {
+      final result = await _runTimedProcess(
+        'taskkill:${process.pid}',
+        'taskkill.exe',
+        <String>['/PID', process.pid.toString(), '/T', '/F'],
+        timeout: const Duration(seconds: 2),
+      );
       if (result.exitCode != 0 && !await _hasProcessExited(process)) {
         _rememberAppLog(
           'taskkill failed for PID ${process.pid}: ${_describeError(result.stderr)}',
@@ -1005,18 +1076,6 @@ class CoreRuntimeService {
     } catch (error) {
       _rememberAppLog(
         'taskkill failed for PID ${process.pid}: ${_describeError(error)}',
-      );
-    } finally {
-      if (!taskkillStarted || !await _hasProcessExited(process)) {
-        process.kill(ProcessSignal.sigkill);
-      }
-    }
-
-    try {
-      await process.exitCode.timeout(const Duration(milliseconds: 500));
-    } on TimeoutException {
-      _rememberAppLog(
-        'Process PID ${process.pid} still did not report exit after taskkill.',
       );
     }
   }
@@ -1116,6 +1175,10 @@ class CoreRuntimeService {
       return;
     }
 
+    if (_stopStaleWindowsTunCoreProcessesWithToolhelp(binaryPath)) {
+      return;
+    }
+
     const script = r'''
 param(
   [string]$ExecutablePath,
@@ -1150,6 +1213,7 @@ try {
       final executableName = p.basename(binaryPath);
       final result = await _runPowerShellScript(
         script,
+        label: 'stale_core_sweep',
         namedArgs: <String, String>{
           'ExecutablePath': binaryPath,
           'ExecutableName': executableName,
@@ -1177,6 +1241,108 @@ try {
     }
   }
 
+  bool _stopStaleWindowsTunCoreProcessesWithToolhelp(String binaryPath) {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final targetPathKey = _windowsPathKey(binaryPath);
+      final staleProcesses = _snapshotWindowsProcesses()
+          .where(
+            (process) =>
+                process.pid != pid &&
+                process.path != null &&
+                _windowsPathKey(process.path!) == targetPathKey,
+          )
+          .toList(growable: false);
+
+      final stoppedPids = <String>[];
+      final failedPids = <String>[];
+      for (final process in staleProcesses) {
+        if (_terminateWindowsProcessByPid(process.pid)) {
+          stoppedPids.add(process.pid.toString());
+        } else {
+          failedPids.add(process.pid.toString());
+        }
+      }
+
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: toolhelp:stale_core_sweep elapsed=${stopwatch.elapsedMilliseconds}ms exit=0.',
+      );
+      if (failedPids.isNotEmpty) {
+        _rememberAppLog(
+          'Fast stale core sweep could not stop PID(s) ${failedPids.join(',')}; falling back to PowerShell.',
+        );
+        return false;
+      }
+      if (stoppedPids.isNotEmpty) {
+        _rememberAppLog(
+          'Stopped stale ${p.basename(binaryPath)} process(es) before TUN start: ${stoppedPids.join(',')}.',
+        );
+      }
+      return true;
+    } catch (error) {
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: toolhelp:stale_core_sweep elapsed=${stopwatch.elapsedMilliseconds}ms failed=${_describeError(error)}.',
+      );
+      _rememberAppLog(
+        'Fast stale core sweep unavailable; falling back to PowerShell.',
+      );
+      return false;
+    }
+  }
+
+  bool _terminateWindowsProcessByPid(
+    int processId, {
+    String? timingLabel,
+    Duration waitTimeout = const Duration(milliseconds: 500),
+  }) {
+    final stopwatch = timingLabel == null ? null : (Stopwatch()..start());
+    var success = false;
+    try {
+      final kernel32 = DynamicLibrary.open('kernel32.dll');
+      final openProcess = kernel32
+          .lookupFunction<_OpenProcessNative, _OpenProcessDart>('OpenProcess');
+      final terminateProcess = kernel32
+          .lookupFunction<_TerminateProcessNative, _TerminateProcessDart>(
+            'TerminateProcess',
+          );
+      final waitForSingleObject = kernel32
+          .lookupFunction<_WaitForSingleObjectNative, _WaitForSingleObjectDart>(
+            'WaitForSingleObject',
+          );
+      final closeHandle = kernel32
+          .lookupFunction<_CloseHandleNative, _CloseHandleDart>('CloseHandle');
+
+      final handle = openProcess(
+        _processTerminate | _synchronize,
+        0,
+        processId,
+      );
+      if (handle == 0) {
+        success = Process.killPid(processId, ProcessSignal.sigkill);
+        return success;
+      }
+
+      try {
+        success = terminateProcess(handle, 1) != 0;
+        if (success) {
+          waitForSingleObject(handle, waitTimeout.inMilliseconds);
+        }
+        return success;
+      } finally {
+        closeHandle(handle);
+      }
+    } finally {
+      stopwatch?.stop();
+      if (timingLabel != null) {
+        _rememberAppLog(
+          'Process timing: $timingLabel elapsed=${stopwatch!.elapsedMilliseconds}ms exit=${success ? 0 : 1}.',
+        );
+      }
+    }
+  }
+
   String _buildWindowsTunInterfaceName() {
     return 'EntropyVPN TUN';
   }
@@ -1185,11 +1351,13 @@ try {
     const script = r'''
 param(
   [string]$FilePath,
-  [string]$WorkingDirectory
+  [string]$WorkingDirectory,
+  [string]$RelaunchArgument
 )
 try {
   Start-Process `
     -FilePath $FilePath `
+    -ArgumentList $RelaunchArgument `
     -WorkingDirectory $WorkingDirectory `
     -Verb RunAs | Out-Null
 } catch {
@@ -1202,9 +1370,11 @@ try {
       final executable = Platform.resolvedExecutable;
       final result = await _runPowerShellScript(
         script,
+        label: 'relaunch_as_administrator',
         namedArgs: <String, String>{
           'FilePath': executable,
           'WorkingDirectory': p.dirname(executable),
+          'RelaunchArgument': '--entropyvpn-elevated-relaunch',
         },
       );
       if (result.exitCode == 0) {
@@ -1231,98 +1401,617 @@ try {
       return null;
     }
 
-    final serverIp = InternetAddress.tryParse(profile.server.trim());
-    if (serverIp == null) {
-      final fallback = await _findPreferredHardwareDefaultRoute();
-      if (fallback != null) {
-        final serverAddressOverride = await _installDomainBypassRoutes(
-          host: profile.server.trim(),
-          route: fallback,
-          tunIpMode: tunIpMode,
-        );
-        _rememberAppLog(
-          'VPN server is a domain name; using hardware default interface ${fallback.interfaceAlias} for TUN outbounds and host-route bypasses.',
-        );
-        return _TunRoutingPreparation(
-          outboundBindInterface: fallback.interfaceAlias,
-          serverAddressOverride: serverAddressOverride,
-        );
-      }
-      _rememberAppLog(
-        'Could not resolve a hardware default interface for domain server; using core defaults.',
-      );
-      return null;
+    final server = profile.server.trim();
+    final serverIp = InternetAddress.tryParse(server);
+    if (serverIp != null) {
+      return _prepareIpTunServerRouting(serverIp);
     }
+    return _prepareDomainTunServerRouting(server, tunIpMode: tunIpMode);
+  }
 
-    final route = await _findRouteForRemoteAddress(serverIp.address);
-    if (route == null) {
-      _rememberAppLog(
-        'Could not resolve Windows route for ${serverIp.address}; using core defaults.',
-      );
+  Future<_TunRoutingPreparation?> _prepareDomainTunServerRouting(
+    String host, {
+    required TunIpMode tunIpMode,
+  }) async {
+    final uniqueAddresses = await _resolveServerAddressesForBypass(
+      host,
+      tunIpMode: tunIpMode,
+    );
+    if (uniqueAddresses == null || uniqueAddresses.isEmpty) {
       return null;
     }
 
     _rememberAppLog(
-      'Windows route to ${serverIp.address}: interface=${route.interfaceAlias}, source=${route.sourceAddress}, nextHop=${route.nextHop}, hardware=${route.hardwareInterface}, virtual=${route.virtual}.',
+      'Resolved VPN server $host for host-route bypass: ${uniqueAddresses.map((address) => address.address).join(', ')}.',
     );
 
-    _WindowsHostRoute? pinnedRoute;
-    if (route.interfaceIndex != null &&
-        route.nextHop != null &&
-        route.nextHop!.trim().isNotEmpty &&
-        route.hardwareInterface != false &&
-        route.virtual != true) {
-      _rememberAppLog(
-        'Installing explicit host route for VPN server via ${route.interfaceAlias} (${route.nextHop}) to keep upstream traffic outside TUN...',
+    const script = r'''
+param([string]$RoutesBase64)
+try {
+  function Select-HardwareDefaultRoute {
+    $routes = Get-NetRoute `
+      -AddressFamily IPv4 `
+      -DestinationPrefix '0.0.0.0/0' `
+      -ErrorAction SilentlyContinue |
+      Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.NextHop) -and
+        [string]$_.NextHop -ne '0.0.0.0'
+      }
+    $candidates = foreach ($route in $routes) {
+      $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
+      if ($null -eq $adapter) {
+        continue
+      }
+      if (-not $adapter.HardwareInterface) {
+        continue
+      }
+
+      [PSCustomObject]@{
+        InterfaceAlias = [string]$route.InterfaceAlias
+        InterfaceIndex = [int]$route.InterfaceIndex
+        NextHop = [string]$route.NextHop
+        InterfaceMetric = if ($null -eq $route.InterfaceMetric) { [int]::MaxValue } else { [int]$route.InterfaceMetric }
+        RouteMetric = if ($null -eq $route.RouteMetric) { [int]::MaxValue } else { [int]$route.RouteMetric }
+      }
+    }
+    $candidates | Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1
+  }
+
+  $selected = Select-HardwareDefaultRoute
+  if ($null -eq $selected) {
+    exit 0
+  }
+
+  $json = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($RoutesBase64))
+  $routes = $json | ConvertFrom-Json
+  if ($null -eq $routes) {
+    $routes = @()
+  } elseif ($routes -isnot [System.Array]) {
+    $routes = @($routes)
+  }
+
+  $routeResults = New-Object System.Collections.Generic.List[object]
+  foreach ($route in $routes) {
+    $destinationPrefix = [string]$route.destinationPrefix
+    $nextHop = [string]$selected.NextHop
+    try {
+      $existing = Get-NetRoute -DestinationPrefix $destinationPrefix -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.InterfaceIndex -eq [int]$selected.InterfaceIndex -and
+          $_.NextHop -eq $nextHop
+        } |
+        Select-Object -First 1
+
+      $status = 'exists'
+      if ($null -eq $existing) {
+        New-NetRoute `
+          -DestinationPrefix $destinationPrefix `
+          -InterfaceIndex ([int]$selected.InterfaceIndex) `
+          -NextHop $nextHop `
+          -PolicyStore ActiveStore | Out-Null
+        $status = 'created'
+      }
+      $routeResults.Add([PSCustomObject]@{
+        DestinationPrefix = $destinationPrefix
+        NextHop = $nextHop
+        Status = $status
+      })
+    } catch {
+      $routeResults.Add([PSCustomObject]@{
+        DestinationPrefix = $destinationPrefix
+        NextHop = $nextHop
+        Status = 'failed'
+        Error = [string]$_.Exception.Message
+      })
+    }
+  }
+
+  [PSCustomObject]@{
+    DefaultRoute = $selected
+    Routes = $routeResults.ToArray()
+  } | ConvertTo-Json -Depth 4 -Compress
+} catch {
+  Write-Error $_
+  exit 1
+}
+''';
+
+    try {
+      final result = await _runPowerShellScript(
+        script,
+        label: 'domain_server_routing',
+        namedArgs: <String, String>{
+          'RoutesBase64': base64Encode(
+            utf8.encode(_serverBypassPrefixesJson(uniqueAddresses)),
+          ),
+        },
       );
-      pinnedRoute = _WindowsHostRoute(
-        destinationPrefix: serverIp.type == InternetAddressType.IPv6
-            ? '${serverIp.address}/128'
-            : '${serverIp.address}/32',
-        interfaceAlias: route.interfaceAlias,
-        interfaceIndex: route.interfaceIndex!,
-        nextHop: route.nextHop!,
-      );
-    } else {
-      final fallback = await _findPreferredHardwareDefaultRoute();
-      if (fallback != null && fallback.nextHop != null) {
+
+      if (result.exitCode != 0) {
         _rememberAppLog(
-          'Detected virtual route to VPN server. Installing direct host route via ${fallback.interfaceAlias} (${fallback.nextHop})...',
+          'Failed to prepare domain host-route bypass: ${_describeError(result.stderr)}',
         );
-        pinnedRoute = _WindowsHostRoute(
-          destinationPrefix: serverIp.type == InternetAddressType.IPv6
-              ? '${serverIp.address}/128'
-              : '${serverIp.address}/32',
-          interfaceAlias: fallback.interfaceAlias,
-          interfaceIndex: fallback.interfaceIndex,
-          nextHop: fallback.nextHop!,
+        return null;
+      }
+
+      final output = result.stdout.toString().trim();
+      if (output.isEmpty) {
+        _rememberAppLog(
+          'Could not resolve a hardware default interface for domain server; using core defaults.',
         );
-      } else {
+        return null;
+      }
+
+      final decoded = jsonDecode(output);
+      if (decoded is! Map<String, dynamic>) {
+        _rememberAppLog(
+          'Failed to prepare domain host-route bypass: unexpected output "$output".',
+        );
+        return null;
+      }
+
+      final defaultRoute = (decoded['DefaultRoute'] as Map?)
+          ?.cast<String, dynamic>();
+      final alias = defaultRoute?['InterfaceAlias']?.toString().trim();
+      final index = (defaultRoute?['InterfaceIndex'] as num?)?.toInt();
+      final nextHop = defaultRoute?['NextHop']?.toString().trim();
+      if (alias == null ||
+          alias.isEmpty ||
+          index == null ||
+          nextHop == null ||
+          nextHop.isEmpty) {
+        _rememberAppLog(
+          'Failed to prepare domain host-route bypass: default route details were incomplete.',
+        );
+        return null;
+      }
+
+      final routes = _decodeHostRouteResults(
+        decoded['Routes'],
+        interfaceAlias: alias,
+        interfaceIndex: index,
+      );
+      _trackTemporaryServerRoutes(routes);
+      _rememberAppLog(
+        'VPN server is a domain name; using hardware default interface $alias for TUN outbounds and host-route bypasses.',
+      );
+      return _TunRoutingPreparation(
+        outboundBindInterface: alias,
+        serverAddressOverride: uniqueAddresses.first.address,
+      );
+    } catch (error) {
+      _rememberAppLog(
+        'Failed to prepare domain host-route bypass: ${_describeError(error)}',
+      );
+      return null;
+    }
+  }
+
+  Future<_TunRoutingPreparation?> _prepareIpTunServerRouting(
+    InternetAddress serverIp,
+  ) async {
+    if (serverIp.type == InternetAddressType.IPv4) {
+      final nativeRouting = await _prepareNativeIpv4TunServerRouting(serverIp);
+      if (nativeRouting != null) {
+        return nativeRouting;
+      }
+      final fastRouting = await _prepareFastIpv4TunServerRouting(serverIp);
+      if (fastRouting != null) {
+        return fastRouting;
+      }
+    }
+
+    const script = r'''
+param(
+  [string]$RemoteAddress,
+  [string]$DestinationPrefix
+)
+try {
+  function Select-HardwareDefaultRoute {
+    $routes = Get-NetRoute `
+      -AddressFamily IPv4 `
+      -DestinationPrefix '0.0.0.0/0' `
+      -ErrorAction SilentlyContinue |
+      Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_.NextHop) -and
+        [string]$_.NextHop -ne '0.0.0.0'
+      }
+    $candidates = foreach ($route in $routes) {
+      $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
+      if ($null -eq $adapter) {
+        continue
+      }
+      if (-not $adapter.HardwareInterface) {
+        continue
+      }
+
+      [PSCustomObject]@{
+        InterfaceAlias = [string]$route.InterfaceAlias
+        InterfaceIndex = [int]$route.InterfaceIndex
+        NextHop = [string]$route.NextHop
+        SourceAddress = ''
+        HardwareInterface = $true
+        Virtual = $false
+        InterfaceMetric = if ($null -eq $route.InterfaceMetric) { [int]::MaxValue } else { [int]$route.InterfaceMetric }
+        RouteMetric = if ($null -eq $route.RouteMetric) { [int]::MaxValue } else { [int]$route.RouteMetric }
+      }
+    }
+    $candidates | Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1
+  }
+
+  $entries = @(Find-NetRoute -RemoteIPAddress $RemoteAddress)
+  $route = $entries |
+    Where-Object {
+      $_.CimClass.CimClassName -eq 'MSFT_NetRoute' -and
+      -not [string]::IsNullOrWhiteSpace([string]$_.NextHop)
+    } |
+    Sort-Object RouteMetric, InterfaceMetric |
+    Select-Object -First 1
+  if ($null -eq $route) {
+    exit 0
+  }
+
+  $ip = $entries |
+    Where-Object {
+      $_.CimClass.CimClassName -eq 'MSFT_NetIPAddress' -and
+      $_.InterfaceIndex -eq $route.InterfaceIndex
+    } |
+    Select-Object -First 1
+  $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
+  $hardware = if ($null -eq $adapter) { $null } else { [bool]$adapter.HardwareInterface }
+  $virtual = if ($null -eq $adapter) { $null } else { [bool]$adapter.Virtual }
+  $primary = [PSCustomObject]@{
+    InterfaceAlias = [string]$route.InterfaceAlias
+    InterfaceIndex = [int]$route.InterfaceIndex
+    SourceAddress = if ($null -eq $ip) { '' } else { [string]$ip.IPAddress }
+    NextHop = [string]$route.NextHop
+    HardwareInterface = $hardware
+    Virtual = $virtual
+  }
+
+  $pinned = $null
+  $pinReason = 'none'
+  if (-not [string]::IsNullOrWhiteSpace([string]$primary.NextHop) -and
+      $primary.HardwareInterface -ne $false -and
+      $primary.Virtual -ne $true) {
+    $pinned = $primary
+    $pinReason = 'route'
+  } else {
+    $fallback = Select-HardwareDefaultRoute
+    if ($null -ne $fallback -and -not [string]::IsNullOrWhiteSpace([string]$fallback.NextHop)) {
+      $pinned = $fallback
+      $pinReason = 'fallback'
+    }
+  }
+
+  $routeResult = $null
+  if ($null -ne $pinned) {
+    $nextHop = [string]$pinned.NextHop
+    try {
+      $existing = Get-NetRoute -DestinationPrefix $DestinationPrefix -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.InterfaceIndex -eq [int]$pinned.InterfaceIndex -and
+          $_.NextHop -eq $nextHop
+        } |
+        Select-Object -First 1
+
+      $status = 'exists'
+      if ($null -eq $existing) {
+        New-NetRoute `
+          -DestinationPrefix $DestinationPrefix `
+          -InterfaceIndex ([int]$pinned.InterfaceIndex) `
+          -NextHop $nextHop `
+          -PolicyStore ActiveStore | Out-Null
+        $status = 'created'
+      }
+      $routeResult = [PSCustomObject]@{
+        DestinationPrefix = $DestinationPrefix
+        NextHop = $nextHop
+        Status = $status
+      }
+    } catch {
+      $routeResult = [PSCustomObject]@{
+        DestinationPrefix = $DestinationPrefix
+        NextHop = $nextHop
+        Status = 'failed'
+        Error = [string]$_.Exception.Message
+      }
+    }
+  }
+
+  [PSCustomObject]@{
+    Route = $primary
+    PinnedRoute = $pinned
+    PinReason = $pinReason
+    RouteResult = $routeResult
+  } | ConvertTo-Json -Depth 4 -Compress
+} catch {
+  Write-Error $_
+  exit 1
+}
+''';
+
+    final destinationPrefix = serverIp.type == InternetAddressType.IPv6
+        ? '${serverIp.address}/128'
+        : '${serverIp.address}/32';
+
+    try {
+      final result = await _runPowerShellScript(
+        script,
+        label: 'ip_server_routing',
+        namedArgs: <String, String>{
+          'RemoteAddress': serverIp.address,
+          'DestinationPrefix': destinationPrefix,
+        },
+      );
+
+      if (result.exitCode != 0) {
+        _rememberAppLog(
+          'Failed to resolve Windows route for ${serverIp.address}: ${_describeError(result.stderr)}',
+        );
+        return null;
+      }
+
+      final output = result.stdout.toString().trim();
+      if (output.isEmpty) {
+        _rememberAppLog(
+          'Could not resolve Windows route for ${serverIp.address}; using core defaults.',
+        );
+        return null;
+      }
+
+      final decoded = jsonDecode(output);
+      if (decoded is! Map<String, dynamic>) {
+        _rememberAppLog(
+          'Failed to resolve Windows route for ${serverIp.address}: unexpected output "$output".',
+        );
+        return null;
+      }
+
+      final route = _decodeWindowsRouteInfo(decoded['Route']);
+      if (route == null) {
+        _rememberAppLog(
+          'Could not resolve Windows route for ${serverIp.address}; using core defaults.',
+        );
+        return null;
+      }
+
+      _rememberAppLog(
+        'Windows route to ${serverIp.address}: interface=${route.interfaceAlias}, source=${route.sourceAddress}, nextHop=${route.nextHop}, hardware=${route.hardwareInterface}, virtual=${route.virtual}.',
+      );
+
+      final pinnedRoute = _decodeWindowsRouteInfo(decoded['PinnedRoute']);
+      final pinReason = decoded['PinReason']?.toString();
+      if (pinnedRoute == null || pinnedRoute.interfaceIndex == null) {
         _rememberAppLog(
           'No suitable hardware default route found for VPN server bypass; continuing with ${route.interfaceAlias}.',
         );
-      }
-    }
-
-    if (pinnedRoute != null) {
-      final installed = await _installTemporaryServerRoute(pinnedRoute);
-      if (installed) {
         return _TunRoutingPreparation(
-          outboundBindInterface: pinnedRoute.interfaceAlias,
+          outboundBindInterface: route.interfaceAlias,
           serverAddressOverride: null,
         );
       }
+
+      if (pinReason == 'fallback') {
+        _rememberAppLog(
+          'Detected virtual route to VPN server. Installing direct host route via ${pinnedRoute.interfaceAlias} (${pinnedRoute.nextHop})...',
+        );
+      } else {
+        _rememberAppLog(
+          'Installing explicit host route for VPN server via ${pinnedRoute.interfaceAlias} (${pinnedRoute.nextHop}) to keep upstream traffic outside TUN...',
+        );
+      }
+
+      final routes = _decodeHostRouteResults(
+        decoded['RouteResult'],
+        interfaceAlias: pinnedRoute.interfaceAlias,
+        interfaceIndex: pinnedRoute.interfaceIndex!,
+      );
+      _trackTemporaryServerRoutes(routes);
+      return _TunRoutingPreparation(
+        outboundBindInterface: routes.isEmpty
+            ? route.interfaceAlias
+            : pinnedRoute.interfaceAlias,
+        serverAddressOverride: null,
+      );
+    } catch (error) {
+      _rememberAppLog(
+        'Failed to resolve Windows route for ${serverIp.address}: ${_describeError(error)}',
+      );
+      return null;
+    }
+  }
+
+  Future<_TunRoutingPreparation?> _prepareNativeIpv4TunServerRouting(
+    InternetAddress serverIp,
+  ) async {
+    Object? rawResult;
+    try {
+      rawResult = await _windowsTunChannel.invokeMethod<Object?>(
+        'prepareIpv4ServerRoute',
+        <String, Object?>{'remoteAddress': serverIp.address},
+      );
+    } on MissingPluginException {
+      _rememberAppLog(
+        'Native IPv4 server route path unavailable: Windows runner channel is not registered.',
+      );
+      return null;
+    } on PlatformException catch (error) {
+      _rememberAppLog(
+        'Native IPv4 server route path unavailable: ${error.message ?? error.code}',
+      );
+      return null;
+    } catch (error) {
+      _rememberAppLog(
+        'Native IPv4 server route path unavailable: ${_describeError(error)}',
+      );
+      return null;
     }
 
+    if (rawResult is! Map) {
+      _rememberAppLog(
+        'Native IPv4 server route path unavailable: runner returned unexpected result.',
+      );
+      return null;
+    }
+
+    final result = rawResult.cast<Object?, Object?>();
+    final elapsedMs = result['elapsedMs']?.toString();
+    if (result['ok'] != true) {
+      final failedStep = result['failedStep']?.toString() ?? 'unknown';
+      final error = result['error']?.toString() ?? 'unknown error';
+      final elapsed = elapsedMs == null ? '' : ' after ${elapsedMs}ms';
+      _rememberAppLog(
+        'Native IPv4 server route path unavailable: $failedStep failed$elapsed: $error',
+      );
+      return null;
+    }
+
+    final interfaceAlias = result['interfaceAlias']?.toString().trim();
+    final sourceAddress = result['sourceAddress']?.toString().trim();
+    final nextHop = result['nextHop']?.toString().trim();
+    final destinationPrefix = result['destinationPrefix']?.toString().trim();
+    final interfaceIndex = (result['interfaceIndex'] as num?)?.toInt();
+    if (interfaceAlias == null ||
+        interfaceAlias.isEmpty ||
+        nextHop == null ||
+        nextHop.isEmpty ||
+        destinationPrefix == null ||
+        destinationPrefix.isEmpty ||
+        interfaceIndex == null) {
+      _rememberAppLog(
+        'Native IPv4 server route path unavailable: runner returned incomplete route details.',
+      );
+      return null;
+    }
+
+    final route = _WindowsHostRoute(
+      destinationPrefix: destinationPrefix,
+      interfaceAlias: interfaceAlias,
+      interfaceIndex: interfaceIndex,
+      nextHop: nextHop,
+      removalTool: _WindowsRouteRemovalTool.routeExe,
+    );
+    _trackTemporaryServerRoutes(<_WindowsHostRoute>[route]);
+    final routeStatus = result['routeStatus']?.toString() == 'created'
+        ? 'created'
+        : 'already existed';
+    _rememberAppLog(
+      'Native IPv4 server route setup${elapsedMs == null ? '' : ' elapsed=${elapsedMs}ms'}.',
+    );
+    _rememberAppLog(
+      'Windows route to ${serverIp.address}: interface=$interfaceAlias, source=${_orDash(sourceAddress)}, nextHop=$nextHop, hardware=${result['hardwareInterface']}, virtual=${result['virtual']}.',
+    );
+    _rememberAppLog(
+      'Native IPv4 host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) $routeStatus.',
+    );
     return _TunRoutingPreparation(
-      outboundBindInterface: route.interfaceAlias,
+      outboundBindInterface: interfaceAlias,
       serverAddressOverride: null,
     );
   }
 
-  Future<String?> _installDomainBypassRoutes({
-    required String host,
-    required _WindowsDefaultRouteInfo route,
+  Future<_TunRoutingPreparation?> _prepareFastIpv4TunServerRouting(
+    InternetAddress serverIp,
+  ) async {
+    try {
+      final defaultRouteResult = await _runTimedProcess(
+        'route_print_ipv4_default',
+        'route.exe',
+        <String>['PRINT', '-4', '0.0.0.0'],
+      );
+      if (defaultRouteResult.exitCode != 0) {
+        _rememberAppLog(
+          'Fast IPv4 route path unavailable: route print failed with exit ${defaultRouteResult.exitCode}.',
+        );
+        return null;
+      }
+
+      final defaultRoute = _parseDefaultIpv4Route(
+        defaultRouteResult.stdout.toString(),
+      );
+      if (defaultRoute == null) {
+        _rememberAppLog(
+          'Fast IPv4 route path unavailable: default IPv4 gateway was not found.',
+        );
+        return null;
+      }
+
+      final interfaceAlias = await _resolveIpv4InterfaceAlias(
+        defaultRoute.interfaceAddress,
+      );
+      if (interfaceAlias == null || interfaceAlias.isEmpty) {
+        _rememberAppLog(
+          'Fast IPv4 route path unavailable: interface alias for ${defaultRoute.interfaceAddress} was not found.',
+        );
+        return null;
+      }
+      if (_looksVirtualInterfaceAlias(interfaceAlias)) {
+        _rememberAppLog(
+          'Fast IPv4 route path unavailable: default interface $interfaceAlias looks virtual.',
+        );
+        return null;
+      }
+
+      final destinationPrefix = '${serverIp.address}/32';
+      final routeExists = await _fastIpv4HostRouteExists(
+        serverIp.address,
+        nextHop: defaultRoute.gateway,
+      );
+      if (!routeExists) {
+        final addResult = await _runTimedProcess(
+          'route_add_ipv4_server',
+          'route.exe',
+          <String>[
+            'ADD',
+            serverIp.address,
+            'MASK',
+            '255.255.255.255',
+            defaultRoute.gateway,
+            'METRIC',
+            '1',
+          ],
+        );
+        if (addResult.exitCode != 0 &&
+            !_routeOutputSaysAlreadyExists(
+              addResult.stdout,
+              addResult.stderr,
+            )) {
+          _rememberAppLog(
+            'Fast IPv4 route path unavailable: route add failed with exit ${addResult.exitCode}: ${_describeError(addResult.stderr)}',
+          );
+          return null;
+        }
+      }
+
+      final route = _WindowsHostRoute(
+        destinationPrefix: destinationPrefix,
+        interfaceAlias: interfaceAlias,
+        interfaceIndex: 0,
+        nextHop: defaultRoute.gateway,
+        removalTool: _WindowsRouteRemovalTool.routeExe,
+      );
+      _trackTemporaryServerRoutes(<_WindowsHostRoute>[route]);
+      _rememberAppLog(
+        'Windows route to ${serverIp.address}: interface=$interfaceAlias, source=${defaultRoute.interfaceAddress}, nextHop=${defaultRoute.gateway}, hardware=true, virtual=false.',
+      );
+      _rememberAppLog(
+        'Fast IPv4 host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) ${routeExists ? 'already existed' : 'created'}.',
+      );
+      return _TunRoutingPreparation(
+        outboundBindInterface: interfaceAlias,
+        serverAddressOverride: null,
+      );
+    } catch (error) {
+      _rememberAppLog(
+        'Fast IPv4 route path unavailable: ${_describeError(error)}',
+      );
+      return null;
+    }
+  }
+
+  Future<List<InternetAddress>?> _resolveServerAddressesForBypass(
+    String host, {
     required TunIpMode tunIpMode,
   }) async {
     try {
@@ -1336,25 +2025,8 @@ try {
         _rememberAppLog(
           'No addresses returned while resolving VPN server $host for host-route bypass.',
         );
-        return null;
       }
-
-      _rememberAppLog(
-        'Resolved VPN server $host for host-route bypass: ${uniqueAddresses.map((address) => address.address).join(', ')}.',
-      );
-      await _installTemporaryServerRoutes(
-        uniqueAddresses
-            .map(
-              (address) => _hostRouteForAddress(
-                address,
-                interfaceAlias: route.interfaceAlias,
-                interfaceIndex: route.interfaceIndex,
-                nextHop: route.nextHop,
-              ),
-            )
-            .toList(growable: false),
-      );
-      return uniqueAddresses.first.address;
+      return uniqueAddresses;
     } catch (error) {
       _rememberAppLog(
         'Failed to resolve VPN server $host for host-route bypass: ${_describeError(error)}',
@@ -1371,21 +2043,215 @@ try {
     };
   }
 
-  _WindowsHostRoute _hostRouteForAddress(
-    InternetAddress address, {
+  _Ipv4DefaultRoute? _parseDefaultIpv4Route(String routePrintOutput) {
+    final candidates = <_Ipv4DefaultRoute>[];
+    final linePattern = RegExp(
+      r'^\s*0\.0\.0\.0\s+0\.0\.0\.0\s+(\S+)\s+(\S+)\s+(\d+)\s*$',
+      caseSensitive: false,
+    );
+    for (final line in const LineSplitter().convert(routePrintOutput)) {
+      final match = linePattern.firstMatch(line);
+      if (match == null) {
+        continue;
+      }
+      final gateway = match.group(1) ?? '';
+      final interfaceAddress = match.group(2) ?? '';
+      final metric = int.tryParse(match.group(3) ?? '');
+      if (gateway.toLowerCase() == 'on-link' ||
+          InternetAddress.tryParse(gateway)?.type != InternetAddressType.IPv4 ||
+          InternetAddress.tryParse(interfaceAddress)?.type !=
+              InternetAddressType.IPv4 ||
+          metric == null) {
+        continue;
+      }
+      candidates.add(
+        _Ipv4DefaultRoute(
+          gateway: gateway,
+          interfaceAddress: interfaceAddress,
+          metric: metric,
+        ),
+      );
+    }
+    if (candidates.isEmpty) {
+      return null;
+    }
+    candidates.sort((left, right) => left.metric.compareTo(right.metric));
+    return candidates.first;
+  }
+
+  Future<String?> _resolveIpv4InterfaceAlias(String interfaceAddress) async {
+    final result = await _runTimedProcess(
+      'netsh_ipv4_addresses',
+      'netsh.exe',
+      <String>['interface', 'ipv4', 'show', 'addresses'],
+    );
+    if (result.exitCode != 0) {
+      return null;
+    }
+    return _parseNetshInterfaceAliasForAddress(
+      result.stdout.toString(),
+      interfaceAddress,
+    );
+  }
+
+  String? _parseNetshInterfaceAliasForAddress(
+    String netshOutput,
+    String interfaceAddress,
+  ) {
+    String? currentAlias;
+    final interfacePattern = RegExp(r'interface\s+"([^"]+)"');
+    for (final line in const LineSplitter().convert(netshOutput)) {
+      final interfaceMatch = interfacePattern.firstMatch(line);
+      if (interfaceMatch != null) {
+        currentAlias = interfaceMatch.group(1)?.trim();
+        continue;
+      }
+      if (currentAlias != null && line.contains(interfaceAddress)) {
+        return currentAlias;
+      }
+    }
+    return null;
+  }
+
+  bool _looksVirtualInterfaceAlias(String interfaceAlias) {
+    final alias = interfaceAlias.toLowerCase();
+    return alias.contains('vpn') ||
+        alias.contains('tun') ||
+        alias.contains('tap') ||
+        alias.contains('wintun') ||
+        alias.contains('wireguard') ||
+        alias.contains('loopback') ||
+        alias.contains('virtual');
+  }
+
+  Future<bool> _fastIpv4HostRouteExists(
+    String address, {
+    required String nextHop,
+  }) async {
+    final result = await _runTimedProcess(
+      'route_print_ipv4_server',
+      'route.exe',
+      <String>['PRINT', '-4', address],
+    );
+    if (result.exitCode != 0) {
+      return false;
+    }
+    return _routePrintHasIpv4HostRoute(
+      result.stdout.toString(),
+      address,
+      nextHop: nextHop,
+    );
+  }
+
+  bool _routePrintHasIpv4HostRoute(
+    String routePrintOutput,
+    String address, {
+    required String nextHop,
+  }) {
+    final escapedAddress = RegExp.escape(address);
+    final escapedNextHop = RegExp.escape(nextHop);
+    final linePattern = RegExp(
+      r'^\s*' +
+          escapedAddress +
+          r'\s+255\.255\.255\.255\s+' +
+          escapedNextHop +
+          r'\s+\S+\s+\d+\s*$',
+      caseSensitive: false,
+    );
+    return const LineSplitter()
+        .convert(routePrintOutput)
+        .any(linePattern.hasMatch);
+  }
+
+  bool _routeOutputSaysAlreadyExists(Object stdout, Object stderr) {
+    final output = '${stdout.toString()}\n${stderr.toString()}'.toLowerCase();
+    return output.contains('already exists') ||
+        output.contains('object already exists');
+  }
+
+  String _serverBypassPrefixesJson(List<InternetAddress> addresses) {
+    return jsonEncode(
+      addresses
+          .map(
+            (address) => <String, dynamic>{
+              'destinationPrefix': address.type == InternetAddressType.IPv6
+                  ? '${address.address}/128'
+                  : '${address.address}/32',
+            },
+          )
+          .toList(growable: false),
+    );
+  }
+
+  _WindowsRouteInfo? _decodeWindowsRouteInfo(dynamic decoded) {
+    if (decoded is! Map) {
+      return null;
+    }
+    final json = decoded.cast<String, dynamic>();
+    final alias = json['InterfaceAlias']?.toString().trim();
+    if (alias == null || alias.isEmpty) {
+      return null;
+    }
+    return _WindowsRouteInfo(
+      interfaceAlias: alias,
+      interfaceIndex: (json['InterfaceIndex'] as num?)?.toInt(),
+      sourceAddress: json['SourceAddress']?.toString().trim(),
+      nextHop: json['NextHop']?.toString().trim(),
+      hardwareInterface: json['HardwareInterface'] as bool?,
+      virtual: json['Virtual'] as bool?,
+    );
+  }
+
+  List<_WindowsHostRoute> _decodeHostRouteResults(
+    dynamic decoded, {
     required String interfaceAlias,
     required int interfaceIndex,
-    required String? nextHop,
   }) {
-    return _WindowsHostRoute(
-      destinationPrefix: address.type == InternetAddressType.IPv6
-          ? '${address.address}/128'
-          : '${address.address}/32',
-      interfaceAlias: interfaceAlias,
-      interfaceIndex: interfaceIndex,
-      nextHop:
-          nextHop ??
-          (address.type == InternetAddressType.IPv6 ? '::' : '0.0.0.0'),
+    final routeItems = decoded is List
+        ? decoded
+        : decoded == null
+        ? const <dynamic>[]
+        : <dynamic>[decoded];
+    final routes = <_WindowsHostRoute>[];
+    for (final item in routeItems) {
+      if (item is! Map) {
+        continue;
+      }
+      final destinationPrefix = item['DestinationPrefix']?.toString().trim();
+      final nextHop = item['NextHop']?.toString().trim();
+      if (destinationPrefix == null ||
+          destinationPrefix.isEmpty ||
+          nextHop == null ||
+          nextHop.isEmpty) {
+        continue;
+      }
+      final route = _WindowsHostRoute(
+        destinationPrefix: destinationPrefix,
+        interfaceAlias: interfaceAlias,
+        interfaceIndex: interfaceIndex,
+        nextHop: nextHop,
+      );
+      final status = item['Status']?.toString();
+      if (status != 'failed') {
+        routes.add(route);
+      }
+      _rememberAppLog(
+        'Temporary host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) ${status == 'created'
+            ? 'created'
+            : status == 'failed'
+            ? 'could not be installed'
+            : 'already existed'}.',
+      );
+    }
+    return routes;
+  }
+
+  void _trackTemporaryServerRoutes(List<_WindowsHostRoute> routes) {
+    if (routes.isEmpty) {
+      return;
+    }
+    _temporaryServerRoutes = List<_WindowsHostRoute>.unmodifiable(
+      <_WindowsHostRoute>[..._temporaryServerRoutes, ...routes],
     );
   }
 
@@ -1399,10 +2265,19 @@ try {
       return normalized;
     }
 
-    final descendants = await _findRunningDescendantApps(normalized.apps);
-    if (descendants.isEmpty) {
-      return normalized;
+    final cacheKey = _splitTunnelExpansionCacheKey(normalized);
+    final cached = _splitTunnelExpansionCache;
+    final now = DateTime.now();
+    if (cached != null &&
+        cached.key == cacheKey &&
+        now.difference(cached.createdAt) <= _splitTunnelExpansionCacheTtl) {
+      _rememberAppLog(
+        'Split tunneling reused cached process tree expansion (${cached.addedAppCount} child process paths).',
+      );
+      return cached.settings;
     }
+
+    final descendants = await _findRunningDescendantApps(normalized.apps);
 
     final appsById = <String, SplitTunnelApp>{
       for (final app in normalized.apps) app.id: app,
@@ -1414,15 +2289,42 @@ try {
       mode: normalized.mode,
       apps: appsById.values.toList(growable: false),
     ).normalized;
-    _rememberAppLog(
-      'Split tunneling added ${expanded.apps.length - normalized.apps.length} running child process paths.',
+    final addedAppCount = expanded.apps.length - normalized.apps.length;
+    _splitTunnelExpansionCache = _SplitTunnelExpansionCacheEntry(
+      key: cacheKey,
+      settings: expanded,
+      createdAt: now,
+      addedAppCount: addedAppCount,
     );
+    if (addedAppCount > 0) {
+      _rememberAppLog(
+        'Split tunneling added $addedAppCount running child process paths.',
+      );
+    }
     return expanded;
+  }
+
+  String _splitTunnelExpansionCacheKey(SplitTunnelSettings settings) {
+    final normalized = settings.normalized;
+    final appKeys =
+        normalized.apps
+            .map((app) => app.id)
+            .where((id) => id.trim().isNotEmpty)
+            .toList(growable: false)
+          ..sort();
+    return '${normalized.mode.name}|${appKeys.join('\n')}';
   }
 
   Future<List<SplitTunnelApp>> _findRunningDescendantApps(
     List<SplitTunnelApp> selectedApps,
   ) async {
+    final toolhelpDescendants = _findRunningDescendantAppsWithToolhelp(
+      selectedApps,
+    );
+    if (toolhelpDescendants != null) {
+      return toolhelpDescendants;
+    }
+
     final selectedPaths = selectedApps
         .map((app) => app.path.trim())
         .where((path) => path.isNotEmpty)
@@ -1441,7 +2343,7 @@ try {
     Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
     ForEach-Object { $selected[$_.ToLowerInvariant()] = $true }
 
-  $processes = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath })
+  $processes = @(Get-CimInstance -Query "SELECT ProcessId, ParentProcessId, ExecutablePath FROM Win32_Process WHERE ExecutablePath IS NOT NULL")
   $byParent = @{}
   foreach ($process in $processes) {
     $parent = [int]$process.ParentProcessId
@@ -1496,6 +2398,7 @@ try {
     try {
       final result = await _runPowerShellScript(
         script,
+        label: 'expand_split_tunnel_process_tree',
         namedArgs: <String, String>{
           'SelectedPathsBase64': base64Encode(utf8.encode(selectedPaths)),
         },
@@ -1537,178 +2440,196 @@ try {
     }
   }
 
-  Future<_WindowsRouteInfo?> _findRouteForRemoteAddress(
-    String remoteAddress,
-  ) async {
-    const script = r'''
-param([string]$RemoteAddress)
-try {
-  $entries = @(Find-NetRoute -RemoteIPAddress $RemoteAddress)
-  $route = $entries |
-    Where-Object {
-      $_.CimClass.CimClassName -eq 'MSFT_NetRoute' -and
-      -not [string]::IsNullOrWhiteSpace([string]$_.NextHop)
-    } |
-    Sort-Object RouteMetric, InterfaceMetric |
-    Select-Object -First 1
-  if ($null -eq $route) {
-    exit 0
-  }
+  List<SplitTunnelApp>? _findRunningDescendantAppsWithToolhelp(
+    List<SplitTunnelApp> selectedApps,
+  ) {
+    if (!Platform.isWindows) {
+      return null;
+    }
 
-  $ip = $entries |
-    Where-Object {
-      $_.CimClass.CimClassName -eq 'MSFT_NetIPAddress' -and
-      $_.InterfaceIndex -eq $route.InterfaceIndex
-    } |
-    Select-Object -First 1
-  $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
+    final selectedPathKeys = selectedApps
+        .map((app) => _windowsPathKey(app.path))
+        .where((path) => path.isNotEmpty)
+        .toSet();
+    if (selectedPathKeys.isEmpty) {
+      return const <SplitTunnelApp>[];
+    }
 
-  [PSCustomObject]@{
-    InterfaceAlias = [string]$route.InterfaceAlias
-    InterfaceIndex = [int]$route.InterfaceIndex
-    SourceAddress = if ($null -eq $ip) { '' } else { [string]$ip.IPAddress }
-    NextHop = [string]$route.NextHop
-    HardwareInterface = if ($null -eq $adapter) { $null } else { [bool]$adapter.HardwareInterface }
-    Virtual = if ($null -eq $adapter) { $null } else { [bool]$adapter.Virtual }
-  } | ConvertTo-Json -Compress
-} catch {
-  Write-Error $_
-  exit 1
-}
-''';
-
+    final stopwatch = Stopwatch()..start();
     try {
-      final result = await _runPowerShellScript(
-        script,
-        namedArgs: <String, String>{'RemoteAddress': remoteAddress},
-      );
-
-      if (result.exitCode != 0) {
-        _rememberAppLog(
-          'Failed to resolve Windows route for $remoteAddress: ${_describeError(result.stderr)}',
-        );
-        return null;
+      final processes = _snapshotWindowsProcesses();
+      final childrenByParent = <int, List<_WindowsProcessInfo>>{};
+      for (final process in processes) {
+        childrenByParent
+            .putIfAbsent(process.parentPid, () => <_WindowsProcessInfo>[])
+            .add(process);
       }
 
-      final output = result.stdout.toString().trim();
-      if (output.isEmpty) {
-        return null;
+      final queue = Queue<int>();
+      for (final process in processes) {
+        final path = process.path;
+        if (path != null && selectedPathKeys.contains(_windowsPathKey(path))) {
+          queue.add(process.pid);
+        }
       }
 
-      final json = jsonDecode(output);
-      if (json is! Map<String, dynamic>) {
-        _rememberAppLog(
-          'Failed to resolve Windows route for $remoteAddress: unexpected output "$output".',
-        );
-        return null;
+      final descendantsByPath = <String, String>{};
+      while (queue.isNotEmpty) {
+        final parentPid = queue.removeFirst();
+        final children = childrenByParent[parentPid];
+        if (children == null) {
+          continue;
+        }
+        for (final child in children) {
+          final childPath = child.path;
+          if (childPath != null && childPath.trim().isNotEmpty) {
+            final childPathKey = _windowsPathKey(childPath);
+            if (!selectedPathKeys.contains(childPathKey) &&
+                !descendantsByPath.containsKey(childPathKey)) {
+              descendantsByPath[childPathKey] = childPath;
+            }
+          }
+          queue.add(child.pid);
+        }
       }
 
-      final alias = json['InterfaceAlias']?.toString().trim();
-      if (alias == null || alias.isEmpty) {
-        return null;
-      }
-
-      return _WindowsRouteInfo(
-        interfaceAlias: alias,
-        interfaceIndex: (json['InterfaceIndex'] as num?)?.toInt(),
-        sourceAddress: json['SourceAddress']?.toString().trim(),
-        nextHop: json['NextHop']?.toString().trim(),
-        hardwareInterface: json['HardwareInterface'] as bool?,
-        virtual: json['Virtual'] as bool?,
-      );
-    } catch (error) {
+      final descendants =
+          descendantsByPath.values
+              .map(
+                (path) => SplitTunnelApp.fromPath(
+                  name: p.basenameWithoutExtension(path),
+                  path: path,
+                ),
+              )
+              .toList(growable: false)
+            ..sort(
+              (left, right) =>
+                  left.name.toLowerCase().compareTo(right.name.toLowerCase()),
+            );
+      stopwatch.stop();
       _rememberAppLog(
-        'Failed to resolve Windows route for $remoteAddress: ${_describeError(error)}',
+        'Process timing: toolhelp:expand_split_tunnel_process_tree elapsed=${stopwatch.elapsedMilliseconds}ms exit=0.',
+      );
+      return descendants;
+    } catch (error) {
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: toolhelp:expand_split_tunnel_process_tree elapsed=${stopwatch.elapsedMilliseconds}ms failed=${_describeError(error)}.',
+      );
+      _rememberAppLog(
+        'Fast split tunnel process tree expansion unavailable; falling back to PowerShell.',
       );
       return null;
     }
   }
 
-  Future<_WindowsDefaultRouteInfo?> _findPreferredHardwareDefaultRoute() async {
-    const script = r'''
-try {
-  $routes = Get-NetRoute `
-    -AddressFamily IPv4 `
-    -DestinationPrefix '0.0.0.0/0' `
-    -ErrorAction SilentlyContinue |
-    Where-Object {
-      -not [string]::IsNullOrWhiteSpace([string]$_.NextHop) -and
-      [string]$_.NextHop -ne '0.0.0.0'
-    }
-  $candidates = foreach ($route in $routes) {
-    $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
-    if ($null -eq $adapter) {
-      continue
-    }
-    if (-not $adapter.HardwareInterface) {
-      continue
+  List<_WindowsProcessInfo> _snapshotWindowsProcesses() {
+    final cached = _windowsProcessSnapshotCache;
+    final now = DateTime.now();
+    if (cached != null &&
+        now.difference(cached.createdAt) <= _windowsProcessSnapshotCacheTtl) {
+      return cached.processes;
     }
 
-    [PSCustomObject]@{
-      InterfaceAlias = [string]$route.InterfaceAlias
-      InterfaceIndex = [int]$route.InterfaceIndex
-      NextHop = [string]$route.NextHop
-      InterfaceMetric = if ($null -eq $route.InterfaceMetric) { [int]::MaxValue } else { [int]$route.InterfaceMetric }
-      RouteMetric = if ($null -eq $route.RouteMetric) { [int]::MaxValue } else { [int]$route.RouteMetric }
+    final kernel32 = DynamicLibrary.open('kernel32.dll');
+    final createToolhelp32Snapshot = kernel32
+        .lookupFunction<
+          _CreateToolhelp32SnapshotNative,
+          _CreateToolhelp32SnapshotDart
+        >('CreateToolhelp32Snapshot');
+    final process32First = kernel32
+        .lookupFunction<_Process32Native, _Process32Dart>('Process32FirstW');
+    final process32Next = kernel32
+        .lookupFunction<_Process32Native, _Process32Dart>('Process32NextW');
+    final closeHandle = kernel32
+        .lookupFunction<_CloseHandleNative, _CloseHandleDart>('CloseHandle');
+    final openProcess = kernel32
+        .lookupFunction<_OpenProcessNative, _OpenProcessDart>('OpenProcess');
+    final queryFullProcessImageName = kernel32
+        .lookupFunction<
+          _QueryFullProcessImageNameNative,
+          _QueryFullProcessImageNameDart
+        >('QueryFullProcessImageNameW');
+
+    final snapshot = createToolhelp32Snapshot(_th32csSnapProcess, 0);
+    if (snapshot == _invalidHandleValue) {
+      throw StateError('CreateToolhelp32Snapshot failed');
     }
-  }
 
-  $selected = $candidates | Sort-Object RouteMetric, InterfaceMetric | Select-Object -First 1
-  if ($null -eq $selected) {
-    exit 0
-  }
-
-  $selected | ConvertTo-Json -Compress
-} catch {
-  Write-Error $_
-  exit 1
-}
-''';
-
+    final entry = calloc<_ProcessEntry32W>();
     try {
-      final result = await _runPowerShellScript(script);
+      entry.ref.dwSize = sizeOf<_ProcessEntry32W>();
+      if (process32First(snapshot, entry) == 0) {
+        return const <_WindowsProcessInfo>[];
+      }
 
-      if (result.exitCode != 0) {
-        _rememberAppLog(
-          'Failed to resolve hardware default route: ${_describeError(result.stderr)}',
+      final processes = <_WindowsProcessInfo>[];
+      do {
+        final pid = entry.ref.th32ProcessID;
+        processes.add(
+          _WindowsProcessInfo(
+            pid: pid,
+            parentPid: entry.ref.th32ParentProcessID,
+            path: _queryWindowsProcessImagePath(
+              pid,
+              openProcess: openProcess,
+              queryFullProcessImageName: queryFullProcessImageName,
+              closeHandle: closeHandle,
+            ),
+          ),
         );
-        return null;
-      }
-
-      final output = result.stdout.toString().trim();
-      if (output.isEmpty) {
-        return null;
-      }
-
-      final json = jsonDecode(output);
-      if (json is! Map<String, dynamic>) {
-        _rememberAppLog(
-          'Failed to resolve hardware default route: unexpected output "$output".',
-        );
-        return null;
-      }
-
-      final alias = json['InterfaceAlias']?.toString().trim();
-      final index = (json['InterfaceIndex'] as num?)?.toInt();
-      final nextHop = json['NextHop']?.toString().trim();
-      if (alias == null || alias.isEmpty || index == null || nextHop == null) {
-        return null;
-      }
-
-      _rememberAppLog(
-        'Preferred hardware default route: interface=$alias, nextHop=$nextHop, metric=${json['InterfaceMetric']}.',
+      } while (process32Next(snapshot, entry) != 0);
+      final snapshotProcesses = List<_WindowsProcessInfo>.unmodifiable(
+        processes,
       );
-      return _WindowsDefaultRouteInfo(
-        interfaceAlias: alias,
-        interfaceIndex: index,
-        nextHop: nextHop,
+      _windowsProcessSnapshotCache = _WindowsProcessSnapshotCacheEntry(
+        createdAt: now,
+        processes: snapshotProcesses,
       );
-    } catch (error) {
-      _rememberAppLog(
-        'Failed to resolve hardware default route: ${_describeError(error)}',
-      );
+      return snapshotProcesses;
+    } finally {
+      calloc.free(entry);
+      closeHandle(snapshot);
+    }
+  }
+
+  String? _queryWindowsProcessImagePath(
+    int pid, {
+    required _OpenProcessDart openProcess,
+    required _QueryFullProcessImageNameDart queryFullProcessImageName,
+    required _CloseHandleDart closeHandle,
+  }) {
+    if (pid <= 0) {
       return null;
     }
+
+    final process = openProcess(_processQueryLimitedInformation, 0, pid);
+    if (process == 0) {
+      return null;
+    }
+
+    final buffer = calloc<Uint16>(_maxWindowsPathBufferChars);
+    final length = calloc<Uint32>();
+    try {
+      length.value = _maxWindowsPathBufferChars;
+      final ok = queryFullProcessImageName(process, 0, buffer, length);
+      if (ok == 0 || length.value == 0) {
+        return null;
+      }
+      return String.fromCharCodes(buffer.asTypedList(length.value)).trim();
+    } finally {
+      calloc.free(length);
+      calloc.free(buffer);
+      closeHandle(process);
+    }
+  }
+
+  String _windowsPathKey(String path) {
+    final trimmed = path.trim();
+    if (trimmed.isEmpty) {
+      return '';
+    }
+    return p.normalize(trimmed).toLowerCase();
   }
 
   Future<void> _installTemporaryXrayTunRoutes({
@@ -1722,7 +2643,29 @@ try {
       await _removeTemporaryTunRoutes();
     }
 
-    final setup = await _prepareWindowsXrayTunAdapterAndRoutes(
+    final adapterKey = _xrayTunAdapterKey(interfaceAlias, tunIpMode);
+    var setupKind = _WindowsTunSetupKind.full;
+    var setup = await _prepareWindowsXrayTunFastRoutes(
+      interfaceAlias: interfaceAlias,
+      tunIpMode: tunIpMode,
+    );
+    if (setup != null) {
+      setupKind =
+          setup.fastConfigureMethod == _WindowsTunFastConfigureMethod.nativeApi
+          ? _WindowsTunSetupKind.fastNativeApi
+          : _WindowsTunSetupKind.fastNetsh;
+    } else {
+      setup = _preparedXrayTunAdapterKeys.contains(adapterKey)
+          ? await _prepareWindowsXrayTunRoutesOnly(
+              interfaceAlias: interfaceAlias,
+              tunIpMode: tunIpMode,
+            )
+          : null;
+      if (setup != null) {
+        setupKind = _WindowsTunSetupKind.routeOnly;
+      }
+    }
+    setup ??= await _prepareWindowsXrayTunAdapterAndRoutes(
       interfaceAlias: interfaceAlias,
       tunIpMode: tunIpMode,
     );
@@ -1730,7 +2673,25 @@ try {
       throw StateError('Failed to prepare Xray TUN adapter and routes.');
     }
 
+    switch (setupKind) {
+      case _WindowsTunSetupKind.fastNativeApi:
+        _rememberAppLog(
+          'Xray TUN adapter configured with native Windows API setup.',
+        );
+      case _WindowsTunSetupKind.fastNetsh:
+        _rememberAppLog(
+          'Xray TUN adapter configured with fast netsh/route.exe setup.',
+        );
+      case _WindowsTunSetupKind.routeOnly:
+        _rememberAppLog(
+          'Xray TUN adapter was previously configured; using route-only setup.',
+        );
+      case _WindowsTunSetupKind.full:
+        break;
+    }
+
     _temporaryTunRoutes = List<_WindowsTunRoute>.unmodifiable(setup.routes);
+    _preparedXrayTunAdapterKeys.add(adapterKey);
     if (setup.networkChanged) {
       _rememberAppLog(
         'Xray TUN adapter settings changed; Windows may need a moment to settle.',
@@ -1740,6 +2701,654 @@ try {
         'Xray TUN adapter was already configured; skipping extra readiness waits.',
       );
     }
+  }
+
+  String _xrayTunAdapterKey(String interfaceAlias, TunIpMode tunIpMode) {
+    return '${interfaceAlias.trim().toLowerCase()}|${tunIpMode.name}';
+  }
+
+  Future<_WindowsTunSetup?> _prepareWindowsXrayTunFastRoutes({
+    required String interfaceAlias,
+    required TunIpMode tunIpMode,
+  }) async {
+    if (tunIpMode != TunIpMode.ipv4) {
+      return null;
+    }
+    final nativeSetup = await _prepareWindowsXrayTunIpv4RoutesWithNativeApi(
+      interfaceAlias: interfaceAlias,
+    );
+    if (nativeSetup != null) {
+      return nativeSetup;
+    }
+
+    final adapter = await _waitForNetshIpv4Interface(
+      interfaceAlias,
+      timeout: const Duration(milliseconds: 2500),
+    );
+    if (adapter == null) {
+      return null;
+    }
+
+    var configureMethod = _WindowsTunFastConfigureMethod.nativeApi;
+    var configureStopwatch = Stopwatch()..start();
+    var configured = await _configureXrayTunIpv4WithNativeApi(adapter);
+    configureStopwatch.stop();
+    if (!configured) {
+      configureMethod = _WindowsTunFastConfigureMethod.netsh;
+      configureStopwatch = Stopwatch()..start();
+      configured = await _configureXrayTunIpv4WithNetsh(adapter);
+      configureStopwatch.stop();
+    }
+    if (!configured) {
+      return null;
+    }
+
+    final routes = <_WindowsTunRoute>[
+      _WindowsTunRoute(
+        destinationPrefix: '0.0.0.0/1',
+        interfaceAlias: adapter.name,
+        interfaceIndex: adapter.index,
+        nextHop: '0.0.0.0',
+      ),
+      _WindowsTunRoute(
+        destinationPrefix: '128.0.0.0/1',
+        interfaceAlias: adapter.name,
+        interfaceIndex: adapter.index,
+        nextHop: '0.0.0.0',
+      ),
+    ];
+
+    final stopwatch = Stopwatch()..start();
+    for (final route in routes) {
+      final parts = _routeExeIpv4DestinationParts(route.destinationPrefix);
+      if (parts == null) {
+        return null;
+      }
+      final result =
+          await _runTimedProcess('route_add_xray_tun', 'route.exe', <String>[
+            'ADD',
+            parts.address,
+            'MASK',
+            parts.mask,
+            route.nextHop,
+            'METRIC',
+            '1',
+            'IF',
+            adapter.index.toString(),
+          ]);
+      if (result.exitCode != 0 &&
+          !_routeOutputSaysAlreadyExists(result.stdout, result.stderr)) {
+        _rememberAppLog(
+          'Fast Xray TUN route setup unavailable: route add failed with exit ${result.exitCode}: ${_describeError(result.stderr)}',
+        );
+        return null;
+      }
+      _rememberAppLog(
+        'Xray TUN route ${route.destinationPrefix} via ${route.interfaceAlias} ${result.exitCode == 0 ? 'created' : 'already existed'}.',
+      );
+    }
+    stopwatch.stop();
+
+    _rememberAppLog(
+      'Xray TUN adapter ready: interface=${adapter.name}, ifIndex=${adapter.index}, status=${adapter.status}.',
+    );
+    _rememberAppLog(
+      'Xray TUN adapter setup timing: ${configureMethod.timingLabel}=${configureStopwatch.elapsedMilliseconds}ms, route_exe=${stopwatch.elapsedMilliseconds}ms.',
+    );
+    _rememberAppLog(
+      'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30, ipv4-metric=1, dns=1.1.1.1,8.8.8.8.',
+    );
+
+    return _WindowsTunSetup(
+      routes: routes,
+      networkChanged: false,
+      fastConfigureMethod: configureMethod,
+    );
+  }
+
+  Future<_WindowsTunSetup?> _prepareWindowsXrayTunIpv4RoutesWithNativeApi({
+    required String interfaceAlias,
+  }) async {
+    Object? rawResult;
+    try {
+      rawResult = await _windowsTunChannel
+          .invokeMethod<Object?>('prepareXrayTunIpv4Routes', <String, Object?>{
+            'interfaceAlias': interfaceAlias,
+            'timeoutMs': 2500,
+            'address': '172.19.0.1',
+            'prefixLength': 30,
+            'metric': 1,
+            'dnsServers': '1.1.1.1,8.8.8.8',
+          });
+    } on MissingPluginException {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 route setup unavailable: Windows runner channel is not registered.',
+      );
+      return null;
+    } on PlatformException catch (error) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 route setup unavailable: ${error.message ?? error.code}',
+      );
+      return null;
+    } catch (error) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 route setup unavailable: ${_describeError(error)}',
+      );
+      return null;
+    }
+
+    if (rawResult is! Map) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 route setup unavailable: runner returned unexpected result.',
+      );
+      return null;
+    }
+
+    final result = rawResult.cast<Object?, Object?>();
+    final elapsedMs = result['elapsedMs']?.toString();
+    if (result['ok'] != true) {
+      final failedStep = result['failedStep']?.toString() ?? 'unknown';
+      final routePrefix = result['routePrefix']?.toString();
+      final error = result['error']?.toString() ?? 'unknown error';
+      final elapsed = elapsedMs == null ? '' : ' after ${elapsedMs}ms';
+      final target = routePrefix == null
+          ? failedStep
+          : '$failedStep $routePrefix';
+      _rememberAppLog(
+        'Native Xray TUN IPv4 route setup unavailable: $target failed$elapsed: $error',
+      );
+      return null;
+    }
+
+    final alias = result['interfaceAlias']?.toString().trim();
+    final index = (result['interfaceIndex'] as num?)?.toInt();
+    if (alias == null || alias.isEmpty || index == null || index <= 0) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 route setup unavailable: runner returned incomplete adapter details.',
+      );
+      return null;
+    }
+
+    final routeItems = result['routes'] is List
+        ? result['routes'] as List
+        : const <dynamic>[];
+    final routes = <_WindowsTunRoute>[];
+    for (final item in routeItems) {
+      if (item is! Map) {
+        continue;
+      }
+      final destinationPrefix = item['DestinationPrefix']?.toString().trim();
+      final nextHop = item['NextHop']?.toString().trim();
+      if (destinationPrefix == null ||
+          destinationPrefix.isEmpty ||
+          nextHop == null ||
+          nextHop.isEmpty) {
+        continue;
+      }
+      final route = _WindowsTunRoute(
+        destinationPrefix: destinationPrefix,
+        interfaceAlias: alias,
+        interfaceIndex: index,
+        nextHop: nextHop,
+      );
+      routes.add(route);
+      final status = item['Status']?.toString();
+      _rememberAppLog(
+        'Xray TUN route ${route.destinationPrefix} via ${route.interfaceAlias} ${status == 'created' ? 'created' : 'already existed'}.',
+      );
+    }
+    if (routes.isEmpty) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 route setup unavailable: runner returned no routes.',
+      );
+      return null;
+    }
+
+    _rememberAppLog(
+      'Xray TUN adapter ready: interface=$alias, ifIndex=$index, status=${result['status']}.',
+    );
+    _rememberAppLog(
+      'Xray TUN adapter setup timing: native_prepare=${_orDash(elapsedMs)}ms, wait_adapter=${_orDash(result['waitMs']?.toString())}ms, native_configure=${_orDash(result['configureMs']?.toString())}ms, native_routes=${_orDash(result['routeMs']?.toString())}ms.',
+    );
+    _rememberAppLog(
+      'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30 (${result['addressStatus']}), ipv4-metric=1 (${result['metricStatus']}), dns=1.1.1.1,8.8.8.8 (${result['dnsStatus']}).',
+    );
+
+    return _WindowsTunSetup(
+      routes: routes,
+      networkChanged: false,
+      fastConfigureMethod: _WindowsTunFastConfigureMethod.nativeApi,
+    );
+  }
+
+  Future<bool> _configureXrayTunIpv4WithNativeApi(
+    _NetshIpv4Interface adapter,
+  ) async {
+    if (!Platform.isWindows) {
+      return false;
+    }
+
+    Object? rawResult;
+    try {
+      rawResult = await _windowsTunChannel
+          .invokeMethod<Object?>('configureXrayTunIpv4', <String, Object?>{
+            'interfaceIndex': adapter.index,
+            'address': '172.19.0.1',
+            'prefixLength': 30,
+            'metric': 1,
+            'dnsServers': '1.1.1.1,8.8.8.8',
+          });
+    } on MissingPluginException {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 setup unavailable: Windows runner channel is not registered.',
+      );
+      return false;
+    } on PlatformException catch (error) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 setup unavailable: ${error.message ?? error.code}',
+      );
+      return false;
+    } catch (error) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 setup unavailable: ${_describeError(error)}',
+      );
+      return false;
+    }
+
+    if (rawResult is! Map) {
+      _rememberAppLog(
+        'Native Xray TUN IPv4 setup unavailable: runner returned unexpected result.',
+      );
+      return false;
+    }
+
+    final result = rawResult.cast<Object?, Object?>();
+    final elapsedMs = result['elapsedMs']?.toString();
+    if (result['ok'] != true) {
+      final failedStep = result['failedStep']?.toString() ?? 'unknown';
+      final error = result['error']?.toString() ?? 'unknown error';
+      final elapsed = elapsedMs == null ? '' : ' after ${elapsedMs}ms';
+      _rememberAppLog(
+        'Native Xray TUN IPv4 setup unavailable: $failedStep failed$elapsed: $error',
+      );
+      return false;
+    }
+
+    _rememberAppLog(
+      'Native Xray TUN IPv4 configure${elapsedMs == null ? '' : ' elapsed=${elapsedMs}ms'}: ipv4-address=${result['addressStatus']}, ipv4-metric=${result['metricStatus']}, dns=${result['dnsStatus']}.',
+    );
+    return true;
+  }
+
+  Future<bool> _configureXrayTunIpv4WithNetsh(
+    _NetshIpv4Interface adapter,
+  ) async {
+    final commands = <({String label, List<String> args})>[
+      (
+        label: 'netsh_xray_tun_ipv4_set_address',
+        args: <String>[
+          'interface',
+          'ipv4',
+          'set',
+          'address',
+          'name=${adapter.name}',
+          'source=static',
+          'address=172.19.0.1',
+          'mask=255.255.255.252',
+          'gateway=none',
+          'store=active',
+        ],
+      ),
+      (
+        label: 'netsh_xray_tun_ipv4_set_metric',
+        args: <String>[
+          'interface',
+          'ipv4',
+          'set',
+          'interface',
+          'interface=${adapter.name}',
+          'metric=1',
+          'store=active',
+        ],
+      ),
+      (
+        label: 'netsh_xray_tun_ipv4_set_dns',
+        args: <String>[
+          'interface',
+          'ipv4',
+          'set',
+          'dnsservers',
+          'name=${adapter.name}',
+          'source=static',
+          'address=1.1.1.1',
+          'register=none',
+          'validate=no',
+        ],
+      ),
+      (
+        label: 'netsh_xray_tun_ipv4_add_dns',
+        args: <String>[
+          'interface',
+          'ipv4',
+          'add',
+          'dnsservers',
+          'name=${adapter.name}',
+          'address=8.8.8.8',
+          'index=2',
+          'validate=no',
+        ],
+      ),
+    ];
+
+    for (final command in commands) {
+      final result = await _runTimedProcess(
+        command.label,
+        'netsh.exe',
+        command.args,
+      );
+      if (result.exitCode != 0) {
+        _rememberAppLog(
+          'Fast Xray TUN route setup unavailable: ${command.label} failed with exit ${result.exitCode}: ${_describeError(result.stderr)}',
+        );
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Future<_NetshIpv4Interface?> _waitForNetshIpv4Interface(
+    String interfaceAlias, {
+    required Duration timeout,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    while (stopwatch.elapsed < timeout) {
+      final result = await _runTimedProcess(
+        'netsh_ipv4_interfaces',
+        'netsh.exe',
+        <String>['interface', 'ipv4', 'show', 'interfaces'],
+      );
+      if (result.exitCode == 0) {
+        final adapter = _parseNetshIpv4Interface(
+          result.stdout.toString(),
+          interfaceAlias,
+        );
+        if (adapter != null) {
+          return adapter;
+        }
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    _rememberAppLog(
+      'Fast Xray TUN route setup unavailable: adapter $interfaceAlias was not visible through netsh in ${timeout.inMilliseconds}ms.',
+    );
+    return null;
+  }
+
+  _NetshIpv4Interface? _parseNetshIpv4Interface(
+    String netshOutput,
+    String interfaceAlias,
+  ) {
+    final target = interfaceAlias.trim().toLowerCase();
+    final linePattern = RegExp(
+      r'^\s*(\d+)\s+\d+\s+\d+\s+(\S+)\s+(.+?)\s*$',
+      caseSensitive: false,
+    );
+    for (final line in const LineSplitter().convert(netshOutput)) {
+      final match = linePattern.firstMatch(line);
+      if (match == null) {
+        continue;
+      }
+      final name = match.group(3)?.trim();
+      if (name == null || name.toLowerCase() != target) {
+        continue;
+      }
+      final index = int.tryParse(match.group(1) ?? '');
+      if (index == null || index <= 0) {
+        continue;
+      }
+      return _NetshIpv4Interface(
+        index: index,
+        name: name,
+        status: match.group(2)?.trim() ?? '',
+      );
+    }
+    return null;
+  }
+
+  Future<_WindowsTunSetup?> _prepareWindowsXrayTunRoutesOnly({
+    required String interfaceAlias,
+    required TunIpMode tunIpMode,
+  }) async {
+    const script = r'''
+param(
+  [string]$InterfaceAlias,
+  [int]$TimeoutMs,
+  [string]$TunIpMode
+)
+try {
+  $timings = New-Object System.Collections.Generic.List[string]
+  $warnings = New-Object System.Collections.Generic.List[string]
+  $routeResults = New-Object System.Collections.Generic.List[object]
+
+  $waitTimer = [System.Diagnostics.Stopwatch]::StartNew()
+  $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+  $adapter = $null
+  do {
+    $adapter = Get-NetAdapter -Name $InterfaceAlias -ErrorAction SilentlyContinue
+    if ($null -ne $adapter) {
+      break
+    }
+    Start-Sleep -Milliseconds 25
+  } while ((Get-Date) -lt $deadline)
+  $waitTimer.Stop()
+  $timings.Add("wait_adapter=$($waitTimer.ElapsedMilliseconds)ms")
+  if ($null -eq $adapter) {
+    Write-Error "adapter not found in time"
+    exit 2
+  }
+  $InterfaceIndex = [int]$adapter.ifIndex
+
+  $routeTimer = [System.Diagnostics.Stopwatch]::StartNew()
+  $routes = @()
+  if ($TunIpMode -eq 'ipv4' -or $TunIpMode -eq 'dualStack') {
+    $routes += [PSCustomObject]@{
+      DestinationPrefix = '0.0.0.0/1'
+      NextHop = '0.0.0.0'
+    }
+    $routes += [PSCustomObject]@{
+      DestinationPrefix = '128.0.0.0/1'
+      NextHop = '0.0.0.0'
+    }
+  }
+  if ($TunIpMode -eq 'ipv6' -or $TunIpMode -eq 'dualStack') {
+    $routes += [PSCustomObject]@{
+      DestinationPrefix = '::/1'
+      NextHop = '::'
+    }
+    $routes += [PSCustomObject]@{
+      DestinationPrefix = '8000::/1'
+      NextHop = '::'
+    }
+  }
+
+  foreach ($route in $routes) {
+    try {
+      $destinationPrefix = [string]$route.DestinationPrefix
+      $nextHop = [string]$route.NextHop
+      $existing = Get-NetRoute -DestinationPrefix $destinationPrefix -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.InterfaceIndex -eq $InterfaceIndex -and
+          $_.NextHop -eq $nextHop
+        } |
+        Select-Object -First 1
+
+      $status = 'exists'
+      if ($null -eq $existing) {
+        New-NetRoute `
+          -DestinationPrefix $destinationPrefix `
+          -InterfaceIndex $InterfaceIndex `
+          -NextHop $nextHop `
+          -RouteMetric 1 `
+          -PolicyStore ActiveStore | Out-Null
+        $status = 'created'
+      }
+      $routeResults.Add([PSCustomObject]@{
+        DestinationPrefix = $destinationPrefix
+        NextHop = $nextHop
+        Status = $status
+      })
+    } catch {
+      $warnings.Add("Route $([string]$route.DestinationPrefix): $($_.Exception.Message)")
+      $routeResults.Add([PSCustomObject]@{
+        DestinationPrefix = [string]$route.DestinationPrefix
+        NextHop = [string]$route.NextHop
+        Status = 'failed'
+      })
+    }
+  }
+  $routeTimer.Stop()
+  $timings.Add("install_routes=$($routeTimer.ElapsedMilliseconds)ms")
+
+  [PSCustomObject]@{
+    Adapter = [PSCustomObject]@{
+      InterfaceAlias = [string]$adapter.Name
+      InterfaceIndex = [int]$adapter.ifIndex
+      Status = [string]$adapter.Status
+    }
+    Changes = @('route-only')
+    Warnings = $warnings.ToArray()
+    NetworkChanged = $false
+    Routes = $routeResults.ToArray()
+    Timings = $timings.ToArray()
+  } | ConvertTo-Json -Depth 4 -Compress
+} catch {
+  Write-Error $_
+  exit 1
+}
+''';
+
+    final result = await _runPowerShellScript(
+      script,
+      label: 'xray_tun_route_only',
+      namedArgs: <String, String>{
+        'InterfaceAlias': interfaceAlias,
+        'TimeoutMs': '2500',
+        'TunIpMode': tunIpMode.name,
+      },
+    );
+    if (result.exitCode != 0) {
+      _rememberAppLog(
+        'Failed to prepare Xray TUN route-only setup: ${_describeError(result.stderr)}',
+      );
+      return null;
+    }
+    return _decodeWindowsXrayTunSetup(
+      result.stdout.toString().trim(),
+      unexpectedOutputContext: 'Prepared Xray TUN route-only setup',
+    );
+  }
+
+  _WindowsTunSetup? _decodeWindowsXrayTunSetup(
+    String output, {
+    required String unexpectedOutputContext,
+  }) {
+    if (output.isEmpty) {
+      _rememberAppLog(
+        '$unexpectedOutputContext, but PowerShell returned no details.',
+      );
+      return null;
+    }
+    final decoded = jsonDecode(output);
+    if (decoded is! Map<String, dynamic>) {
+      _rememberAppLog(
+        '$unexpectedOutputContext, but output was unexpected: "$output".',
+      );
+      return null;
+    }
+    final adapter = (decoded['Adapter'] as Map?)?.cast<String, dynamic>();
+    final alias = adapter?['InterfaceAlias']?.toString().trim();
+    final index = (adapter?['InterfaceIndex'] as num?)?.toInt();
+    if (alias == null || alias.isEmpty || index == null || index <= 0) {
+      _rememberAppLog(
+        '$unexpectedOutputContext, but adapter details were incomplete: "$output".',
+      );
+      return null;
+    }
+
+    final timings = (decoded['Timings'] as List?)
+        ?.map((value) => value.toString())
+        .where((value) => value.trim().isNotEmpty)
+        .join(', ');
+    _rememberAppLog(
+      'Xray TUN adapter ready: interface=$alias, ifIndex=$index, status=${adapter?['Status']}.',
+    );
+    if (timings != null && timings.trim().isNotEmpty) {
+      _rememberAppLog('Xray TUN adapter setup timing: $timings.');
+    }
+
+    final changes = (decoded['Changes'] as List?)
+        ?.map((value) => value.toString())
+        .where((value) => value.trim().isNotEmpty)
+        .join(', ');
+    final warnings = (decoded['Warnings'] as List?)
+        ?.map((value) => value.toString())
+        .where((value) => value.trim().isNotEmpty)
+        .join('; ');
+    _rememberAppLog(
+      'Configured Xray TUN adapter DNS/IP settings: ${_orDash(changes)}.',
+    );
+    if (warnings != null && warnings.trim().isNotEmpty) {
+      _rememberAppLog(
+        'Xray TUN adapter DNS/IP configuration warnings: $warnings',
+      );
+    }
+    final routeItems = decoded['Routes'] is List
+        ? decoded['Routes'] as List
+        : decoded['Routes'] == null
+        ? const <dynamic>[]
+        : <dynamic>[decoded['Routes']];
+    final routes = <_WindowsTunRoute>[];
+    for (final item in routeItems) {
+      if (item is! Map) {
+        continue;
+      }
+      final destinationPrefix = item['DestinationPrefix']?.toString().trim();
+      final nextHop = item['NextHop']?.toString().trim();
+      if (destinationPrefix == null ||
+          destinationPrefix.isEmpty ||
+          nextHop == null ||
+          nextHop.isEmpty) {
+        continue;
+      }
+      final route = _WindowsTunRoute(
+        destinationPrefix: destinationPrefix,
+        interfaceAlias: alias,
+        interfaceIndex: index,
+        nextHop: nextHop,
+      );
+      final status = item['Status']?.toString();
+      if (status != 'failed') {
+        routes.add(route);
+      }
+      _rememberAppLog(
+        'Xray TUN route ${route.destinationPrefix} via ${route.interfaceAlias} ${status == 'created'
+            ? 'created'
+            : status == 'failed'
+            ? 'could not be installed'
+            : 'already existed'}.',
+      );
+    }
+
+    if (routes.isEmpty) {
+      _rememberAppLog(
+        'Prepared Xray TUN adapter, but no temporary routes were installed by the app.',
+      );
+    }
+
+    return _WindowsTunSetup(
+      routes: routes,
+      networkChanged: decoded['NetworkChanged'] == true,
+    );
   }
 
   Future<_WindowsTunSetup?> _prepareWindowsXrayTunAdapterAndRoutes({
@@ -2000,6 +3609,7 @@ try {
     try {
       final result = await _runPowerShellScript(
         script,
+        label: 'xray_tun_adapter_routes',
         namedArgs: <String, String>{
           'InterfaceAlias': interfaceAlias,
           'TimeoutMs': '7000',
@@ -2119,114 +3729,6 @@ try {
     }
   }
 
-  Future<bool> _installTemporaryServerRoute(_WindowsHostRoute route) {
-    return _installTemporaryServerRoutes(<_WindowsHostRoute>[route]);
-  }
-
-  Future<bool> _installTemporaryServerRoutes(
-    List<_WindowsHostRoute> routes,
-  ) async {
-    if (routes.isEmpty) {
-      return true;
-    }
-
-    const script = r'''
-param([string]$RoutesBase64)
-try {
-  $json = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($RoutesBase64))
-  $routes = $json | ConvertFrom-Json
-  if ($null -eq $routes) {
-    $routes = @()
-  } elseif ($routes -isnot [System.Array]) {
-    $routes = @($routes)
-  }
-  $results = foreach ($route in $routes) {
-    $destinationPrefix = [string]$route.destinationPrefix
-    $interfaceIndex = [int]$route.interfaceIndex
-    $nextHop = [string]$route.nextHop
-    $existing = Get-NetRoute -DestinationPrefix $destinationPrefix -ErrorAction SilentlyContinue |
-      Where-Object {
-        $_.InterfaceIndex -eq $interfaceIndex -and
-        $_.NextHop -eq $nextHop
-      } |
-      Select-Object -First 1
-
-    if ($null -eq $existing) {
-      New-NetRoute `
-        -DestinationPrefix $destinationPrefix `
-        -InterfaceIndex $interfaceIndex `
-        -NextHop $nextHop `
-        -PolicyStore ActiveStore | Out-Null
-      [PSCustomObject]@{
-        DestinationPrefix = $destinationPrefix
-        Status = 'created'
-      }
-    } else {
-      [PSCustomObject]@{
-        DestinationPrefix = $destinationPrefix
-        Status = 'exists'
-      }
-    }
-  }
-  @($results) | ConvertTo-Json -Depth 4 -Compress
-} catch {
-  Write-Error $_
-  exit 1
-}
-''';
-
-    try {
-      final result = await _runPowerShellScript(
-        script,
-        namedArgs: <String, String>{
-          'RoutesBase64': base64Encode(utf8.encode(_hostRoutesJson(routes))),
-        },
-      );
-
-      if (result.exitCode != 0) {
-        _rememberAppLog(
-          'Failed to install temporary host routes: ${_describeError(result.stderr)}',
-        );
-        return false;
-      }
-
-      _temporaryServerRoutes = List<_WindowsHostRoute>.unmodifiable(
-        <_WindowsHostRoute>[..._temporaryServerRoutes, ...routes],
-      );
-      final output = result.stdout.toString().trim();
-      if (output.isEmpty) {
-        for (final route in routes) {
-          _rememberAppLog(
-            'Temporary host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) installed.',
-          );
-        }
-        return true;
-      }
-      final decoded = jsonDecode(output);
-      final items = decoded is List ? decoded : <dynamic>[decoded];
-      for (final item in items) {
-        if (item is! Map) {
-          continue;
-        }
-        final destinationPrefix = item['DestinationPrefix']?.toString();
-        final route = routes.firstWhere(
-          (candidate) => candidate.destinationPrefix == destinationPrefix,
-          orElse: () => routes.first,
-        );
-        final status = item['Status']?.toString();
-        _rememberAppLog(
-          'Temporary host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) ${status == 'created' ? 'created' : 'already existed'}.',
-        );
-      }
-      return true;
-    } catch (error) {
-      _rememberAppLog(
-        'Failed to install temporary host routes: ${_describeError(error)}',
-      );
-      return false;
-    }
-  }
-
   Future<void> _removeTemporaryServerRoute({
     List<_WindowsHostRoute>? routes,
   }) async {
@@ -2235,6 +3737,73 @@ try {
       _temporaryServerRoutes = const <_WindowsHostRoute>[];
     }
     if (routesToRemove.isEmpty) {
+      return;
+    }
+
+    final nativeRoutes = routesToRemove
+        .where(
+          (route) => _canRemoveWithNativeIpv4RouteApi(
+            destinationPrefix: route.destinationPrefix,
+            interfaceIndex: route.interfaceIndex,
+            nextHop: route.nextHop,
+          ),
+        )
+        .map(
+          (route) => (
+            destinationPrefix: route.destinationPrefix,
+            interfaceIndex: route.interfaceIndex,
+            nextHop: route.nextHop,
+          ),
+        )
+        .toList(growable: false);
+    final nativeRemovedKeys = nativeRoutes.isEmpty
+        ? <String>{}
+        : await _removeNativeIpv4Routes(
+                nativeRoutes,
+                label: 'remove_server_routes',
+              ) ??
+              <String>{};
+    for (final route in routesToRemove) {
+      if (nativeRemovedKeys.contains(
+        _routeRemovalKey(
+          destinationPrefix: route.destinationPrefix,
+          interfaceIndex: route.interfaceIndex,
+          nextHop: route.nextHop,
+        ),
+      )) {
+        _rememberAppLog(
+          'Temporary host route ${route.destinationPrefix} removed.',
+        );
+      }
+    }
+
+    final routesForFallback = routesToRemove
+        .where(
+          (route) => !nativeRemovedKeys.contains(
+            _routeRemovalKey(
+              destinationPrefix: route.destinationPrefix,
+              interfaceIndex: route.interfaceIndex,
+              nextHop: route.nextHop,
+            ),
+          ),
+        )
+        .toList(growable: false);
+
+    final routeExeRoutes = routesForFallback
+        .where(
+          (route) => route.removalTool == _WindowsRouteRemovalTool.routeExe,
+        )
+        .toList(growable: false);
+    if (routeExeRoutes.isNotEmpty) {
+      await _removeRouteExeServerRoutes(routeExeRoutes);
+    }
+
+    final powerShellRoutes = routesForFallback
+        .where(
+          (route) => route.removalTool == _WindowsRouteRemovalTool.powerShell,
+        )
+        .toList(growable: false);
+    if (powerShellRoutes.isEmpty) {
       return;
     }
 
@@ -2268,13 +3837,14 @@ try {
     try {
       await _runPowerShellScript(
         script,
+        label: 'remove_server_routes',
         namedArgs: <String, String>{
           'RoutesBase64': base64Encode(
-            utf8.encode(_hostRoutesJson(routesToRemove)),
+            utf8.encode(_hostRoutesJson(powerShellRoutes)),
           ),
         },
       );
-      for (final route in routesToRemove.reversed) {
+      for (final route in powerShellRoutes.reversed) {
         _rememberAppLog(
           'Temporary host route ${route.destinationPrefix} removed.',
         );
@@ -2284,6 +3854,190 @@ try {
         'Failed to remove temporary host routes: ${_describeError(error)}',
       );
     }
+  }
+
+  Future<Set<String>?> _removeNativeIpv4Routes(
+    List<({String destinationPrefix, int interfaceIndex, String nextHop})>
+    routes, {
+    required String label,
+  }) async {
+    Object? rawResult;
+    try {
+      rawResult = await _windowsTunChannel.invokeMethod<Object?>(
+        'removeIpv4Routes',
+        <String, Object?>{
+          'routes': routes
+              .map(
+                (route) => <String, Object?>{
+                  'destinationPrefix': route.destinationPrefix,
+                  'interfaceIndex': route.interfaceIndex,
+                  'nextHop': route.nextHop,
+                },
+              )
+              .toList(growable: false),
+        },
+      );
+    } on MissingPluginException {
+      _rememberAppLog(
+        'Native IPv4 route cleanup unavailable: Windows runner channel is not registered.',
+      );
+      return null;
+    } on PlatformException catch (error) {
+      _rememberAppLog(
+        'Native IPv4 route cleanup unavailable: ${error.message ?? error.code}',
+      );
+      return null;
+    } catch (error) {
+      _rememberAppLog(
+        'Native IPv4 route cleanup unavailable: ${_describeError(error)}',
+      );
+      return null;
+    }
+
+    if (rawResult is! Map) {
+      _rememberAppLog(
+        'Native IPv4 route cleanup unavailable: runner returned unexpected result.',
+      );
+      return null;
+    }
+
+    final result = rawResult.cast<Object?, Object?>();
+    final elapsedMs = result['elapsedMs']?.toString();
+    if (result['ok'] != true) {
+      final failedStep = result['failedStep']?.toString() ?? 'unknown';
+      final error = result['error']?.toString() ?? 'unknown error';
+      final elapsed = elapsedMs == null ? '' : ' after ${elapsedMs}ms';
+      _rememberAppLog(
+        'Native IPv4 route cleanup unavailable: $failedStep failed$elapsed: $error',
+      );
+      return null;
+    }
+
+    _rememberAppLog(
+      'Native IPv4 route cleanup $label${elapsedMs == null ? '' : ' elapsed=${elapsedMs}ms'}.',
+    );
+    final handledKeys = <String>{};
+    final routeItems = result['routes'] is List
+        ? result['routes'] as List
+        : const <dynamic>[];
+    for (final item in routeItems) {
+      if (item is! Map) {
+        continue;
+      }
+      final destinationPrefix = item['DestinationPrefix']?.toString().trim();
+      final nextHop = item['NextHop']?.toString().trim();
+      final interfaceIndex = (item['InterfaceIndex'] as num?)?.toInt();
+      if (destinationPrefix == null ||
+          destinationPrefix.isEmpty ||
+          nextHop == null ||
+          nextHop.isEmpty ||
+          interfaceIndex == null) {
+        continue;
+      }
+
+      final status = item['Status']?.toString();
+      if (status == 'removed' || status == 'missing') {
+        handledKeys.add(
+          _routeRemovalKey(
+            destinationPrefix: destinationPrefix,
+            interfaceIndex: interfaceIndex,
+            nextHop: nextHop,
+          ),
+        );
+      } else if (status == 'failed') {
+        _rememberAppLog(
+          'Native IPv4 route cleanup could not remove $destinationPrefix: ${_describeError(item['Error'] ?? 'unknown error')}',
+        );
+      }
+    }
+    return handledKeys;
+  }
+
+  bool _canRemoveWithNativeIpv4RouteApi({
+    required String destinationPrefix,
+    required int interfaceIndex,
+    required String nextHop,
+  }) {
+    if (!Platform.isWindows || interfaceIndex <= 0) {
+      return false;
+    }
+
+    final parts = destinationPrefix.split('/');
+    if (parts.length != 2) {
+      return false;
+    }
+    final destination = InternetAddress.tryParse(parts[0]);
+    final prefixLength = int.tryParse(parts[1]);
+    final gateway = InternetAddress.tryParse(nextHop);
+    return destination?.type == InternetAddressType.IPv4 &&
+        prefixLength != null &&
+        prefixLength >= 0 &&
+        prefixLength <= 32 &&
+        gateway?.type == InternetAddressType.IPv4;
+  }
+
+  String _routeRemovalKey({
+    required String destinationPrefix,
+    required int interfaceIndex,
+    required String nextHop,
+  }) {
+    return '$destinationPrefix\n$interfaceIndex\n$nextHop';
+  }
+
+  Future<void> _removeRouteExeServerRoutes(
+    List<_WindowsHostRoute> routes,
+  ) async {
+    for (final route in routes.reversed) {
+      final parts = _routeExeIpv4DestinationParts(route.destinationPrefix);
+      if (parts == null) {
+        _rememberAppLog(
+          'Failed to remove temporary host route ${route.destinationPrefix}: route.exe only supports IPv4 /32 routes here.',
+        );
+        continue;
+      }
+      try {
+        final result = await _runTimedProcess(
+          'route_delete_ipv4_server',
+          'route.exe',
+          <String>['DELETE', parts.address, 'MASK', parts.mask, route.nextHop],
+        );
+        if (result.exitCode != 0) {
+          _rememberAppLog(
+            'Failed to remove temporary host route ${route.destinationPrefix}: ${_describeError(result.stderr)}',
+          );
+          continue;
+        }
+        _rememberAppLog(
+          'Temporary host route ${route.destinationPrefix} removed.',
+        );
+      } catch (error) {
+        _rememberAppLog(
+          'Failed to remove temporary host route ${route.destinationPrefix}: ${_describeError(error)}',
+        );
+      }
+    }
+  }
+
+  _RouteExeIpv4Destination? _routeExeIpv4DestinationParts(
+    String destinationPrefix,
+  ) {
+    final parts = destinationPrefix.split('/');
+    if (parts.length != 2) {
+      return null;
+    }
+    final address = InternetAddress.tryParse(parts[0]);
+    if (address == null || address.type != InternetAddressType.IPv4) {
+      return null;
+    }
+    final mask = switch (parts[1]) {
+      '1' => '128.0.0.0',
+      '32' => '255.255.255.255',
+      _ => null,
+    };
+    if (mask == null) {
+      return null;
+    }
+    return _RouteExeIpv4Destination(address: address.address, mask: mask);
   }
 
   Future<void> _removeTemporaryTunRoutes({
@@ -2297,6 +4051,56 @@ try {
       return;
     }
 
+    final nativeRoutes = routesToRemove
+        .where(
+          (route) => _canRemoveWithNativeIpv4RouteApi(
+            destinationPrefix: route.destinationPrefix,
+            interfaceIndex: route.interfaceIndex,
+            nextHop: route.nextHop,
+          ),
+        )
+        .map(
+          (route) => (
+            destinationPrefix: route.destinationPrefix,
+            interfaceIndex: route.interfaceIndex,
+            nextHop: route.nextHop,
+          ),
+        )
+        .toList(growable: false);
+    final nativeRemovedKeys = nativeRoutes.isEmpty
+        ? <String>{}
+        : await _removeNativeIpv4Routes(
+                nativeRoutes,
+                label: 'remove_xray_tun_routes',
+              ) ??
+              <String>{};
+    for (final route in routesToRemove) {
+      if (nativeRemovedKeys.contains(
+        _routeRemovalKey(
+          destinationPrefix: route.destinationPrefix,
+          interfaceIndex: route.interfaceIndex,
+          nextHop: route.nextHop,
+        ),
+      )) {
+        _rememberAppLog('Xray TUN route ${route.destinationPrefix} removed.');
+      }
+    }
+
+    final routesForFallback = routesToRemove
+        .where(
+          (route) => !nativeRemovedKeys.contains(
+            _routeRemovalKey(
+              destinationPrefix: route.destinationPrefix,
+              interfaceIndex: route.interfaceIndex,
+              nextHop: route.nextHop,
+            ),
+          ),
+        )
+        .toList(growable: false);
+    if (routesForFallback.isEmpty) {
+      return;
+    }
+
     const script = r'''
 param([string]$RoutesBase64)
 try {
@@ -2327,13 +4131,14 @@ try {
     try {
       await _runPowerShellScript(
         script,
+        label: 'remove_xray_tun_routes',
         namedArgs: <String, String>{
           'RoutesBase64': base64Encode(
-            utf8.encode(_tunRoutesJson(routesToRemove)),
+            utf8.encode(_tunRoutesJson(routesForFallback)),
           ),
         },
       );
-      for (final route in routesToRemove) {
+      for (final route in routesForFallback) {
         _rememberAppLog('Xray TUN route ${route.destinationPrefix} removed.');
       }
     } catch (error) {
@@ -2380,21 +4185,29 @@ try {
       return cached;
     }
 
+    final fastElevation = _detectWindowsElevationWithToken();
+    if (fastElevation != null) {
+      _cachedWindowsElevation = fastElevation;
+      return fastElevation;
+    }
+
+    final fltmcElevation = await _detectWindowsElevationWithFltmc();
+    if (fltmcElevation != null) {
+      _cachedWindowsElevation = fltmcElevation;
+      return fltmcElevation;
+    }
+
     const script = r'''
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
-[Console]::Out.Write($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
-''';
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+  [Console]::Out.Write($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
+  ''';
 
     try {
-      final result = await Process.run('powershell.exe', <String>[
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
+      final result = await _runPowerShellScript(
         script,
-      ]);
+        label: 'detect_elevation',
+      );
       if (result.exitCode != 0) {
         _rememberAppLog(
           'Failed to detect elevation: ${_describeError(result.stderr)}',
@@ -2418,6 +4231,103 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
       return null;
     } catch (error) {
       _rememberAppLog('Failed to detect elevation: ${_describeError(error)}');
+      return null;
+    }
+  }
+
+  bool? _detectWindowsElevationWithToken() {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final kernel32 = DynamicLibrary.open('kernel32.dll');
+      final advapi32 = DynamicLibrary.open('advapi32.dll');
+      final getCurrentProcess = kernel32
+          .lookupFunction<_GetCurrentProcessNative, _GetCurrentProcessDart>(
+            'GetCurrentProcess',
+          );
+      final closeHandle = kernel32
+          .lookupFunction<_CloseHandleNative, _CloseHandleDart>('CloseHandle');
+      final openProcessToken = advapi32
+          .lookupFunction<_OpenProcessTokenNative, _OpenProcessTokenDart>(
+            'OpenProcessToken',
+          );
+      final getTokenInformation = advapi32
+          .lookupFunction<_GetTokenInformationNative, _GetTokenInformationDart>(
+            'GetTokenInformation',
+          );
+
+      final tokenHandle = calloc<IntPtr>();
+      final elevation = calloc<Uint32>();
+      final returnLength = calloc<Uint32>();
+      try {
+        final opened = openProcessToken(
+          getCurrentProcess(),
+          _tokenQuery,
+          tokenHandle,
+        );
+        if (opened == 0 || tokenHandle.value == 0) {
+          return null;
+        }
+
+        final ok = getTokenInformation(
+          tokenHandle.value,
+          _tokenElevation,
+          elevation.cast<Void>(),
+          sizeOf<Uint32>(),
+          returnLength,
+        );
+        if (ok == 0) {
+          return null;
+        }
+
+        return elevation.value != 0;
+      } finally {
+        if (tokenHandle.value != 0) {
+          closeHandle(tokenHandle.value);
+        }
+        calloc.free(returnLength);
+        calloc.free(elevation);
+        calloc.free(tokenHandle);
+      }
+    } catch (error) {
+      _rememberAppLog(
+        'Fast token elevation probe unavailable: ${_describeError(error)}',
+      );
+      return null;
+    } finally {
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: token:detect_elevation elapsed=${stopwatch.elapsedMilliseconds}ms.',
+      );
+    }
+  }
+
+  Future<bool?> _detectWindowsElevationWithFltmc() async {
+    try {
+      final result = await _runTimedProcess(
+        'fltmc:detect_elevation',
+        'fltmc.exe',
+        const <String>[],
+        timeout: const Duration(seconds: 1),
+      );
+      if (result.exitCode == 0) {
+        return true;
+      }
+
+      final output = '${result.stdout}\n${result.stderr}'.toLowerCase();
+      if (output.contains('0x80070005') ||
+          output.contains('access is denied') ||
+          output.contains('requires elevation')) {
+        return false;
+      }
+
+      _rememberAppLog(
+        'Fast elevation probe unavailable: fltmc exited with ${result.exitCode}; falling back to PowerShell.',
+      );
+      return null;
+    } catch (error) {
+      _rememberAppLog(
+        'Fast elevation probe unavailable: ${_describeError(error)}',
+      );
       return null;
     }
   }
@@ -2622,9 +4532,10 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 
   Future<ProcessResult> _runPowerShellScript(
     String script, {
+    String label = 'script',
     Map<String, String> namedArgs = const <String, String>{},
   }) {
-    return Process.run('powershell.exe', <String>[
+    return _runTimedProcess('powershell:$label', 'powershell.exe', <String>[
       '-NoProfile',
       '-NonInteractive',
       '-ExecutionPolicy',
@@ -2632,6 +4543,62 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
       '-Command',
       _buildPowerShellInvocation(script, namedArgs: namedArgs),
     ]);
+  }
+
+  Future<ProcessResult> _runTimedProcess(
+    String label,
+    String executable,
+    List<String> args, {
+    String? workingDirectory,
+    Duration? timeout,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final run = Process.run(
+        executable,
+        args,
+        workingDirectory: workingDirectory,
+      );
+      final result = await (timeout == null ? run : run.timeout(timeout));
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: $label elapsed=${stopwatch.elapsedMilliseconds}ms exit=${result.exitCode}.',
+      );
+      return result;
+    } catch (error) {
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: $label elapsed=${stopwatch.elapsedMilliseconds}ms failed=${_describeError(error)}.',
+      );
+      rethrow;
+    }
+  }
+
+  Future<Process> _startTimedProcess(
+    String label,
+    String executable,
+    List<String> args, {
+    String? workingDirectory,
+  }) async {
+    final stopwatch = Stopwatch()..start();
+    try {
+      final process = await Process.start(
+        executable,
+        args,
+        workingDirectory: workingDirectory,
+      );
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: $label elapsed=${stopwatch.elapsedMilliseconds}ms pid=${process.pid}.',
+      );
+      return process;
+    } catch (error) {
+      stopwatch.stop();
+      _rememberAppLog(
+        'Process timing: $label elapsed=${stopwatch.elapsedMilliseconds}ms failed=${_describeError(error)}.',
+      );
+      rethrow;
+    }
   }
 
   String _buildPowerShellInvocation(
@@ -2743,6 +4710,42 @@ class _AndroidStartPayload {
   final SplitTunnelSettings splitTunnelSettings;
 }
 
+class _SplitTunnelExpansionCacheEntry {
+  const _SplitTunnelExpansionCacheEntry({
+    required this.key,
+    required this.settings,
+    required this.createdAt,
+    required this.addedAppCount,
+  });
+
+  final String key;
+  final SplitTunnelSettings settings;
+  final DateTime createdAt;
+  final int addedAppCount;
+}
+
+class _WindowsProcessInfo {
+  const _WindowsProcessInfo({
+    required this.pid,
+    required this.parentPid,
+    required this.path,
+  });
+
+  final int pid;
+  final int parentPid;
+  final String? path;
+}
+
+class _WindowsProcessSnapshotCacheEntry {
+  const _WindowsProcessSnapshotCacheEntry({
+    required this.createdAt,
+    required this.processes,
+  });
+
+  final DateTime createdAt;
+  final List<_WindowsProcessInfo> processes;
+}
+
 class _WindowsRouteInfo {
   const _WindowsRouteInfo({
     required this.interfaceAlias,
@@ -2761,18 +4764,6 @@ class _WindowsRouteInfo {
   final bool? virtual;
 }
 
-class _WindowsDefaultRouteInfo {
-  const _WindowsDefaultRouteInfo({
-    required this.interfaceAlias,
-    required this.interfaceIndex,
-    this.nextHop,
-  });
-
-  final String interfaceAlias;
-  final int interfaceIndex;
-  final String? nextHop;
-}
-
 class _TunRoutingPreparation {
   const _TunRoutingPreparation({
     this.outboundBindInterface,
@@ -2784,10 +4775,26 @@ class _TunRoutingPreparation {
 }
 
 class _WindowsTunSetup {
-  const _WindowsTunSetup({required this.routes, required this.networkChanged});
+  const _WindowsTunSetup({
+    required this.routes,
+    required this.networkChanged,
+    this.fastConfigureMethod,
+  });
 
   final List<_WindowsTunRoute> routes;
   final bool networkChanged;
+  final _WindowsTunFastConfigureMethod? fastConfigureMethod;
+}
+
+enum _WindowsTunSetupKind { full, fastNativeApi, fastNetsh, routeOnly }
+
+enum _WindowsTunFastConfigureMethod {
+  nativeApi('native_configure'),
+  netsh('netsh_configure');
+
+  const _WindowsTunFastConfigureMethod(this.timingLabel);
+
+  final String timingLabel;
 }
 
 class _WindowsTunRoute {
@@ -2810,10 +4817,155 @@ class _WindowsHostRoute {
     required this.interfaceAlias,
     required this.interfaceIndex,
     required this.nextHop,
+    this.removalTool = _WindowsRouteRemovalTool.powerShell,
   });
 
   final String destinationPrefix;
   final String interfaceAlias;
   final int interfaceIndex;
   final String nextHop;
+  final _WindowsRouteRemovalTool removalTool;
 }
+
+enum _WindowsRouteRemovalTool { powerShell, routeExe }
+
+class _Ipv4DefaultRoute {
+  const _Ipv4DefaultRoute({
+    required this.gateway,
+    required this.interfaceAddress,
+    required this.metric,
+  });
+
+  final String gateway;
+  final String interfaceAddress;
+  final int metric;
+}
+
+class _RouteExeIpv4Destination {
+  const _RouteExeIpv4Destination({required this.address, required this.mask});
+
+  final String address;
+  final String mask;
+}
+
+class _NetshIpv4Interface {
+  const _NetshIpv4Interface({
+    required this.index,
+    required this.name,
+    required this.status,
+  });
+
+  final int index;
+  final String name;
+  final String status;
+}
+
+const int _tokenQuery = 0x0008;
+const int _tokenElevation = 20;
+const int _th32csSnapProcess = 0x00000002;
+const int _invalidHandleValue = -1;
+const int _processQueryLimitedInformation = 0x1000;
+const int _processTerminate = 0x0001;
+const int _synchronize = 0x00100000;
+const int _maxWindowsPathBufferChars = 32768;
+
+final class _ProcessEntry32W extends Struct {
+  @Uint32()
+  external int dwSize;
+
+  @Uint32()
+  external int cntUsage;
+
+  @Uint32()
+  external int th32ProcessID;
+
+  @IntPtr()
+  external int th32DefaultHeapID;
+
+  @Uint32()
+  external int th32ModuleID;
+
+  @Uint32()
+  external int cntThreads;
+
+  @Uint32()
+  external int th32ParentProcessID;
+
+  @Int32()
+  external int pcPriClassBase;
+
+  @Uint32()
+  external int dwFlags;
+
+  @Array(260)
+  external Array<Uint16> szExeFile;
+}
+
+typedef _GetCurrentProcessNative = IntPtr Function();
+typedef _GetCurrentProcessDart = int Function();
+
+typedef _OpenProcessTokenNative =
+    Int32 Function(IntPtr processHandle, Uint32 desiredAccess, Pointer<IntPtr>);
+typedef _OpenProcessTokenDart =
+    int Function(int processHandle, int desiredAccess, Pointer<IntPtr>);
+
+typedef _GetTokenInformationNative =
+    Int32 Function(
+      IntPtr tokenHandle,
+      Int32 tokenInformationClass,
+      Pointer<Void> tokenInformation,
+      Uint32 tokenInformationLength,
+      Pointer<Uint32> returnLength,
+    );
+typedef _GetTokenInformationDart =
+    int Function(
+      int tokenHandle,
+      int tokenInformationClass,
+      Pointer<Void> tokenInformation,
+      int tokenInformationLength,
+      Pointer<Uint32> returnLength,
+    );
+
+typedef _CloseHandleNative = Int32 Function(IntPtr handle);
+typedef _CloseHandleDart = int Function(int handle);
+
+typedef _CreateToolhelp32SnapshotNative =
+    IntPtr Function(Uint32 flags, Uint32 processId);
+typedef _CreateToolhelp32SnapshotDart = int Function(int flags, int processId);
+
+typedef _Process32Native =
+    Int32 Function(IntPtr snapshot, Pointer<_ProcessEntry32W> entry);
+typedef _Process32Dart =
+    int Function(int snapshot, Pointer<_ProcessEntry32W> entry);
+
+typedef _OpenProcessNative =
+    IntPtr Function(
+      Uint32 desiredAccess,
+      Int32 inheritHandle,
+      Uint32 processId,
+    );
+typedef _OpenProcessDart =
+    int Function(int desiredAccess, int inheritHandle, int processId);
+
+typedef _QueryFullProcessImageNameNative =
+    Int32 Function(
+      IntPtr process,
+      Uint32 flags,
+      Pointer<Uint16> exeName,
+      Pointer<Uint32> size,
+    );
+typedef _QueryFullProcessImageNameDart =
+    int Function(
+      int process,
+      int flags,
+      Pointer<Uint16> exeName,
+      Pointer<Uint32> size,
+    );
+
+typedef _TerminateProcessNative =
+    Int32 Function(IntPtr process, Uint32 exitCode);
+typedef _TerminateProcessDart = int Function(int process, int exitCode);
+
+typedef _WaitForSingleObjectNative =
+    Uint32 Function(IntPtr handle, Uint32 milliseconds);
+typedef _WaitForSingleObjectDart = int Function(int handle, int milliseconds);

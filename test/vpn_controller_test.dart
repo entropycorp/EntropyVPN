@@ -115,6 +115,20 @@ void main() {
     ]);
   });
 
+  test('shutdown for exit waits for runtime cleanup', () async {
+    final runtimeService = _RecordingCoreRuntimeService();
+    final controller = VpnController(
+      appStateStore: _MemoryAppStateStore(),
+      runtimeService: runtimeService,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.shutdownForExit();
+
+    expect(runtimeService.stopWaitForCleanupValues, <bool>[true]);
+    expect(controller.isConnected, isFalse);
+  });
+
   test('auto-adds valid pasted source input silently', () async {
     final controller = VpnController(appStateStore: _MemoryAppStateStore());
     addTearDown(controller.dispose);
@@ -319,7 +333,16 @@ class _FakeCoreRuntimeService extends CoreRuntimeService {
   }) async {}
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop({bool waitForCleanup = false}) async {}
+}
+
+class _RecordingCoreRuntimeService extends _FakeCoreRuntimeService {
+  final List<bool> stopWaitForCleanupValues = <bool>[];
+
+  @override
+  Future<void> stop({bool waitForCleanup = false}) async {
+    stopWaitForCleanupValues.add(waitForCleanup);
+  }
 }
 
 class _ThrowingCoreRuntimeService extends CoreRuntimeService {
@@ -338,5 +361,5 @@ class _ThrowingCoreRuntimeService extends CoreRuntimeService {
   }
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop({bool waitForCleanup = false}) async {}
 }

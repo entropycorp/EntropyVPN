@@ -10,6 +10,7 @@ import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import android.widget.Toast
 import androidx.annotation.RequiresApi
+import java.util.Locale
 
 @RequiresApi(Build.VERSION_CODES.N)
 class EntropyVpnTileService : TileService() {
@@ -105,6 +106,10 @@ class EntropyVpnTileService : TileService() {
         val profileName =
             snapshot["profileName"]?.toString()?.trim()?.takeIf(String::isNotEmpty)
                 ?: payload?.profileName
+        val serverCountryCode =
+            snapshot["serverCountryCode"]?.toString()?.trim()?.takeIf(String::isNotEmpty)
+                ?: payload?.serverCountryCode
+        val profileSubtitle = profileNameWithCountryFlag(profileName, serverCountryCode)
 
         tile.label = "EntropyVPN"
         tile.state =
@@ -118,12 +123,36 @@ class EntropyVpnTileService : TileService() {
                 when {
                     isConnecting -> "Connecting"
                     isDisconnecting -> "Disconnecting"
-                    isConnected -> profileName?.takeIf(String::isNotBlank) ?: "Connected"
+                    isConnected -> profileSubtitle ?: "Connected"
                     payload == null -> "Open app first"
                     else -> "Tap to connect"
                 }
         }
         tile.updateTile()
+    }
+
+    private fun profileNameWithCountryFlag(
+        profileName: String?,
+        countryCode: String?,
+    ): String? {
+        val name = profileName?.trim()?.takeIf(String::isNotEmpty) ?: return null
+        val flag = flagEmojiForCountryCode(countryCode) ?: return name
+        return if (name.startsWith(flag)) name else "$flag $name"
+    }
+
+    private fun flagEmojiForCountryCode(countryCode: String?): String? {
+        val normalized = normalizeCountryCode(countryCode) ?: return null
+        val first = 0x1F1E6 + (normalized[0].code - 'A'.code)
+        val second = 0x1F1E6 + (normalized[1].code - 'A'.code)
+        return String(Character.toChars(first)) + String(Character.toChars(second))
+    }
+
+    private fun normalizeCountryCode(countryCode: String?): String? {
+        val normalized = countryCode.orEmpty().trim().uppercase(Locale.US)
+        if (normalized.length != 2 || normalized.any { it !in 'A'..'Z' }) {
+            return null
+        }
+        return normalized
     }
 
     private fun openApp() {

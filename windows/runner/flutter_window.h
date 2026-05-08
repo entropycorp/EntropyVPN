@@ -3,6 +3,8 @@
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
+#include <flutter/encodable_value.h>
 
 #include <memory>
 
@@ -23,11 +25,24 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  void AddTrayIcon();
+  void RemoveTrayIcon();
+  void ShowTrayMenu();
+  void ShowWindowFromTray();
+  void HideWindowToTray();
+  void QuitFromTray();
+  void FinishQuit();
 
   flutter::DartProject project_;
 
 
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      lifecycle_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      windows_tun_channel_;
+  bool tray_icon_added_ = false;
+  bool is_quitting_ = false;
 };
 
 #endif

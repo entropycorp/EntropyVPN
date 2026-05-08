@@ -349,6 +349,8 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
     }
 
     private fun startRuntime(intent: Intent) {
+        val startupTiming = RuntimeTiming()
+        val readStartNanos = System.nanoTime()
         val core = intent.getStringExtra(extraCore) ?: return
         val config = intent.getStringExtra(extraConfig) ?: return
         val profileName =
@@ -368,38 +370,69 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
                 .orEmpty()
                 .mapNotNull { it.trim().takeIf(String::isNotEmpty) }
                 .toSet()
+        startupTiming.addElapsed("read_start_intent", readStartNanos)
 
         expectedStop = false
-        stopActiveRuntime()
+        startupTiming.time("stop_existing_runtime") {
+            stopActiveRuntime()
+        }
 
-        currentCore = core
-        currentConfig = config
-        currentProfileName = profileName
-        currentServerAddress = serverAddress
-        currentServerCountryCode = serverCountryCode
-        currentLanguage = language
-        currentTunIpMode = tunIpMode
-        currentSplitTunnelMode = splitTunnelMode
-        currentSplitTunnelPackages = splitTunnelPackages
+        startupTiming.time("assign_runtime_state") {
+            currentCore = core
+            currentConfig = config
+            currentProfileName = profileName
+            currentServerAddress = serverAddress
+            currentServerCountryCode = serverCountryCode
+            currentLanguage = language
+            currentTunIpMode = tunIpMode
+            currentSplitTunnelMode = splitTunnelMode
+            currentSplitTunnelPackages = splitTunnelPackages
+        }
 
-        EntropyVpnRuntimeStore.resetForStart(core, profileName)
-        updateNotification(
-            notificationText("Connecting", "Подключение", profileName),
-        )
+        startupTiming.time("reset_runtime_store") {
+            EntropyVpnRuntimeStore.resetForStart(core, profileName, serverCountryCode)
+        }
 
+        var startupTimingLogged = false
         runCatching {
-            when (core) {
-                "singBox" -> startSingBox(config)
-                "xray" -> startXray(config)
-                else -> error("Unsupported core: $core")
+            startupTiming.time("runtime_start") {
+                when (core) {
+                    "singBox" -> startSingBox(config)
+                    "xray" -> startXray(config)
+                    else -> error("Unsupported core: $core")
+                }
             }
         }.onSuccess {
-            EntropyVpnRuntimeStore.markConnected()
-            updateNotification(
-                notificationText("Connected", "Подключено", profileName),
+            startupTiming.time("mark_connected") {
+                EntropyVpnRuntimeStore.markConnected()
+            }
+            startupTiming.stop()
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Startup timing: ${startupTiming.summary()}.",
+            )
+            startupTimingLogged = true
+
+            val notificationTiming = RuntimeTiming()
+            notificationTiming.time("notify_connected") {
+                updateNotification(
+                    notificationText("Connected", "Подключено", profileName),
+                    notificationTiming,
+                )
+            }
+            notificationTiming.stop()
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Connected notification timing: ${notificationTiming.summary()}.",
             )
         }.onFailure { error ->
-            handleFailure(error.describeForUser("Failed to start VPN runtime."))
+            startupTiming.time("handle_start_failure") {
+                handleFailure(error.describeForUser("Failed to start VPN runtime."))
+            }
+        }
+        if (!startupTimingLogged) {
+            startupTiming.stop()
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Startup timing: ${startupTiming.summary()}.",
+            )
         }
     }
 
@@ -430,89 +463,139 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
     }
 
     private fun startXray(config: String) {
-        val startedProcess = startXrayProcess(config)
+        val timing = RuntimeTiming()
+        val startedProcess = timing.time("xray_process_start_total") {
+            startXrayProcess(config, timing)
+        }
         try {
-            startHevTunToSocksBridge()
-        } catch (error: Throwable) {
-            if (process === startedProcess) {
-                process = null
+            timing.time("hev_bridge_start") {
+                startHevTunToSocksBridge()
             }
-            runCatching {
-                if (hevTunnelStarted) {
-                    EntropyHevTunnel.TProxyStopService()
+        } catch (error: Throwable) {
+            timing.time("failed_start_cleanup") {
+                if (process === startedProcess) {
+                    process = null
+                }
+                runCatching {
+                    if (hevTunnelStarted) {
+                        EntropyHevTunnel.TProxyStopService()
+                    }
+                }
+                hevTunnelStarted = false
+                runCatching {
+                    tunFileDescriptor?.close()
+                }
+                tunFileDescriptor = null
+                runCatching {
+                    stopXrayProcess(startedProcess, waitForProcess = true, timing = timing)
                 }
             }
-            hevTunnelStarted = false
-            runCatching {
-                tunFileDescriptor?.close()
-            }
-            tunFileDescriptor = null
-            runCatching {
-                startedProcess.destroy()
-                startedProcess.waitFor()
-            }
             throw error
+        } finally {
+            timing.stop()
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Android Xray startup timing: ${timing.summary()}.",
+            )
         }
     }
 
     private fun startHevTunToSocksBridge() {
-        startDefaultNetworkMonitor()
+        val timing = RuntimeTiming()
+        try {
+            timing.time("default_network_monitor") {
+                startDefaultNetworkMonitor()
+            }
 
-        val pfd = openHevTunInterface()
-        val configFile = File(filesDir, hevConfigFileName)
-        val config = buildHevConfig()
-        configFile.writeText(config)
+            val pfd = timing.time("open_tun_interface") {
+                openHevTunInterface()
+            }
+            val configFile = File(filesDir, hevConfigFileName)
+            val config = timing.time("build_hev_config") {
+                buildHevConfig()
+            }
+            timing.time("write_hev_config") {
+                configFile.writeText(config)
+            }
 
-        EntropyVpnRuntimeStore.addLog(
-            "[app] Starting hev-socks5-tunnel bridge to Xray SOCKS on " +
-                "$xraySocksHost:$xraySocksPort.",
-        )
+            timing.time("log_hev_bridge_start") {
+                EntropyVpnRuntimeStore.addLog(
+                    "[app] Starting hev-socks5-tunnel bridge to Xray SOCKS on " +
+                        "$xraySocksHost:$xraySocksPort.",
+                )
+            }
 
-        EntropyHevTunnel.TProxyStartService(configFile.absolutePath, pfd.fd)
-        hevTunnelStarted = true
+            timing.time("hev_start_service") {
+                EntropyHevTunnel.TProxyStartService(configFile.absolutePath, pfd.fd)
+            }
+            hevTunnelStarted = true
+        } finally {
+            timing.stop()
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Android hev startup timing: ${timing.summary()}.",
+            )
+        }
     }
 
     private fun openHevTunInterface(): ParcelFileDescriptor {
+        val timing = RuntimeTiming()
         val includeIpv4 = currentTunIpMode.includesIpv4()
         val includeIpv6 = currentTunIpMode.includesIpv6()
         val dnsServers = hevDnsServersFor(currentTunIpMode)
-        val builder =
+        val builder = timing.time("builder_create") {
             Builder()
                 .setSession(currentProfileName)
                 .setMtu(hevMtu)
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            builder.setMetered(false)
         }
 
-        applyAppSplitTunnel(builder)
-        if (includeIpv4) {
-            builder.addAddress(hevIpv4Address, hevIpv4Prefix)
-            builder.addRoute("0.0.0.0", 0)
-        }
-        if (includeIpv6) {
-            builder.addAddress(hevIpv6Address, hevIpv6Prefix)
-            builder.addRoute("::", 0)
-        }
-        for (server in dnsServers) {
-            builder.addDnsServer(server)
+        timing.time("builder_options") {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.setMetered(false)
+            }
         }
 
-        EntropyVpnRuntimeStore.addLog(
-            "[app] Opening Xray VPN TUN via hev: sdk=${Build.VERSION.SDK_INT}, " +
-                "mode=$currentTunIpMode, mtu=$hevMtu, " +
-                "addr4=${formatHevPrefix(includeIpv4, hevIpv4Address, hevIpv4Prefix)}, " +
-                "addr6=${formatHevPrefix(includeIpv6, hevIpv6Address, hevIpv6Prefix)}, " +
-                "route4=${if (includeIpv4) "0.0.0.0/0" else "-"}, " +
-                "route6=${if (includeIpv6) "::/0" else "-"}, " +
-                "dns=${dnsServers.joinToString(",")}.",
-        )
+        timing.time("app_split_tunnel") {
+            applyAppSplitTunnel(builder)
+        }
+        timing.time("routes_dns") {
+            if (includeIpv4) {
+                builder.addAddress(hevIpv4Address, hevIpv4Prefix)
+                builder.addRoute("0.0.0.0", 0)
+            }
+            if (includeIpv6) {
+                builder.addAddress(hevIpv6Address, hevIpv6Prefix)
+                builder.addRoute("::", 0)
+            }
+            for (server in dnsServers) {
+                builder.addDnsServer(server)
+            }
+        }
 
-        val pfd =
+        timing.time("log_tun_open") {
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Opening Xray VPN TUN via hev: sdk=${Build.VERSION.SDK_INT}, " +
+                    "mode=$currentTunIpMode, mtu=$hevMtu, " +
+                    "addr4=${formatHevPrefix(includeIpv4, hevIpv4Address, hevIpv4Prefix)}, " +
+                    "addr6=${formatHevPrefix(includeIpv6, hevIpv6Address, hevIpv6Prefix)}, " +
+                    "route4=${if (includeIpv4) "0.0.0.0/0" else "-"}, " +
+                    "route6=${if (includeIpv6) "::/0" else "-"}, " +
+                    "dns=${dnsServers.joinToString(",")}.",
+            )
+        }
+
+        val pfd = timing.time("vpn_establish") {
             builder.establish()
                 ?: error("Android VpnService establish() returned null.")
-        tunFileDescriptor = pfd
-        updateDefaultNetwork(defaultNetwork)
+        }
+        timing.time("store_tun_fd") {
+            tunFileDescriptor = pfd
+        }
+        timing.time("underlying_network") {
+            updateDefaultNetwork(defaultNetwork)
+        }
+        timing.stop()
+        EntropyVpnRuntimeStore.addLog(
+            "[app] Android TUN establish timing: ${timing.summary()}.",
+        )
         return pfd
     }
 
@@ -538,44 +621,58 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
             appendLine(" log-level: warn")
         }
 
-    private fun startXrayProcess(config: String): Process {
-        val binary = resolveXrayExecutable()
+    private fun startXrayProcess(config: String, timing: RuntimeTiming? = null): Process {
+        val binary = timing.timeIfEnabled("resolve_xray_binary") {
+            resolveXrayExecutable()
+        }
         val configFile = File(cacheDir, "xray-runtime.json")
-        configFile.writeText(config)
+        timing.timeIfEnabled("write_xray_config") {
+            configFile.writeText(config)
+        }
 
         val processBuilder =
-            ProcessBuilder(binary.absolutePath, "run", "-c", configFile.absolutePath)
-                .directory(configFile.parentFile)
-                .redirectErrorStream(true)
+            timing.timeIfEnabled("build_xray_process") {
+                ProcessBuilder(binary.absolutePath, "run", "-c", configFile.absolutePath)
+                    .directory(configFile.parentFile)
+                    .redirectErrorStream(true)
+            }
 
-        val startedProcess = processBuilder.start()
-        process = startedProcess
+        val startedProcess = timing.timeIfEnabled("xray_process_spawn") {
+            processBuilder.start()
+        }
+        timing.timeIfEnabled("store_xray_process") {
+            process = startedProcess
+        }
 
-        thread(name = "xray-log-reader", isDaemon = true) {
-            try {
-                InputStreamReader(startedProcess.inputStream).buffered().useLines { lines ->
-                    lines.forEach { line ->
-                        EntropyVpnRuntimeStore.addLog(line)
+        timing.timeIfEnabled("start_xray_log_reader") {
+            thread(name = "xray-log-reader", isDaemon = true) {
+                try {
+                    InputStreamReader(startedProcess.inputStream).buffered().useLines { lines ->
+                        lines.forEach { line ->
+                            EntropyVpnRuntimeStore.addLog(line)
+                        }
                     }
-                }
-            } catch (error: IOException) {
-                if (!expectedStop && process === startedProcess) {
-                    EntropyVpnRuntimeStore.addLog(
-                        "[app] xray log stream closed: ${error.describeForUser("log stream closed")}",
-                    )
+                } catch (error: IOException) {
+                    if (!expectedStop && process === startedProcess) {
+                        EntropyVpnRuntimeStore.addLog(
+                            "[app] xray log stream closed: ${error.describeForUser("log stream closed")}",
+                        )
+                    }
                 }
             }
         }
 
-        thread(name = "xray-exit-waiter", isDaemon = true) {
-            val exitCode = startedProcess.waitFor()
-            dispatchRuntime {
-                if (process !== startedProcess) {
-                    return@dispatchRuntime
-                }
-                process = null
-                if (!expectedStop) {
-                    handleFailure("xray exited with code $exitCode.")
+        timing.timeIfEnabled("start_xray_exit_waiter") {
+            thread(name = "xray-exit-waiter", isDaemon = true) {
+                val exitCode = startedProcess.waitFor()
+                dispatchRuntime {
+                    if (process !== startedProcess) {
+                        return@dispatchRuntime
+                    }
+                    process = null
+                    if (!expectedStop) {
+                        handleFailure("xray exited with code $exitCode.")
+                    }
                 }
             }
         }
@@ -604,56 +701,145 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
     }
 
     private fun stopRuntime(clearError: Boolean) {
+        val stopTiming = RuntimeTiming()
         expectedStop = true
-        EntropyVpnRuntimeStore.markStopping()
-        updateNotification(notificationText("Disconnecting", "Отключение"))
-        stopActiveRuntime()
-        EntropyVpnRuntimeStore.markDisconnected(clearError = clearError)
-        requestQuickSettingsTileUpdate()
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        stopTiming.time("mark_stopping") {
+            EntropyVpnRuntimeStore.markStopping()
+        }
+        stopTiming.time("core_process_stop") {
+            stopActiveRuntime(
+                waitForProcess = true,
+                closeTunFileDescriptor = true,
+                logTiming = true,
+            )
+        }
+        stopTiming.stop()
+        EntropyVpnRuntimeStore.addLog("[app] Stop timing: ${stopTiming.summary()}.")
+
+        val cleanupTiming = RuntimeTiming()
+        cleanupTiming.time("mark_disconnected") {
+            EntropyVpnRuntimeStore.markDisconnected(clearError = clearError)
+        }
+        cleanupTiming.time("quick_settings_tile_update") {
+            requestQuickSettingsTileUpdate()
+        }
+        cleanupTiming.time("stop_foreground") {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        }
+        cleanupTiming.time("stop_self") {
+            stopSelf()
+        }
+        cleanupTiming.stop()
+        EntropyVpnRuntimeStore.addLog(
+            "[app] Stop cleanup timing: ${cleanupTiming.summary()}.",
+        )
     }
 
     private fun stopActiveRuntime() {
         stopActiveRuntime(waitForProcess = true)
     }
 
-    private fun stopActiveRuntime(waitForProcess: Boolean) {
-        stopDefaultNetworkMonitor()
-
-        runCatching {
-            commandClient?.disconnect()
+    private fun stopActiveRuntime(
+        waitForProcess: Boolean,
+        closeTunFileDescriptor: Boolean = true,
+        logTiming: Boolean = false,
+    ) {
+        val timing = if (logTiming) RuntimeTiming() else null
+        timing.timeIfEnabled("default_network_monitor") {
+            stopDefaultNetworkMonitor()
         }
-        commandClient = null
 
-        runCatching {
-            commandServer?.closeService()
+        timing.timeIfEnabled("sing_box_client_disconnect") {
+            runCatching {
+                commandClient?.disconnect()
+            }
+            commandClient = null
         }
-        runCatching {
-            commandServer?.close()
-        }
-        commandServer = null
 
-        runCatching {
-            if (hevTunnelStarted) {
-                EntropyVpnRuntimeStore.addLog("[app] Stopping hev-socks5-tunnel bridge.")
-                EntropyHevTunnel.TProxyStopService()
+        timing.timeIfEnabled("sing_box_service_stop") {
+            runCatching {
+                commandServer?.closeService()
+            }
+            runCatching {
+                commandServer?.close()
+            }
+            commandServer = null
+        }
+
+        timing.timeIfEnabled("hev_stop_service") {
+            runCatching {
+                if (hevTunnelStarted) {
+                    EntropyVpnRuntimeStore.addLog("[app] Stopping hev-socks5-tunnel bridge.")
+                    EntropyHevTunnel.TProxyStopService()
+                }
+            }
+            hevTunnelStarted = false
+        }
+
+        val processToStop = process
+        timing.timeIfEnabled("xray_process_destroy") {
+            runCatching {
+                destroyXrayProcess(processToStop)
+            }
+            process = null
+        }
+
+        if (closeTunFileDescriptor) {
+            timing.timeIfEnabled("close_tun_fd") {
+                closeTunFileDescriptor()
             }
         }
-        hevTunnelStarted = false
 
-        runCatching {
-            process?.destroy()
-            if (waitForProcess) {
-                process?.waitFor()
+        timing.timeIfEnabled("xray_process_wait") {
+            runCatching {
+                if (waitForProcess) {
+                    processToStop?.waitFor()
+                }
             }
         }
-        process = null
 
+        timing?.stop()
+        if (timing != null) {
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Android runtime stop timing: ${timing.summary()}.",
+            )
+        }
+    }
+
+    private fun closeTunFileDescriptor() {
         runCatching {
             tunFileDescriptor?.close()
         }
         tunFileDescriptor = null
+    }
+
+    private fun stopXrayProcess(
+        processToStop: Process?,
+        waitForProcess: Boolean,
+        timing: RuntimeTiming? = null,
+    ) {
+        if (processToStop == null) {
+            return
+        }
+        timing.timeIfEnabled("xray_process_destroy") {
+            destroyXrayProcess(processToStop)
+        }
+        if (waitForProcess) {
+            timing.timeIfEnabled("xray_process_wait") {
+                processToStop.waitFor()
+            }
+        }
+    }
+
+    private fun destroyXrayProcess(processToStop: Process?) {
+        if (processToStop == null) {
+            return
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            processToStop.destroyForcibly()
+        } else {
+            processToStop.destroy()
+        }
     }
 
     private fun dispatchRuntime(block: () -> Unit) {
@@ -756,9 +942,16 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         return String(Character.toChars(first)) + String(Character.toChars(second))
     }
 
-    private fun updateNotification(text: String) {
-        notificationManager.notify(notificationId, buildNotification(text))
-        requestQuickSettingsTileUpdate()
+    private fun updateNotification(text: String, timing: RuntimeTiming? = null) {
+        val notification = timing.timeIfEnabled("build_notification") {
+            buildNotification(text)
+        }
+        timing.timeIfEnabled("notification_manager_notify") {
+            notificationManager.notify(notificationId, notification)
+        }
+        timing.timeIfEnabled("notification_tile_update") {
+            requestQuickSettingsTileUpdate()
+        }
     }
 
     private fun buildNotification(text: String): Notification {
@@ -1449,6 +1642,55 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         } else {
             "${javaClass.simpleName}: $message"
         }
+    }
+
+    private fun <T> RuntimeTiming?.timeIfEnabled(
+        label: String,
+        action: () -> T,
+    ): T = this?.time(label, action) ?: action()
+
+    private class RuntimeTiming {
+        private val startedAtNanos = System.nanoTime()
+        private val entries = mutableListOf<Entry>()
+        private var stoppedAtNanos: Long? = null
+
+        fun <T> time(label: String, action: () -> T): T {
+            val startedAt = System.nanoTime()
+            try {
+                return action()
+            } finally {
+                addEntry(label, startedAt, System.nanoTime())
+            }
+        }
+
+        fun addElapsed(label: String, startedAt: Long) {
+            addEntry(label, startedAt, System.nanoTime())
+        }
+
+        fun stop() {
+            if (stoppedAtNanos == null) {
+                stoppedAtNanos = System.nanoTime()
+            }
+        }
+
+        fun summary(): String {
+            val stoppedAt = stoppedAtNanos ?: System.nanoTime()
+            return buildList {
+                add("total=${elapsedMs(startedAtNanos, stoppedAt)}ms")
+                entries.forEach { entry ->
+                    add("${entry.label}=${entry.elapsedMs}ms")
+                }
+            }.joinToString(", ")
+        }
+
+        private fun addEntry(label: String, startedAt: Long, stoppedAt: Long) {
+            entries += Entry(label, elapsedMs(startedAt, stoppedAt))
+        }
+
+        private fun elapsedMs(startedAt: Long, stoppedAt: Long): Long =
+            (stoppedAt - startedAt).coerceAtLeast(0L) / 1_000_000L
+
+        private data class Entry(val label: String, val elapsedMs: Long)
     }
 
     private class SimpleStringIterator(private val iterator: Iterator<String>) : StringIterator {

@@ -43,6 +43,10 @@ const _qrImageFileExtensions = <String>[
 
 enum _HomeSection { connect, add, settings, logs }
 
+class _ReturnToMainSectionIntent extends Intent {
+  const _ReturnToMainSectionIntent();
+}
+
 enum _QrScanSource { gallery, camera, clipboardImage, imageFile }
 
 const _homeSections = <_HomeSection>[
@@ -79,18 +83,37 @@ class EntropyVpnApp extends StatefulWidget {
 }
 
 class _EntropyVpnAppState extends State<EntropyVpnApp> {
+  static const MethodChannel _windowsLifecycleChannel = MethodChannel(
+    'entropy_vpn/windows_lifecycle',
+  );
+
   late final VpnController _controller;
 
   @override
   void initState() {
     super.initState();
     _controller = VpnController();
+    if (Platform.isWindows) {
+      _windowsLifecycleChannel.setMethodCallHandler(_handleWindowsLifecycle);
+    }
   }
 
   @override
   void dispose() {
+    if (Platform.isWindows) {
+      _windowsLifecycleChannel.setMethodCallHandler(null);
+    }
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<Object?> _handleWindowsLifecycle(MethodCall call) async {
+    switch (call.method) {
+      case 'quit':
+        await _controller.shutdownForExit();
+        return null;
+    }
+    throw MissingPluginException();
   }
 
   @override
@@ -283,6 +306,7 @@ class VpnHomePage extends StatefulWidget {
 
 class _VpnHomePageState extends State<VpnHomePage> {
   late final TextEditingController _textController;
+  late final FocusNode _windowsShortcutFocusNode;
   late _HomeSection _section;
   late final bool _startedWithoutSources;
   bool _didAutoSwitchAfterRestore = false;
@@ -291,6 +315,9 @@ class _VpnHomePageState extends State<VpnHomePage> {
   void initState() {
     super.initState();
     _textController = TextEditingController(text: widget.controller.rawInput);
+    _windowsShortcutFocusNode = FocusNode(
+      debugLabel: 'Windows return-to-main shortcuts',
+    );
     _textController.addListener(_handleTextChanged);
     widget.controller.addListener(_handleControllerUpdated);
     _startedWithoutSources = !widget.controller.hasSources;
@@ -313,6 +340,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
     _textController
       ..removeListener(_handleTextChanged)
       ..dispose();
+    _windowsShortcutFocusNode.dispose();
     super.dispose();
   }
 
@@ -356,13 +384,37 @@ class _VpnHomePageState extends State<VpnHomePage> {
     });
   }
 
+  void _handleReturnToMainSection() {
+    if (_section == _HomeSection.connect) {
+      return;
+    }
+    final primaryFocus = FocusManager.instance.primaryFocus;
+    if (primaryFocus != _windowsShortcutFocusNode) {
+      primaryFocus?.unfocus();
+    }
+    _setSection(_HomeSection.connect);
+    _restoreWindowsShortcutFocus();
+  }
+
+  void _restoreWindowsShortcutFocus() {
+    if (!Platform.isWindows) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _windowsShortcutFocusNode.requestFocus();
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final strings = AppStrings.of(context);
     final controller = widget.controller;
     final scheme = Theme.of(context).colorScheme;
 
-    return Scaffold(
+    final page = Scaffold(
       body: Stack(
         children: <Widget>[
           const Positioned.fill(child: _EntropyBackdrop()),
@@ -460,6 +512,28 @@ class _VpnHomePageState extends State<VpnHomePage> {
           ),
         ],
       ),
+    );
+
+    if (!Platform.isWindows) {
+      return page;
+    }
+
+    return FocusableActionDetector(
+      autofocus: true,
+      focusNode: _windowsShortcutFocusNode,
+      shortcuts: const <ShortcutActivator, Intent>{
+        SingleActivator(LogicalKeyboardKey.escape):
+            _ReturnToMainSectionIntent(),
+      },
+      actions: <Type, Action<Intent>>{
+        _ReturnToMainSectionIntent: CallbackAction<_ReturnToMainSectionIntent>(
+          onInvoke: (_) {
+            _handleReturnToMainSection();
+            return null;
+          },
+        ),
+      },
+      child: page,
     );
   }
 }

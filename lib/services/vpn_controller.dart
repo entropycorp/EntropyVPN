@@ -679,7 +679,7 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> disconnect() async {
+  Future<void> disconnect({bool waitForCleanup = false}) async {
     if (isBusy || !isConnected && _phase != ConnectionPhase.error) {
       if (_phase == ConnectionPhase.disconnected) {
         return;
@@ -690,7 +690,7 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      await _runtimeService.stop();
+      await _runtimeService.stop(waitForCleanup: waitForCleanup);
     } finally {
       _activeProfile = null;
       _activeSourceId = null;
@@ -698,6 +698,23 @@ class VpnController extends ChangeNotifier {
       _phase = ConnectionPhase.disconnected;
       _setRuntimeError(null);
       notifyListeners();
+    }
+  }
+
+  Future<void> shutdownForExit() async {
+    _autoUpdateTimer?.cancel();
+    _recentAddSuccessTimer?.cancel();
+    _inputErrorTimer?.cancel();
+    _runtimeErrorTimer?.cancel();
+
+    try {
+      await _runtimeService.stop(waitForCleanup: true);
+    } finally {
+      _activeProfile = null;
+      _activeSourceId = null;
+      _connectedAt = null;
+      _phase = ConnectionPhase.disconnected;
+      _setRuntimeError(null);
     }
   }
 

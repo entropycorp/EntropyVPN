@@ -1,7 +1,9 @@
+import 'dart:io' show Platform;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:entropy_vpn/l10n/app_strings.dart';
@@ -357,6 +359,51 @@ void main() {
       controller.dispose();
     }
   });
+
+  testWidgets(
+    'escape returns desktop Windows sections to connect page',
+    (WidgetTester tester) async {
+      await tester.binding.setSurfaceSize(const Size(1180, 720));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final controller = _configController();
+
+      try {
+        await tester.pumpWidget(
+          _subscriptionApp(controller, size: const Size(1180, 720)),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        await tester.tap(find.byIcon(Icons.settings_rounded));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Mode'), findsOneWidget);
+        expect(find.text('Disconnected'), findsNothing);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Mode'), findsNothing);
+        expect(find.text('Disconnected'), findsOneWidget);
+
+        await tester.tap(find.byIcon(Icons.settings_rounded));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Mode'), findsOneWidget);
+        expect(find.text('Disconnected'), findsNothing);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pumpAndSettle();
+
+        expect(find.text('Mode'), findsNothing);
+        expect(find.text('Disconnected'), findsOneWidget);
+      } finally {
+        controller.dispose();
+      }
+    },
+    skip: !Platform.isWindows,
+  );
 
   testWidgets('desktop source rail is not clipped by short config pages', (
     WidgetTester tester,
@@ -1328,7 +1375,7 @@ class _FakeCoreRuntimeService extends CoreRuntimeService {
   }) async {}
 
   @override
-  Future<void> stop() async {}
+  Future<void> stop({bool waitForCleanup = false}) async {}
 }
 
 Widget _subscriptionApp(
