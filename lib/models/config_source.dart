@@ -23,15 +23,6 @@ class SubscriptionTrafficUsage {
   int get usedBytes => uploadBytes + downloadBytes;
   bool get hasTotal => totalBytes != null && totalBytes! > 0;
 
-  int? get remainingBytes {
-    final total = totalBytes;
-    if (total == null) {
-      return null;
-    }
-    final remaining = total - usedBytes;
-    return remaining < 0 ? 0 : remaining;
-  }
-
   double? get usageRatio {
     final total = totalBytes;
     if (total == null || total <= 0) {
@@ -83,7 +74,6 @@ class ConfigSource {
     this.tcpPingLatenciesMs = const <int, int>{},
     this.tcpPingLatencyMs,
     this.tcpPingProfileIndex,
-    this.tcpPingError,
   });
 
   final String id;
@@ -101,7 +91,6 @@ class ConfigSource {
   final Map<int, int> tcpPingLatenciesMs;
   final int? tcpPingLatencyMs;
   final int? tcpPingProfileIndex;
-  final String? tcpPingError;
 
   bool get isSubscription => kind == ConfigSourceKind.subscription;
   bool get hasMultipleProfiles => profiles.length > 1;
@@ -148,8 +137,6 @@ class ConfigSource {
     bool clearTcpPingLatency = false,
     int? tcpPingProfileIndex,
     bool clearTcpPingProfileIndex = false,
-    String? tcpPingError,
-    bool clearTcpPingError = false,
     bool clearTcpPing = false,
   }) {
     final nextProfiles = profiles ?? this.profiles;
@@ -190,9 +177,6 @@ class ConfigSource {
       tcpPingProfileIndex: clearTcpPing || clearTcpPingProfileIndex
           ? null
           : (tcpPingProfileIndex ?? this.tcpPingProfileIndex),
-      tcpPingError: clearTcpPing || clearTcpPingError
-          ? null
-          : (tcpPingError ?? this.tcpPingError),
     );
   }
 

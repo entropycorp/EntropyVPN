@@ -1,0 +1,203 @@
+part of 'core_runtime_service.dart';
+
+extension CoreRuntimeServiceAndroid on CoreRuntimeService {
+  Future<void> _synchronizeAndroidState() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    _androidBridge?.onProcessExit = onProcessExit;
+    _androidBridge?.onLogUpdated = onLogUpdated;
+    await _androidBridge?.refreshState();
+  }
+
+  Future<void> _saveAndroidStartPayload({
+    required CoreFlavor core,
+    required ParsedVpnProfile profile,
+    required AppLanguage language,
+    required TunIpMode tunIpMode,
+    SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
+  }) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    final bridge = _androidBridge;
+    if (bridge == null) {
+      return;
+    }
+
+    final payload = _buildAndroidStartPayload(
+      core: core,
+      profile: profile,
+      language: language,
+      serverCountryCode: await _resolveAndroidServerCountryCode(profile),
+      tunIpMode: tunIpMode,
+      splitTunnelSettings: splitTunnelSettings,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
+    );
+    await bridge.saveStartPayload(
+      core: payload.core,
+      configJson: payload.configJson,
+      profileName: payload.profileName,
+      serverAddress: payload.serverAddress,
+      serverCountryCode: payload.serverCountryCode,
+      language: payload.language,
+      tunIpMode: payload.tunIpMode,
+      splitTunnelSettings: payload.splitTunnelSettings,
+    );
+  }
+
+  Future<void> _startOnAndroid({
+    required CoreFlavor core,
+    required ParsedVpnProfile profile,
+    required AppLanguage language,
+    required TunIpMode tunIpMode,
+    required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
+  }) async {
+    final bridge = _androidBridge;
+    if (bridge == null) {
+      throw StateError('Android VPN bridge is unavailable.');
+    }
+
+    bridge.onProcessExit = onProcessExit;
+    bridge.onLogUpdated = onLogUpdated;
+
+    final payload = _buildAndroidStartPayload(
+      core: core,
+      profile: profile,
+      language: language,
+      serverCountryCode: await _resolveAndroidServerCountryCode(profile),
+      tunIpMode: tunIpMode,
+      splitTunnelSettings: splitTunnelSettings,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
+    );
+    await bridge.start(
+      core: payload.core,
+      configJson: payload.configJson,
+      profileName: payload.profileName,
+      serverAddress: payload.serverAddress,
+      serverCountryCode: payload.serverCountryCode,
+      language: payload.language,
+      tunIpMode: payload.tunIpMode,
+      splitTunnelSettings: payload.splitTunnelSettings,
+    );
+  }
+
+  _AndroidStartPayload _buildAndroidStartPayload({
+    required CoreFlavor core,
+    required ParsedVpnProfile profile,
+    required AppLanguage language,
+    required String? serverCountryCode,
+    required TunIpMode tunIpMode,
+    required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
+  }) {
+    if (profile.isSingBoxConfig) {
+      final config = _buildNativeSingBoxRuntimeConfig(
+        profile: profile,
+        tunIpMode: tunIpMode,
+      );
+      return _AndroidStartPayload(
+        core: CoreFlavor.singBox.name,
+        configJson: const JsonEncoder.withIndent('  ').convert(config),
+        profileName: profile.remark ?? profile.endpointLabel,
+        serverAddress: profile.server,
+        serverCountryCode: serverCountryCode,
+        language: language,
+        tunIpMode: tunIpMode,
+        splitTunnelSettings: splitTunnelSettings.normalized,
+      );
+    }
+    if (profile.isXrayConfig) {
+      final config = _buildNativeXrayRuntimeConfig(profile: profile);
+      return _AndroidStartPayload(
+        core: CoreFlavor.xray.name,
+        configJson: const JsonEncoder.withIndent('  ').convert(config),
+        profileName: profile.remark ?? profile.endpointLabel,
+        serverAddress: profile.server,
+        serverCountryCode: serverCountryCode,
+        language: language,
+        tunIpMode: tunIpMode,
+        splitTunnelSettings: splitTunnelSettings.normalized,
+      );
+    }
+
+    final effectiveTrafficMode = core == CoreFlavor.singBox
+        ? TrafficMode.tun
+        : TrafficMode.systemProxy;
+    final config = _configBuilder.buildFor(
+      core,
+      profile,
+      trafficMode: effectiveTrafficMode,
+      tunIpMode: tunIpMode,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
+    );
+    return _AndroidStartPayload(
+      core: core.name,
+      configJson: const JsonEncoder.withIndent('  ').convert(config),
+      profileName: profile.remark ?? profile.endpointLabel,
+      serverAddress: profile.server,
+      serverCountryCode: serverCountryCode,
+      language: language,
+      tunIpMode: tunIpMode,
+      splitTunnelSettings: splitTunnelSettings.normalized,
+    );
+  }
+
+  Future<String?> _resolveAndroidServerCountryCode(
+    ParsedVpnProfile profile,
+  ) async {
+    final server = profile.server.trim();
+    if (server.isEmpty) {
+      return null;
+    }
+    try {
+      final info = await _geoIpService.resolveServer(server);
+      return _normalizeCountryCode(info?.countryCode);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _normalizeCountryCode(String? countryCode) {
+    final normalized = countryCode?.trim().toUpperCase();
+    if (normalized == null || normalized.length != 2) {
+      return null;
+    }
+    final units = normalized.codeUnits;
+    if (units.any((unit) => unit < 65 || unit > 90)) {
+      return null;
+    }
+    return normalized;
+  }
+
+  Future<void> _stopOnAndroid() async {
+    _androidBridge?.onProcessExit = onProcessExit;
+    _androidBridge?.onLogUpdated = onLogUpdated;
+    await _androidBridge?.stop();
+  }
+}
+
+class _AndroidStartPayload {
+  const _AndroidStartPayload({
+    required this.core,
+    required this.configJson,
+    required this.profileName,
+    required this.serverAddress,
+    required this.serverCountryCode,
+    required this.language,
+    required this.tunIpMode,
+    required this.splitTunnelSettings,
+  });
+
+  final String core;
+  final String configJson;
+  final String profileName;
+  final String serverAddress;
+  final String? serverCountryCode;
+  final AppLanguage language;
+  final TunIpMode tunIpMode;
+  final SplitTunnelSettings splitTunnelSettings;
+}

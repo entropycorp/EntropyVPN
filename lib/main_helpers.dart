@@ -1,17 +1,27 @@
-part of 'main.dart';
+import 'dart:math' as math;
+import 'dart:ui' show BoxHeightStyle, BoxWidthStyle, TextHeightBehavior;
 
-class _EntropyBackdrop extends StatelessWidget {
-  const _EntropyBackdrop();
+import 'package:flutter/material.dart';
+
+import 'l10n/app_strings.dart';
+import 'main_constants.dart';
+import 'models/config_source.dart';
+import 'models/vpn_profile.dart';
+import 'services/vpn_controller.dart';
+
+class ProgrammaticPageSwipePhysics extends ScrollPhysics {
+  const ProgrammaticPageSwipePhysics({super.parent});
 
   @override
-  Widget build(BuildContext context) {
-    return const DecoratedBox(
-      decoration: BoxDecoration(color: _appBackgroundColor),
-    );
+  ProgrammaticPageSwipePhysics applyTo(ScrollPhysics? ancestor) {
+    return ProgrammaticPageSwipePhysics(parent: buildParent(ancestor));
   }
+
+  @override
+  bool shouldAcceptUserOffset(ScrollMetrics position) => false;
 }
 
-TextStyle _monoStyle(
+TextStyle monoStyle(
   ThemeData theme, {
   Color? color,
   double? fontSize,
@@ -27,9 +37,9 @@ TextStyle _monoStyle(
   );
 }
 
-String _sourceHeadline(ConfigSource source, ParsedVpnProfile? profile) {
+String sourceHeadline(ConfigSource source, ParsedVpnProfile? profile) {
   if (source.isSubscription && source.hasMultipleProfiles) {
-    return _sourceSubscriptionTitle(source);
+    return sourceSubscriptionTitle(source);
   }
 
   final title = profile?.remark?.trim();
@@ -39,18 +49,18 @@ String _sourceHeadline(ConfigSource source, ParsedVpnProfile? profile) {
   if (profile != null) {
     return profile.endpointLabel;
   }
-  return _sourceFragmentTitle(source) ??
-      _sourceDisplayName(source) ??
-      _sourceFallbackTitle(source);
+  return sourceFragmentTitle(source) ??
+      sourceDisplayName(source) ??
+      sourceFallbackTitle(source);
 }
 
-String _sourceSubscriptionTitle(ConfigSource source) {
-  return _sourceFragmentTitle(source) ??
-      _sourceDisplayName(source) ??
-      _sourceFallbackTitle(source);
+String sourceSubscriptionTitle(ConfigSource source) {
+  return sourceFragmentTitle(source) ??
+      sourceDisplayName(source) ??
+      sourceFallbackTitle(source);
 }
 
-String? _sourceDisplayName(ConfigSource source) {
+String? sourceDisplayName(ConfigSource source) {
   final displayName = source.displayName?.trim();
   if (displayName == null || displayName.isEmpty) {
     return null;
@@ -58,7 +68,7 @@ String? _sourceDisplayName(ConfigSource source) {
   return displayName;
 }
 
-String? _sourceFragmentTitle(ConfigSource source) {
+String? sourceFragmentTitle(ConfigSource source) {
   final uri = Uri.tryParse(source.rawInput.trim());
   final fragment = uri?.fragment.trim();
   if (fragment == null || fragment.isEmpty) {
@@ -73,7 +83,7 @@ String? _sourceFragmentTitle(ConfigSource source) {
   }
 }
 
-String _sourceSubtitle(
+String sourceSubtitle(
   AppStrings strings,
   CoreFlavor? core,
   ParsedVpnProfile? profile,
@@ -86,10 +96,10 @@ String _sourceSubtitle(
     if (outboundType != null && outboundType.isNotEmpty) {
       final parts = <String>[
         if (core != null) strings.coreName(core),
-        _singBoxProtocolLabel(strings, profile),
-        _profileNetworkMode(strings, profile),
+        singBoxProtocolLabel(strings, profile),
+        profileNetworkMode(strings, profile),
       ];
-      final flowLabel = _profileFlowLabel(profile.flow);
+      final flowLabel = profileFlowLabel(profile.flow);
       if (flowLabel != null && !parts.contains(flowLabel)) {
         parts.add(flowLabel);
       }
@@ -105,10 +115,10 @@ String _sourceSubtitle(
     if (outboundProtocol != null && outboundProtocol.isNotEmpty) {
       final parts = <String>[
         if (core != null) strings.coreName(core),
-        _xrayProtocolLabel(strings, profile),
-        _profileNetworkMode(strings, profile),
+        xrayProtocolLabel(strings, profile),
+        profileNetworkMode(strings, profile),
       ];
-      final flowLabel = _profileFlowLabel(profile.flow);
+      final flowLabel = profileFlowLabel(profile.flow);
       if (flowLabel != null && !parts.contains(flowLabel)) {
         parts.add(flowLabel);
       }
@@ -119,7 +129,7 @@ String _sourceSubtitle(
       profile.endpointLabel,
     ].join(' / ');
   }
-  final networkMode = _profileNetworkMode(strings, profile);
+  final networkMode = profileNetworkMode(strings, profile);
   final parts = <String>[
     if (core != null) strings.coreName(core),
     strings.protocolName(profile.protocol),
@@ -128,37 +138,37 @@ String _sourceSubtitle(
   return parts.join(' / ');
 }
 
-String _profileNetworkMode(AppStrings strings, ParsedVpnProfile profile) {
+String profileNetworkMode(AppStrings strings, ParsedVpnProfile profile) {
   return profile.tlsMode == TlsMode.reality
       ? strings.tlsName(profile.tlsMode)
       : strings.transportName(profile.transport);
 }
 
-String _singBoxProtocolLabel(AppStrings strings, ParsedVpnProfile profile) {
+String singBoxProtocolLabel(AppStrings strings, ParsedVpnProfile profile) {
   final outboundType = profile.singBoxOutboundType?.trim().toLowerCase();
   return switch (outboundType) {
     'vless' => strings.protocolName(LinkProtocol.vless),
     'vmess' => strings.protocolName(LinkProtocol.vmess),
     'trojan' => strings.protocolName(LinkProtocol.trojan),
     'shadowsocks' => strings.protocolName(LinkProtocol.shadowsocks),
-    String value when value.isNotEmpty => _formatSingBoxType(value),
+    String value when value.isNotEmpty => formatSingBoxType(value),
     _ => strings.protocolName(profile.protocol),
   };
 }
 
-String _xrayProtocolLabel(AppStrings strings, ParsedVpnProfile profile) {
+String xrayProtocolLabel(AppStrings strings, ParsedVpnProfile profile) {
   final outboundProtocol = profile.xrayOutboundProtocol?.trim().toLowerCase();
   return switch (outboundProtocol) {
     'vless' => strings.protocolName(LinkProtocol.vless),
     'vmess' => strings.protocolName(LinkProtocol.vmess),
     'trojan' => strings.protocolName(LinkProtocol.trojan),
     'shadowsocks' => strings.protocolName(LinkProtocol.shadowsocks),
-    String value when value.isNotEmpty => _formatSingBoxType(value),
+    String value when value.isNotEmpty => formatSingBoxType(value),
     _ => strings.protocolName(profile.protocol),
   };
 }
 
-String? _profileFlowLabel(String? flow) {
+String? profileFlowLabel(String? flow) {
   final normalized = flow?.trim();
   if (normalized == null || normalized.isEmpty) {
     return null;
@@ -170,7 +180,7 @@ String? _profileFlowLabel(String? flow) {
   return normalized;
 }
 
-String _formatSingBoxType(String value) {
+String formatSingBoxType(String value) {
   return value
       .split(RegExp(r'[-_]+'))
       .where((part) => part.isNotEmpty)
@@ -178,7 +188,7 @@ String _formatSingBoxType(String value) {
       .join(' ');
 }
 
-String _profileOptionLabel(AppStrings strings, ParsedVpnProfile profile) {
+String profileOptionLabel(AppStrings strings, ParsedVpnProfile profile) {
   if (profile.isSingBoxConfig) {
     return profile.remark?.trim().isNotEmpty == true
         ? profile.remark!.trim()
@@ -191,7 +201,7 @@ String _profileOptionLabel(AppStrings strings, ParsedVpnProfile profile) {
   return '${strings.protocolName(profile.protocol)} - ${profile.endpointLabel}';
 }
 
-double _mobileSourcePageHeight(
+double mobileSourcePageHeight(
   BuildContext context,
   ConfigSource source, {
   required VpnController controller,
@@ -201,48 +211,47 @@ double _mobileSourcePageHeight(
   if (source.isSubscription) {
     final theme = Theme.of(context);
     final visibleRows = source.profiles.length.clamp(1, 4).toInt();
-    final rowHeight = _mobileProfileCardHeightFor(context);
+    final rowHeight = mobileProfileCardHeightFor(context);
     final listHeight =
-        visibleRows * rowHeight + (visibleRows - 1) * _mobileProfileCardSpacing;
-    final innerWidth = (maxWidth - _mobileSubscriptionPanelPadding * 2)
+        visibleRows * rowHeight + (visibleRows - 1) * mobileProfileCardSpacing;
+    final innerWidth = (maxWidth - mobileSubscriptionPanelPadding * 2)
         .clamp(96.0, double.infinity)
         .toDouble();
     final headerTextWidth =
         (innerWidth -
-                _mobileSubscriptionHeaderLeftPadding -
-                _mobileSubscriptionHeaderRightPadding -
-                _mobileSubscriptionHeaderIconSize -
-                _mobileSubscriptionHeaderIconGap -
+                mobileSubscriptionHeaderLeftPadding -
+                mobileSubscriptionHeaderRightPadding -
+                mobileSubscriptionHeaderIconSize -
+                mobileSubscriptionHeaderIconGap -
                 8 -
-                _mobileSubscriptionHeaderActionWidth)
+                mobileSubscriptionHeaderActionWidth)
             .clamp(48.0, double.infinity)
             .toDouble();
-    final headerTitleHeight = _measuredTextHeight(
+    final headerTitleHeight = measuredTextHeight(
       context,
-      _sourceSubscriptionTitle(source),
-      _subscriptionHeaderTitleStyle(theme),
+      sourceSubscriptionTitle(source),
+      subscriptionHeaderTitleStyle(theme),
       maxWidth: headerTextWidth,
       maxLines: 1,
     );
-    final expiresLabel = _sourceTrafficExpiryDateLabel(source);
+    final expiresLabel = sourceTrafficExpiryDateLabel(source);
     final headerTextHeight = expiresLabel == null
         ? headerTitleHeight
         : math.max(
             headerTitleHeight,
-            _measuredTextHeight(
+            measuredTextHeight(
               context,
               expiresLabel,
-              _subscriptionHeaderExpiryStyle(theme, theme.colorScheme),
+              subscriptionHeaderExpiryStyle(theme, theme.colorScheme),
               maxWidth: headerTextWidth,
               maxLines: 1,
             ),
           );
     final headerHeight =
-        _mobileSubscriptionHeaderBottomPadding +
-        math.max(_mobileSubscriptionHeaderIconSize, headerTextHeight);
+        mobileSubscriptionHeaderBottomPadding +
+        math.max(mobileSubscriptionHeaderIconSize, headerTextHeight);
 
-    var height =
-        _mobileSubscriptionPanelPadding * 2 + headerHeight + listHeight;
+    var height = mobileSubscriptionPanelPadding * 2 + headerHeight + listHeight;
 
     if (source.lastUpdateError != null) {
       final errorTextWidth = (innerWidth - 16 - 7)
@@ -250,7 +259,7 @@ double _mobileSourcePageHeight(
           .toDouble();
       final errorHeight = math.max(
         16.0,
-        _measuredTextHeight(
+        measuredTextHeight(
           context,
           source.lastUpdateError!,
           theme.textTheme.bodySmall,
@@ -264,11 +273,11 @@ double _mobileSourcePageHeight(
     final usage = source.trafficUsage;
     if (usage != null && usage.hasTotal) {
       height +=
-          _mobileSubscriptionTrafficTopGap +
+          mobileSubscriptionTrafficTopGap +
           24 +
-          _mobileSubscriptionTrafficProfileGap;
+          mobileSubscriptionTrafficProfileGap;
     } else {
-      height += _mobileSubscriptionHeaderGap;
+      height += mobileSubscriptionHeaderGap;
     }
 
     return height.ceilToDouble().clamp(132.0, 620.0).toDouble();
@@ -278,42 +287,32 @@ double _mobileSourcePageHeight(
   final profile = source.selectedProfile;
   final showSourceState = source.isUpdating || !source.hasMultipleProfiles;
   final actionRowWidth = showSourceState ? 74.0 : 34.0;
-  final titleStyle = _configCardTitleStyle(theme);
-  final subtitleStyle = _configCardSubtitleStyle(theme, theme.colorScheme);
-  const flagWidth = _configCardFlagWidth;
+  final titleStyle = configCardTitleStyle(theme);
+  final subtitleStyle = configCardSubtitleStyle(theme, theme.colorScheme);
+  const flagWidth = configCardFlagWidth;
   final textWidth =
-      (maxWidth -
-              18 -
-              _configCardFlagGap -
-              flagWidth -
-              14 -
-              14 -
-              actionRowWidth)
+      (maxWidth - 18 - configCardFlagGap - flagWidth - 14 - 14 - actionRowWidth)
           .clamp(64.0, double.infinity)
           .toDouble();
-  final titleMetrics = _measuredTextVisualMetrics(
+  final titleMetrics = measuredTextVisualMetrics(
     context,
-    _sourceHeadline(source, profile),
+    sourceHeadline(source, profile),
     titleStyle,
     maxWidth: textWidth,
     maxLines: 1,
-    textHeightBehavior: _configCardTextHeightBehavior,
+    textHeightBehavior: configCardTextHeightBehavior,
   );
-  final subtitleMetrics = _measuredTextVisualMetrics(
+  final subtitleMetrics = measuredTextVisualMetrics(
     context,
-    _sourceSubtitle(
-      strings,
-      controller.displayCoreForProfile(profile),
-      profile,
-    ),
+    sourceSubtitle(strings, controller.displayCoreForProfile(profile), profile),
     subtitleStyle,
     maxWidth: textWidth,
     maxLines: 2,
-    textHeightBehavior: _configCardTextHeightBehavior,
+    textHeightBehavior: configCardTextHeightBehavior,
   );
 
-  var primaryHeight = _configCardPrimaryHeight(
-    minHeight: _mobileConfigCardMinHeight,
+  var primaryHeight = configCardPrimaryHeight(
+    minHeight: mobileConfigCardMinHeight,
     titleHeight: titleMetrics.visualHeight,
     subtitleHeight: subtitleMetrics.visualHeight,
   );
@@ -322,14 +321,14 @@ double _mobileSourcePageHeight(
   if (source.isSubscription && usage != null && usage.hasTotal) {
     primaryHeight += 8 + 24;
     if (usage.expiresAt != null) {
-      final expiresLabel = _formatCompactDate(usage.expiresAt!);
-      final expiresStyle = _subscriptionTrafficExpiryStyle(
+      final expiresLabel = formatCompactDate(usage.expiresAt!);
+      final expiresStyle = subscriptionTrafficExpiryStyle(
         theme,
         theme.colorScheme,
       );
       primaryHeight +=
           7 +
-          _measuredTrafficExpiryHeight(
+          measuredTrafficExpiryHeight(
             context,
             expiresLabel,
             expiresStyle,
@@ -346,7 +345,7 @@ double _mobileSourcePageHeight(
         .toDouble();
     final errorHeight = math.max(
       16.0,
-      _measuredTextHeight(
+      measuredTextHeight(
         context,
         source.lastUpdateError!,
         theme.textTheme.bodySmall,
@@ -354,16 +353,16 @@ double _mobileSourcePageHeight(
         maxLines: 2,
       ),
     );
-    height += 10 + errorHeight + _mobileConfigCardVerticalPadding;
+    height += 10 + errorHeight + mobileConfigCardVerticalPadding;
   }
 
   return height
       .ceilToDouble()
-      .clamp(_mobileConfigCardMinHeight, 360.0)
+      .clamp(mobileConfigCardMinHeight, 360.0)
       .toDouble();
 }
 
-double _mobileSourcePagerMinHeight(
+double mobileSourcePagerMinHeight(
   BuildContext context,
   List<ConfigSource> sources, {
   required VpnController controller,
@@ -372,7 +371,7 @@ double _mobileSourcePagerMinHeight(
 }) {
   var height = 0.0;
   for (final source in sources) {
-    final sourceHeight = _mobileSourcePageHeight(
+    final sourceHeight = mobileSourcePageHeight(
       context,
       source,
       controller: controller,
@@ -384,32 +383,32 @@ double _mobileSourcePagerMinHeight(
     }
   }
   if (sources.length > 1) {
-    height += _mobileSourcePagerDotGap + _mobileSourcePagerDotHeight;
+    height += mobileSourcePagerDotGap + mobileSourcePagerDotHeight;
   }
   return height;
 }
 
-double _mobileProfileCardHeightFor(BuildContext context) {
+double mobileProfileCardHeightFor(BuildContext context) {
   final scaledBodySize = MediaQuery.textScalerOf(context).scale(14);
   final extraHeight = math.max(0.0, scaledBodySize - 14) * 2.2;
-  return (_mobileProfileCardHeight + extraHeight)
-      .clamp(_mobileProfileCardHeight, 124.0)
+  return (mobileProfileCardHeight + extraHeight)
+      .clamp(mobileProfileCardHeight, 124.0)
       .toDouble();
 }
 
-double _configCardPrimaryHeight({
+double configCardPrimaryHeight({
   required double minHeight,
   required double titleHeight,
   required double subtitleHeight,
 }) {
   return math.max(
     minHeight,
-    titleHeight + subtitleHeight + _configCardMinSegmentGap * 3,
+    titleHeight + subtitleHeight + configCardMinSegmentGap * 3,
   );
 }
 
-class _MeasuredTextVisualMetrics {
-  const _MeasuredTextVisualMetrics({
+class MeasuredTextVisualMetrics {
+  const MeasuredTextVisualMetrics({
     required this.visualTop,
     required this.visualBottom,
   });
@@ -421,7 +420,7 @@ class _MeasuredTextVisualMetrics {
   double get visualCenterY => visualTop + visualHeight / 2;
 }
 
-_MeasuredTextVisualMetrics _measuredTextVisualMetrics(
+MeasuredTextVisualMetrics measuredTextVisualMetrics(
   BuildContext context,
   String text,
   TextStyle? style, {
@@ -445,7 +444,7 @@ _MeasuredTextVisualMetrics _measuredTextVisualMetrics(
     boxWidthStyle: BoxWidthStyle.tight,
   );
   if (boxes.isEmpty) {
-    return _MeasuredTextVisualMetrics(
+    return MeasuredTextVisualMetrics(
       visualTop: 0,
       visualBottom: painter.size.height,
     );
@@ -457,13 +456,13 @@ _MeasuredTextVisualMetrics _measuredTextVisualMetrics(
     visualTop = math.min(visualTop, box.top);
     visualBottom = math.max(visualBottom, box.bottom);
   }
-  return _MeasuredTextVisualMetrics(
+  return MeasuredTextVisualMetrics(
     visualTop: visualTop,
     visualBottom: visualBottom,
   );
 }
 
-double _measuredTextHeight(
+double measuredTextHeight(
   BuildContext context,
   String text,
   TextStyle? style, {
@@ -484,10 +483,7 @@ double _measuredTextHeight(
   return painter.size.height;
 }
 
-TextStyle? _subscriptionTrafficExpiryStyle(
-  ThemeData theme,
-  ColorScheme scheme,
-) {
+TextStyle? subscriptionTrafficExpiryStyle(ThemeData theme, ColorScheme scheme) {
   return theme.textTheme.bodySmall?.copyWith(
     color: scheme.onSurface,
     fontSize: 11,
@@ -496,15 +492,15 @@ TextStyle? _subscriptionTrafficExpiryStyle(
   );
 }
 
-TextStyle? _configCardTitleStyle(ThemeData theme) {
+TextStyle? configCardTitleStyle(ThemeData theme) {
   return theme.textTheme.titleSmall?.copyWith(height: 1);
 }
 
-TextStyle? _configCardSubtitleStyle(ThemeData theme, ColorScheme scheme) {
-  return _profileSubtitleStyle(theme, scheme)?.copyWith(height: 1);
+TextStyle? configCardSubtitleStyle(ThemeData theme, ColorScheme scheme) {
+  return profileSubtitleStyle(theme, scheme)?.copyWith(height: 1);
 }
 
-TextStyle? _profileSubtitleStyle(ThemeData theme, ColorScheme scheme) {
+TextStyle? profileSubtitleStyle(ThemeData theme, ColorScheme scheme) {
   return theme.textTheme.bodyMedium?.copyWith(
     color: scheme.onSurfaceVariant,
     fontSize: 12,
@@ -514,38 +510,38 @@ TextStyle? _profileSubtitleStyle(ThemeData theme, ColorScheme scheme) {
   );
 }
 
-Color _selectedConfigSurfaceColor(ColorScheme scheme) {
+Color selectedConfigSurfaceColor(ColorScheme scheme) {
   return scheme.primary.withValues(alpha: 0.24);
 }
 
-Color _trafficBarTrackColor(ColorScheme scheme) {
+Color trafficBarTrackColor(ColorScheme scheme) {
   return scheme.primary.withValues(alpha: 0.16);
 }
 
-const TextHeightBehavior _subscriptionHeaderTextHeightBehavior =
+const TextHeightBehavior subscriptionHeaderTextHeightBehavior =
     TextHeightBehavior(
       applyHeightToFirstAscent: false,
       applyHeightToLastDescent: false,
     );
 
-TextStyle? _subscriptionHeaderTitleStyle(ThemeData theme) {
+TextStyle? subscriptionHeaderTitleStyle(ThemeData theme) {
   return theme.textTheme.titleSmall?.copyWith(height: 1);
 }
 
-TextStyle? _subscriptionHeaderExpiryStyle(ThemeData theme, ColorScheme scheme) {
-  return _subscriptionTrafficExpiryStyle(theme, scheme)?.copyWith(height: 1);
+TextStyle? subscriptionHeaderExpiryStyle(ThemeData theme, ColorScheme scheme) {
+  return subscriptionTrafficExpiryStyle(theme, scheme)?.copyWith(height: 1);
 }
 
-String? _sourceTrafficExpiryDateLabel(ConfigSource source) {
+String? sourceTrafficExpiryDateLabel(ConfigSource source) {
   final usage = source.trafficUsage;
   final expiresAt = usage?.expiresAt;
   if (usage == null || !usage.hasTotal || expiresAt == null) {
     return null;
   }
-  return _formatCompactDate(expiresAt);
+  return formatCompactDate(expiresAt);
 }
 
-double _measuredTrafficExpiryHeight(
+double measuredTrafficExpiryHeight(
   BuildContext context,
   String dateLabel,
   TextStyle? style, {
@@ -553,21 +549,21 @@ double _measuredTrafficExpiryHeight(
 }) {
   final textWidth =
       (maxWidth -
-              _subscriptionTrafficExpiryIconSize -
-              _subscriptionTrafficExpiryIconGap)
+              subscriptionTrafficExpiryIconSize -
+              subscriptionTrafficExpiryIconGap)
           .clamp(1.0, double.infinity)
           .toDouble();
-  final textHeight = _measuredTextHeight(
+  final textHeight = measuredTextHeight(
     context,
     dateLabel,
     style,
     maxWidth: textWidth,
     maxLines: 1,
   );
-  return math.max(_subscriptionTrafficExpiryIconSize, textHeight);
+  return math.max(subscriptionTrafficExpiryIconSize, textHeight);
 }
 
-String _profileChoiceTitle(ParsedVpnProfile profile) {
+String profileChoiceTitle(ParsedVpnProfile profile) {
   final title = profile.remark?.trim();
   if (title != null && title.isNotEmpty) {
     return title;
@@ -575,7 +571,7 @@ String _profileChoiceTitle(ParsedVpnProfile profile) {
   return profile.endpointLabel;
 }
 
-String _sourceFallbackTitle(ConfigSource source) {
+String sourceFallbackTitle(ConfigSource source) {
   final raw = source.rawInput.trim();
   final uri = Uri.tryParse(raw);
   if (uri != null && uri.host.isNotEmpty) {
@@ -604,17 +600,17 @@ String _sourceFallbackTitle(ConfigSource source) {
   return '${raw.substring(0, 36)}...';
 }
 
-String _sourceJsonFileName(ConfigSource source) {
-  final title = _sourceHeadline(source, source.selectedProfile);
+String sourceJsonFileName(ConfigSource source) {
+  final title = sourceHeadline(source, source.selectedProfile);
   final kind = source.isSubscription ? 'subscription' : 'config';
   final fallback = '$kind-${source.id}';
-  final stem = _sanitizeFileStem(title).isEmpty
-      ? _sanitizeFileStem(fallback)
-      : _sanitizeFileStem(title);
+  final stem = sanitizeFileStem(title).isEmpty
+      ? sanitizeFileStem(fallback)
+      : sanitizeFileStem(title);
   return '$stem.json';
 }
 
-String _sanitizeFileStem(String value) {
+String sanitizeFileStem(String value) {
   const invalidCharacters = '<>:"/\\|?*';
   final buffer = StringBuffer();
   for (final codeUnit in value.trim().codeUnits) {
@@ -640,14 +636,14 @@ String _sanitizeFileStem(String value) {
   return cleaned.isEmpty ? 'entropyvpn-config' : cleaned;
 }
 
-extension on ConfigSource {
+extension ConfigSourceServerAddress on ConfigSource {
   String get serverAddress => selectedProfile?.server ?? '';
 }
 
-Color _phaseColor(ConnectionPhase phase, ColorScheme scheme) {
+Color phaseColor(ConnectionPhase phase, ColorScheme scheme) {
   switch (phase) {
     case ConnectionPhase.connected:
-      return _connectedColor;
+      return connectedColor;
     case ConnectionPhase.connecting:
       return scheme.secondary;
     case ConnectionPhase.disconnecting:
@@ -659,7 +655,7 @@ Color _phaseColor(ConnectionPhase phase, ColorScheme scheme) {
   }
 }
 
-String _formatTrafficBytes(int bytes) {
+String formatTrafficBytes(int bytes) {
   final safeBytes = bytes < 0 ? 0 : bytes;
   const units = <String>['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   var value = safeBytes.toDouble();
@@ -680,7 +676,7 @@ String _formatTrafficBytes(int bytes) {
   return '${formatted.replaceFirst(RegExp(r'\.0$'), '')} ${units[unitIndex]}';
 }
 
-String _formatCompactDate(DateTime date) {
+String formatCompactDate(DateTime date) {
   final local = date.toLocal();
   final month = local.month.toString().padLeft(2, '0');
   final day = local.day.toString().padLeft(2, '0');
@@ -688,7 +684,7 @@ String _formatCompactDate(DateTime date) {
   return '$day.$month.$year';
 }
 
-String _formatConnectedDuration(DateTime? connectedAt) {
+String formatConnectedDuration(DateTime? connectedAt) {
   if (connectedAt == null) {
     return '00:00';
   }

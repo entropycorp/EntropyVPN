@@ -1,7 +1,7 @@
-part of 'core_runtime_service.dart';
+import 'dart:ffi';
 
-class _WindowsProcessInfo {
-  const _WindowsProcessInfo({
+class WindowsProcessInfo {
+  const WindowsProcessInfo({
     required this.pid,
     required this.parentPid,
     required this.path,
@@ -12,18 +12,18 @@ class _WindowsProcessInfo {
   final String? path;
 }
 
-class _WindowsProcessSnapshotCacheEntry {
-  const _WindowsProcessSnapshotCacheEntry({
+class WindowsProcessSnapshotCacheEntry {
+  const WindowsProcessSnapshotCacheEntry({
     required this.createdAt,
     required this.processes,
   });
 
   final DateTime createdAt;
-  final List<_WindowsProcessInfo> processes;
+  final List<WindowsProcessInfo> processes;
 }
 
-class _WindowsRouteInfo {
-  const _WindowsRouteInfo({
+class WindowsRouteInfo {
+  const WindowsRouteInfo({
     required this.interfaceAlias,
     this.interfaceIndex,
     this.sourceAddress,
@@ -40,45 +40,45 @@ class _WindowsRouteInfo {
   final bool? virtual;
 }
 
-class _TunRoutingPreparation {
-  const _TunRoutingPreparation({
+class TunRoutingPreparation {
+  const TunRoutingPreparation({
     this.outboundBindInterface,
     this.serverAddressOverride,
     this.hasHostRoute = false,
-    this.hostRoutes = const <_WindowsHostRoute>[],
+    this.hostRoutes = const <WindowsHostRoute>[],
   });
 
   final String? outboundBindInterface;
   final String? serverAddressOverride;
   final bool hasHostRoute;
-  final List<_WindowsHostRoute> hostRoutes;
+  final List<WindowsHostRoute> hostRoutes;
 }
 
-class _WindowsTunSetup {
-  const _WindowsTunSetup({
+class WindowsTunSetup {
+  const WindowsTunSetup({
     required this.routes,
     required this.networkChanged,
     this.fastConfigureMethod,
   });
 
-  final List<_WindowsTunRoute> routes;
+  final List<WindowsTunRoute> routes;
   final bool networkChanged;
-  final _WindowsTunFastConfigureMethod? fastConfigureMethod;
+  final WindowsTunFastConfigureMethod? fastConfigureMethod;
 }
 
-enum _WindowsTunSetupKind { full, fastNativeApi, fastNetsh, routeOnly }
+enum WindowsTunSetupKind { full, fastNativeApi, fastNetsh, routeOnly }
 
-enum _WindowsTunFastConfigureMethod {
+enum WindowsTunFastConfigureMethod {
   nativeApi('native_configure'),
   netsh('netsh_configure');
 
-  const _WindowsTunFastConfigureMethod(this.timingLabel);
+  const WindowsTunFastConfigureMethod(this.timingLabel);
 
   final String timingLabel;
 }
 
-class _WindowsTunRoute {
-  const _WindowsTunRoute({
+class WindowsTunRoute {
+  const WindowsTunRoute({
     required this.destinationPrefix,
     required this.interfaceAlias,
     required this.interfaceIndex,
@@ -91,13 +91,13 @@ class _WindowsTunRoute {
   final String nextHop;
 }
 
-class _WindowsHostRoute {
-  const _WindowsHostRoute({
+class WindowsHostRoute {
+  const WindowsHostRoute({
     required this.destinationPrefix,
     required this.interfaceAlias,
     required this.interfaceIndex,
     required this.nextHop,
-    this.removalTool = _WindowsRouteRemovalTool.powerShell,
+    this.removalTool = WindowsRouteRemovalTool.powerShell,
     this.removeWhenUnused = true,
   });
 
@@ -105,14 +105,14 @@ class _WindowsHostRoute {
   final String interfaceAlias;
   final int interfaceIndex;
   final String nextHop;
-  final _WindowsRouteRemovalTool removalTool;
+  final WindowsRouteRemovalTool removalTool;
   final bool removeWhenUnused;
 }
 
-enum _WindowsRouteRemovalTool { powerShell, routeExe }
+enum WindowsRouteRemovalTool { powerShell, routeExe }
 
-class _Ipv4DefaultRoute {
-  const _Ipv4DefaultRoute({
+class Ipv4DefaultRoute {
+  const Ipv4DefaultRoute({
     required this.gateway,
     required this.interfaceAddress,
     required this.metric,
@@ -123,15 +123,15 @@ class _Ipv4DefaultRoute {
   final int metric;
 }
 
-class _RouteExeIpv4Destination {
-  const _RouteExeIpv4Destination({required this.address, required this.mask});
+class RouteExeIpv4Destination {
+  const RouteExeIpv4Destination({required this.address, required this.mask});
 
   final String address;
   final String mask;
 }
 
-class _NetshIpv4Interface {
-  const _NetshIpv4Interface({
+class NetshIpv4Interface {
+  const NetshIpv4Interface({
     required this.index,
     required this.name,
     required this.status,
@@ -142,16 +142,16 @@ class _NetshIpv4Interface {
   final String status;
 }
 
-const int _tokenQuery = 0x0008;
-const int _tokenElevation = 20;
-const int _th32csSnapProcess = 0x00000002;
-const int _invalidHandleValue = -1;
-const int _processQueryLimitedInformation = 0x1000;
-const int _processTerminate = 0x0001;
-const int _synchronize = 0x00100000;
-const int _maxWindowsPathBufferChars = 32768;
+const int windowsTokenQuery = 0x0008;
+const int windowsTokenElevation = 20;
+const int windowsTh32csSnapProcess = 0x00000002;
+const int windowsInvalidHandleValue = -1;
+const int windowsProcessQueryLimitedInformation = 0x1000;
+const int windowsProcessTerminate = 0x0001;
+const int windowsSynchronize = 0x00100000;
+const int maxWindowsPathBufferChars = 32768;
 
-final class _ProcessEntry32W extends Struct {
+final class ProcessEntry32W extends Struct {
   @Uint32()
   external int dwSize;
 
@@ -183,15 +183,15 @@ final class _ProcessEntry32W extends Struct {
   external Array<Uint16> szExeFile;
 }
 
-typedef _GetCurrentProcessNative = IntPtr Function();
-typedef _GetCurrentProcessDart = int Function();
+typedef GetCurrentProcessNative = IntPtr Function();
+typedef GetCurrentProcessDart = int Function();
 
-typedef _OpenProcessTokenNative =
+typedef OpenProcessTokenNative =
     Int32 Function(IntPtr processHandle, Uint32 desiredAccess, Pointer<IntPtr>);
-typedef _OpenProcessTokenDart =
+typedef OpenProcessTokenDart =
     int Function(int processHandle, int desiredAccess, Pointer<IntPtr>);
 
-typedef _GetTokenInformationNative =
+typedef GetTokenInformationNative =
     Int32 Function(
       IntPtr tokenHandle,
       Int32 tokenInformationClass,
@@ -199,7 +199,7 @@ typedef _GetTokenInformationNative =
       Uint32 tokenInformationLength,
       Pointer<Uint32> returnLength,
     );
-typedef _GetTokenInformationDart =
+typedef GetTokenInformationDart =
     int Function(
       int tokenHandle,
       int tokenInformationClass,
@@ -208,35 +208,35 @@ typedef _GetTokenInformationDart =
       Pointer<Uint32> returnLength,
     );
 
-typedef _CloseHandleNative = Int32 Function(IntPtr handle);
-typedef _CloseHandleDart = int Function(int handle);
+typedef CloseHandleNative = Int32 Function(IntPtr handle);
+typedef CloseHandleDart = int Function(int handle);
 
-typedef _CreateToolhelp32SnapshotNative =
+typedef CreateToolhelp32SnapshotNative =
     IntPtr Function(Uint32 flags, Uint32 processId);
-typedef _CreateToolhelp32SnapshotDart = int Function(int flags, int processId);
+typedef CreateToolhelp32SnapshotDart = int Function(int flags, int processId);
 
-typedef _Process32Native =
-    Int32 Function(IntPtr snapshot, Pointer<_ProcessEntry32W> entry);
-typedef _Process32Dart =
-    int Function(int snapshot, Pointer<_ProcessEntry32W> entry);
+typedef Process32Native =
+    Int32 Function(IntPtr snapshot, Pointer<ProcessEntry32W> entry);
+typedef Process32Dart =
+    int Function(int snapshot, Pointer<ProcessEntry32W> entry);
 
-typedef _OpenProcessNative =
+typedef OpenProcessNative =
     IntPtr Function(
       Uint32 desiredAccess,
       Int32 inheritHandle,
       Uint32 processId,
     );
-typedef _OpenProcessDart =
+typedef OpenProcessDart =
     int Function(int desiredAccess, int inheritHandle, int processId);
 
-typedef _QueryFullProcessImageNameNative =
+typedef QueryFullProcessImageNameNative =
     Int32 Function(
       IntPtr process,
       Uint32 flags,
       Pointer<Uint16> exeName,
       Pointer<Uint32> size,
     );
-typedef _QueryFullProcessImageNameDart =
+typedef QueryFullProcessImageNameDart =
     int Function(
       int process,
       int flags,
@@ -244,10 +244,10 @@ typedef _QueryFullProcessImageNameDart =
       Pointer<Uint32> size,
     );
 
-typedef _TerminateProcessNative =
+typedef TerminateProcessNative =
     Int32 Function(IntPtr process, Uint32 exitCode);
-typedef _TerminateProcessDart = int Function(int process, int exitCode);
+typedef TerminateProcessDart = int Function(int process, int exitCode);
 
-typedef _WaitForSingleObjectNative =
+typedef WaitForSingleObjectNative =
     Uint32 Function(IntPtr handle, Uint32 milliseconds);
-typedef _WaitForSingleObjectDart = int Function(int handle, int milliseconds);
+typedef WaitForSingleObjectDart = int Function(int handle, int milliseconds);

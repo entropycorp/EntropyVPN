@@ -284,6 +284,10 @@ Future<String> _runtimeServiceSource() async {
   final files = <String>[
     'lib/services/core_runtime_service.dart',
     'lib/services/core_runtime_service_windows.dart',
+    'lib/services/core_runtime_service_windows_process.dart',
+    'lib/services/core_runtime_service_windows_server_routing.dart',
+    'lib/services/core_runtime_service_windows_temporary_routes.dart',
+    'lib/services/core_runtime_service_windows_xray_tun.dart',
     'lib/services/core_runtime_service_windows_types.dart',
   ];
   final chunks = await Future.wait(

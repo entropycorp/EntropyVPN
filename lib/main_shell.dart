@@ -1,8 +1,17 @@
-part of 'main.dart';
+import 'dart:io' show Platform;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'l10n/app_strings.dart';
+import 'main_connect.dart';
+import 'main_constants.dart';
+import 'main_flags.dart';
+import 'main_pages.dart';
+import 'services/vpn_controller.dart';
 
 const _brandImagePath = 'entropylogo.png';
 const _brandImageScale = 0.86;
-const _mobilePageTransitionDuration = Duration(milliseconds: 125);
 
 enum _HomeSection { connect, add, settings, logs }
 
@@ -18,7 +27,7 @@ const _homeSections = <_HomeSection>[
 ];
 
 final _mobilePageSwipeSpring = SpringDescription.withDurationAndBounce(
-  duration: _mobilePageTransitionDuration,
+  duration: mobilePageTransitionDuration,
 );
 
 class VpnHomePage extends StatefulWidget {
@@ -143,7 +152,11 @@ class _VpnHomePageState extends State<VpnHomePage> {
     final page = Scaffold(
       body: Stack(
         children: <Widget>[
-          const Positioned.fill(child: _EntropyBackdrop()),
+          const Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(color: appBackgroundColor),
+            ),
+          ),
           SafeArea(
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -152,7 +165,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
                     : constraints.maxWidth >= 1300
                     ? 20.0
                     : 16.0;
-                if (constraints.maxWidth < _mobileShellBreakpoint) {
+                if (constraints.maxWidth < mobileShellBreakpoint) {
                   return _MobileShell(
                     selected: _section,
                     controller: controller,
@@ -212,7 +225,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
                                       children: <Widget>[
                                         Align(
                                           alignment: Alignment.centerRight,
-                                          child: _LanguageSelector(
+                                          child: LanguageSelector(
                                             controller: controller,
                                             strings: strings,
                                           ),
@@ -328,7 +341,7 @@ class _MobileShellState extends State<_MobileShell> {
       _pageController
           .animateToPage(
             targetIndex,
-            duration: _mobilePageTransitionDuration,
+            duration: mobilePageTransitionDuration,
             curve: Curves.easeOutCubic,
           )
           .whenComplete(() {
@@ -419,13 +432,13 @@ class _MobileShellState extends State<_MobileShell> {
         ? 0.0
         : position.pixels - startIndex * viewport;
     final completeByVelocity =
-        velocityDx <= -_mobileSourcePagerSwipeVelocityThreshold;
+        velocityDx <= -mobileSourcePagerSwipeVelocityThreshold;
     final cancelByVelocity =
-        velocityDx >= _mobileSourcePagerSwipeVelocityThreshold;
+        velocityDx >= mobileSourcePagerSwipeVelocityThreshold;
     final shouldComplete =
         completeByVelocity ||
         (!cancelByVelocity &&
-            draggedPixels >= _mobileSourcePagerSwipeDistanceThreshold);
+            draggedPixels >= mobileSourcePagerSwipeDistanceThreshold);
     _settleConnectSourcePagerOverflowDrag(
       shouldComplete ? startIndex + 1 : startIndex,
     );
@@ -455,7 +468,7 @@ class _MobileShellState extends State<_MobileShell> {
     _pageController
         .animateToPage(
           clampedTargetIndex,
-          duration: _mobilePageTransitionDuration,
+          duration: mobilePageTransitionDuration,
           curve: Curves.easeOutCubic,
         )
         .whenComplete(() {
@@ -495,7 +508,7 @@ class _MobileShellState extends State<_MobileShell> {
                       alignment: Alignment.centerRight,
                       child: FittedBox(
                         fit: BoxFit.scaleDown,
-                        child: _LanguageSelector(
+                        child: LanguageSelector(
                           controller: widget.controller,
                           strings: widget.strings,
                         ),
@@ -522,7 +535,7 @@ class _MobileShellState extends State<_MobileShell> {
                   physics: pagePhysics,
                   onPageChanged: _handlePageChanged,
                   children: <Widget>[
-                    _ConnectPageBody(
+                    ConnectPageBody(
                       controller: widget.controller,
                       strings: widget.strings,
                       onSwipePastLastSource: _handleConnectSourcePagerOverflow,
@@ -533,16 +546,16 @@ class _MobileShellState extends State<_MobileShell> {
                       onSwipePastLastSourceDragCancel:
                           _handleConnectSourcePagerOverflowDragCancel,
                     ),
-                    _AddSourcePageBody(
+                    AddSourcePageBody(
                       controller: widget.controller,
                       strings: widget.strings,
                       textController: widget.textController,
                     ),
-                    _SettingsPageBody(
+                    SettingsPageBody(
                       controller: widget.controller,
                       strings: widget.strings,
                     ),
-                    _LogsPageBody(
+                    LogsPageBody(
                       controller: widget.controller,
                       strings: widget.strings,
                     ),
@@ -567,18 +580,6 @@ class _FastPageSwipePhysics extends ScrollPhysics {
 
   @override
   SpringDescription get spring => _mobilePageSwipeSpring;
-}
-
-class _ProgrammaticPageSwipePhysics extends ScrollPhysics {
-  const _ProgrammaticPageSwipePhysics({super.parent});
-
-  @override
-  _ProgrammaticPageSwipePhysics applyTo(ScrollPhysics? ancestor) {
-    return _ProgrammaticPageSwipePhysics(parent: buildParent(ancestor));
-  }
-
-  @override
-  bool shouldAcceptUserOffset(ScrollMetrics position) => false;
 }
 
 class _SectionContentSwitcher extends StatelessWidget {
@@ -622,23 +623,23 @@ class _SectionContentSwitcher extends StatelessWidget {
         );
       },
       child: switch (section) {
-        _HomeSection.connect => _ConnectPageBody(
+        _HomeSection.connect => ConnectPageBody(
           key: const ValueKey<String>('connect'),
           controller: controller,
           strings: strings,
         ),
-        _HomeSection.add => _AddSourcePageBody(
+        _HomeSection.add => AddSourcePageBody(
           key: const ValueKey<String>('add'),
           controller: controller,
           strings: strings,
           textController: textController,
         ),
-        _HomeSection.settings => _SettingsPageBody(
+        _HomeSection.settings => SettingsPageBody(
           key: const ValueKey<String>('settings'),
           controller: controller,
           strings: strings,
         ),
-        _HomeSection.logs => _LogsPageBody(
+        _HomeSection.logs => LogsPageBody(
           key: const ValueKey<String>('logs'),
           controller: controller,
           strings: strings,
@@ -667,7 +668,7 @@ class _BrandLogo extends StatelessWidget {
       ),
       clipBehavior: Clip.antiAlias,
       child: ColoredBox(
-        color: _appBackgroundColor,
+        color: appBackgroundColor,
         child: Transform.scale(
           scale: _brandImageScale,
           child: Image.asset(_brandImagePath, fit: BoxFit.cover),

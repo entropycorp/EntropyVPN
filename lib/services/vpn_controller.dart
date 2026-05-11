@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -12,14 +11,13 @@ import 'app_state_store.dart';
 import 'core_runtime_service.dart';
 import 'profile_catalog_service.dart';
 import 'share_link_parser.dart';
+import 'tcp_ping_service.dart';
 import 'windows_app_catalog_service.dart';
 
 enum AddSourceSuccessTarget { add, paste, qr, json }
 
 class VpnController extends ChangeNotifier {
   static const Duration _transientErrorDuration = Duration(seconds: 3);
-  static const Duration _tcpPingTimeout = Duration(seconds: 5);
-  static const int _tcpPingMaxConcurrent = 8;
 
   VpnController({
     ShareLinkParser? parser,
@@ -68,7 +66,6 @@ class VpnController extends ChangeNotifier {
   String _rawInput = '';
   String? _selectedSourceId;
   String? _activeSourceId;
-  ParsedVpnProfile? _activeProfile;
   DateTime? _connectedAt;
   String? _inputError;
   String? _runtimeError;
@@ -119,7 +116,6 @@ class VpnController extends ChangeNotifier {
       _phase == ConnectionPhase.disconnecting;
   bool get isConnected => _phase == ConnectionPhase.connected;
   bool get hasSources => _sources.isNotEmpty;
-  bool get hasMultipleProfiles => (selectedSource?.hasMultipleProfiles).isTrue;
   bool get canBrowseSources => !isBusy && !_isAddingSource;
   bool get canAddSource => !isBusy && !_isAddingSource;
   bool get canEditSources => !isBusy && !isConnected && !_isAddingSource;
@@ -127,9 +123,7 @@ class VpnController extends ChangeNotifier {
   bool get supportsTrafficModeSelection => !Platform.isAndroid;
   bool get canChangeTrafficMode =>
       supportsTrafficModeSelection && !isBusy && !isConnected;
-  bool get supportsTunIpModeSelection => true;
-  bool get canChangeTunIpMode =>
-      supportsTunIpModeSelection && !isBusy && !isConnected;
+  bool get canChangeTunIpMode => !isBusy && !isConnected;
   bool get supportsSplitTunneling => Platform.isWindows || Platform.isAndroid;
   bool get canChangeSplitTunnel =>
       supportsSplitTunneling && !isBusy && !isConnected;
@@ -168,42 +162,27 @@ class VpnController extends ChangeNotifier {
     if (_trafficMode == mode || !canChangeTrafficMode) {
       return;
     }
-    final previousTrafficMode = _trafficMode;
-    final previousSplitTunnelSettings = _splitTunnelSettings;
-    final previousDomainSplitTunnelSettings = _domainSplitTunnelSettings;
-    _trafficMode = mode;
-    if (mode != TrafficMode.tun &&
-        _splitTunnelSettings.mode != SplitTunnelMode.off) {
-      _splitTunnelSettings = SplitTunnelSettings(
-        apps: _splitTunnelSettings.apps,
-      );
-    }
-    if (mode != TrafficMode.tun &&
-        _domainSplitTunnelSettings.mode != SplitTunnelMode.off) {
-      _domainSplitTunnelSettings = DomainSplitTunnelSettings(
-        domains: _domainSplitTunnelSettings.domains,
-      );
-    }
-    _setRuntimeError(null);
-    notifyListeners();
-
-    if (ensureWindowsTunPrivileges && mode == TrafficMode.tun) {
-      await _persistStateAfterHydration();
-      await _ensureWindowsTunPrivilegesOrRollback(
-        previousTrafficMode: previousTrafficMode,
-        previousSplitTunnelSettings: previousSplitTunnelSettings,
-        previousDomainSplitTunnelSettings: previousDomainSplitTunnelSettings,
-      );
-      return;
-    }
-
-    _queuePersistState();
+    await _applyTunSensitiveSettingsChange(
+      ensureWindowsTunPrivileges: ensureWindowsTunPrivileges,
+      mutate: () {
+        _trafficMode = mode;
+        if (mode != TrafficMode.tun &&
+            _splitTunnelSettings.mode != SplitTunnelMode.off) {
+          _splitTunnelSettings = SplitTunnelSettings(
+            apps: _splitTunnelSettings.apps,
+          );
+        }
+        if (mode != TrafficMode.tun &&
+            _domainSplitTunnelSettings.mode != SplitTunnelMode.off) {
+          _domainSplitTunnelSettings = DomainSplitTunnelSettings(
+            domains: _domainSplitTunnelSettings.domains,
+          );
+        }
+      },
+    );
   }
 
   void setTunIpMode(TunIpMode mode) {
-    if (!supportsTunIpModeSelection) {
-      return;
-    }
     if (_tunIpMode == mode || !canChangeTunIpMode) {
       return;
     }
@@ -265,30 +244,16 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    final previousTrafficMode = _trafficMode;
-    final previousSplitTunnelSettings = _splitTunnelSettings;
-    final previousDomainSplitTunnelSettings = _domainSplitTunnelSettings;
-    _splitTunnelSettings = SplitTunnelSettings(
-      mode: mode,
-      apps: _splitTunnelSettings.apps,
-    ).normalized;
-    if (mode != SplitTunnelMode.off) {
-      _trafficMode = TrafficMode.tun;
-    }
-    _setRuntimeError(null);
-    notifyListeners();
-
-    if (ensureWindowsTunPrivileges && _trafficMode == TrafficMode.tun) {
-      await _persistStateAfterHydration();
-      await _ensureWindowsTunPrivilegesOrRollback(
-        previousTrafficMode: previousTrafficMode,
-        previousSplitTunnelSettings: previousSplitTunnelSettings,
-        previousDomainSplitTunnelSettings: previousDomainSplitTunnelSettings,
-      );
-      return;
-    }
-
-    _queuePersistState();
+    await _applyTunSensitiveSettingsChange(
+      ensureWindowsTunPrivileges: ensureWindowsTunPrivileges,
+      mutate: () {
+        _splitTunnelSettings = SplitTunnelSettings(
+          mode: mode,
+          apps: _splitTunnelSettings.apps,
+        ).normalized;
+        _enableTunForSplitTunnel(mode);
+      },
+    );
   }
 
   void toggleSplitTunnelApp(SplitTunnelApp app) {
@@ -329,30 +294,16 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    final previousTrafficMode = _trafficMode;
-    final previousSplitTunnelSettings = _splitTunnelSettings;
-    final previousDomainSplitTunnelSettings = _domainSplitTunnelSettings;
-    _domainSplitTunnelSettings = DomainSplitTunnelSettings(
-      mode: mode,
-      domains: _domainSplitTunnelSettings.domains,
-    ).normalized;
-    if (mode != SplitTunnelMode.off) {
-      _trafficMode = TrafficMode.tun;
-    }
-    _setRuntimeError(null);
-    notifyListeners();
-
-    if (ensureWindowsTunPrivileges && _trafficMode == TrafficMode.tun) {
-      await _persistStateAfterHydration();
-      await _ensureWindowsTunPrivilegesOrRollback(
-        previousTrafficMode: previousTrafficMode,
-        previousSplitTunnelSettings: previousSplitTunnelSettings,
-        previousDomainSplitTunnelSettings: previousDomainSplitTunnelSettings,
-      );
-      return;
-    }
-
-    _queuePersistState();
+    await _applyTunSensitiveSettingsChange(
+      ensureWindowsTunPrivileges: ensureWindowsTunPrivileges,
+      mutate: () {
+        _domainSplitTunnelSettings = DomainSplitTunnelSettings(
+          mode: mode,
+          domains: _domainSplitTunnelSettings.domains,
+        ).normalized;
+        _enableTunForSplitTunnel(mode);
+      },
+    );
   }
 
   void addDomainSplitTunnelInput(String input) {
@@ -586,7 +537,7 @@ class VpnController extends ChangeNotifier {
         source != null &&
         !source.isUpdating &&
         !source.isPinging &&
-        _tcpPingTargetsForSource(source).isNotEmpty;
+        tcpPingTargetsForSource(source).isNotEmpty;
   }
 
   Future<void> pingSource(String sourceId) async {
@@ -597,7 +548,7 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    final targets = _tcpPingTargetsForSource(source);
+    final targets = tcpPingTargetsForSource(source);
     if (targets.isEmpty) {
       _setRuntimeError('TCP ping needs a host and port.');
       notifyListeners();
@@ -610,7 +561,6 @@ class VpnController extends ChangeNotifier {
         tcpPingProfileIndex: targets.first.profileIndex,
         clearTcpPingLatencies: true,
         clearTcpPingLatency: true,
-        clearTcpPingError: true,
       ),
     );
     _setRuntimeError(null);
@@ -618,11 +568,11 @@ class VpnController extends ChangeNotifier {
 
     try {
       final measurements = await _runtimeService
-          .withTcpPingBypassRoutes<List<_TcpPingMeasurement>>(
+          .withTcpPingBypassRoutes<List<TcpPingMeasurement>>(
             profiles: targets.map((target) => target.profile),
             trafficMode: _trafficMode,
             tunIpMode: _tunIpMode,
-            action: () => _measureTcpPingTargets(targets),
+            action: () => measureTcpPingTargets(targets),
           );
       final current = _sourceById(sourceId);
       if (current == null) {
@@ -662,7 +612,6 @@ class VpnController extends ChangeNotifier {
           tcpPingLatencyMs:
               selectedLatency ?? latenciesByProfile[primaryPingProfileIndex],
           tcpPingProfileIndex: primaryPingProfileIndex,
-          clearTcpPingError: true,
         ),
       );
       notifyListeners();
@@ -675,7 +624,6 @@ class VpnController extends ChangeNotifier {
       _replaceSource(
         current.copyWith(
           isPinging: false,
-          tcpPingError: message,
           clearTcpPingLatencies: true,
           clearTcpPingLatency: true,
         ),
@@ -772,12 +720,10 @@ class VpnController extends ChangeNotifier {
         splitTunnelSettings: splitTunnelSettings,
         domainSplitTunnelSettings: domainSplitTunnelSettings,
       );
-      _activeProfile = profile;
       _activeSourceId = source.id;
       _connectedAt = DateTime.now();
       _phase = ConnectionPhase.connected;
     } catch (error) {
-      _activeProfile = null;
       _activeSourceId = null;
       _connectedAt = null;
       _phase = ConnectionPhase.error;
@@ -800,7 +746,6 @@ class VpnController extends ChangeNotifier {
     try {
       await _runtimeService.stop(waitForCleanup: waitForCleanup);
     } finally {
-      _activeProfile = null;
       _activeSourceId = null;
       _connectedAt = null;
       _phase = ConnectionPhase.disconnected;
@@ -818,7 +763,6 @@ class VpnController extends ChangeNotifier {
     try {
       await _runtimeService.stop(waitForCleanup: true);
     } finally {
-      _activeProfile = null;
       _activeSourceId = null;
       _connectedAt = null;
       _phase = ConnectionPhase.disconnected;
@@ -935,7 +879,6 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    _activeProfile ??= previewProfile;
     _activeSourceId ??= selectedSource?.id;
     _connectedAt =
         _runtimeService.connectedAt ?? _connectedAt ?? DateTime.now();
@@ -990,100 +933,6 @@ class VpnController extends ChangeNotifier {
 
     _queuePersistState();
     notifyListeners();
-  }
-
-  bool _hasTcpPingEndpoint(ParsedVpnProfile? profile) {
-    final host = profile?.server.trim();
-    final port = profile?.port ?? 0;
-    return host != null && host.isNotEmpty && port > 0 && port <= 65535;
-  }
-
-  List<_TcpPingTarget> _tcpPingTargetsForSource(ConfigSource source) {
-    if (source.isSubscription) {
-      return <_TcpPingTarget>[
-        for (var i = 0; i < source.profiles.length; i += 1)
-          if (_hasTcpPingEndpoint(source.profiles[i]))
-            _TcpPingTarget(
-              profileIndex: i,
-              profileKey: _profileKey(source.profiles[i]),
-              profile: source.profiles[i],
-            ),
-      ];
-    }
-
-    final profile = source.selectedProfile;
-    if (!_hasTcpPingEndpoint(profile)) {
-      return const <_TcpPingTarget>[];
-    }
-
-    return <_TcpPingTarget>[
-      _TcpPingTarget(
-        profileIndex: source.selectedProfileIndex,
-        profileKey: _profileKey(profile!),
-        profile: profile,
-      ),
-    ];
-  }
-
-  Future<List<_TcpPingMeasurement>> _measureTcpPingTargets(
-    List<_TcpPingTarget> targets,
-  ) async {
-    final measurements = <_TcpPingMeasurement>[];
-    final errors = <Object>[];
-    var nextTarget = 0;
-
-    Future<void> runWorker() async {
-      while (true) {
-        final targetIndex = nextTarget;
-        nextTarget += 1;
-        if (targetIndex >= targets.length) {
-          return;
-        }
-
-        final target = targets[targetIndex];
-        try {
-          final latencyMs = await _measureTcpPing(target.profile);
-          measurements.add(
-            _TcpPingMeasurement(
-              profileIndex: target.profileIndex,
-              profileKey: target.profileKey,
-              latencyMs: latencyMs,
-            ),
-          );
-        } catch (error) {
-          errors.add(error);
-        }
-      }
-    }
-
-    final workerCount = math.min(_tcpPingMaxConcurrent, targets.length);
-    await Future.wait(<Future<void>>[
-      for (var i = 0; i < workerCount; i += 1) runWorker(),
-    ]);
-
-    if (measurements.isEmpty && errors.isNotEmpty) {
-      Error.throwWithStackTrace(errors.first, StackTrace.current);
-    }
-
-    measurements.sort(
-      (left, right) => left.profileIndex.compareTo(right.profileIndex),
-    );
-    return measurements;
-  }
-
-  Future<int> _measureTcpPing(ParsedVpnProfile profile) async {
-    final host = profile.server.trim();
-    final port = profile.port;
-    final stopwatch = Stopwatch()..start();
-    Socket? socket;
-    try {
-      socket = await Socket.connect(host, port, timeout: _tcpPingTimeout);
-      stopwatch.stop();
-      final elapsedMs = stopwatch.elapsedMilliseconds;
-      return elapsedMs <= 0 ? 1 : elapsedMs;
-    } finally {
-      socket?.destroy();
-    }
   }
 
   bool _isSubscriptionDueForAutoUpdate(ConfigSource source, DateTime now) {
@@ -1178,23 +1027,8 @@ class VpnController extends ChangeNotifier {
     return 0;
   }
 
-  String _profileKey(ParsedVpnProfile profile) {
-    return <Object?>[
-      profile.isSingBoxConfig,
-      profile.singBoxConfigJson,
-      profile.isXrayConfig,
-      profile.xrayConfigJson,
-      profile.protocol.name,
-      profile.server,
-      profile.port,
-      profile.remark,
-      profile.userId,
-      profile.password,
-      profile.method,
-      profile.path,
-      profile.serviceName,
-    ].join('|');
-  }
+  String _profileKey(ParsedVpnProfile profile) =>
+      vpnProfileIdentityKey(profile);
 
   CoreFlavor _resolveCore(ParsedVpnProfile? profile) {
     if (profile?.isSingBoxConfig == true) {
@@ -1257,7 +1091,6 @@ class VpnController extends ChangeNotifier {
         _phase != ConnectionPhase.connecting) {
       return;
     }
-    _activeProfile = null;
     _activeSourceId = null;
     _connectedAt = null;
     _phase = ConnectionPhase.error;
@@ -1284,7 +1117,6 @@ class VpnController extends ChangeNotifier {
         _setRuntimeError(null);
         return;
       case 'connected':
-        _activeProfile ??= previewProfile;
         _activeSourceId ??= selectedSource?.id;
         _connectedAt =
             _runtimeService.connectedAt ?? _connectedAt ?? DateTime.now();
@@ -1300,7 +1132,6 @@ class VpnController extends ChangeNotifier {
         if (_phase == ConnectionPhase.connected ||
             _phase == ConnectionPhase.disconnecting ||
             _phase == ConnectionPhase.error) {
-          _activeProfile = null;
           _activeSourceId = null;
           _connectedAt = null;
           _phase = ConnectionPhase.disconnected;
@@ -1367,6 +1198,38 @@ class VpnController extends ChangeNotifier {
     await _saveAndroidStartPayload();
   }
 
+  Future<void> _applyTunSensitiveSettingsChange({
+    required bool ensureWindowsTunPrivileges,
+    required VoidCallback mutate,
+  }) async {
+    final previousSettings = _snapshotTunSensitiveSettings();
+    mutate();
+    _setRuntimeError(null);
+    notifyListeners();
+
+    if (ensureWindowsTunPrivileges && _trafficMode == TrafficMode.tun) {
+      await _persistStateAfterHydration();
+      await _ensureWindowsTunPrivilegesOrRollback(previousSettings);
+      return;
+    }
+
+    _queuePersistState();
+  }
+
+  _TunSensitiveSettingsSnapshot _snapshotTunSensitiveSettings() {
+    return _TunSensitiveSettingsSnapshot(
+      trafficMode: _trafficMode,
+      splitTunnelSettings: _splitTunnelSettings,
+      domainSplitTunnelSettings: _domainSplitTunnelSettings,
+    );
+  }
+
+  void _enableTunForSplitTunnel(SplitTunnelMode mode) {
+    if (mode != SplitTunnelMode.off) {
+      _trafficMode = TrafficMode.tun;
+    }
+  }
+
   Future<void> _saveAndroidStartPayload() async {
     if (!Platform.isAndroid) {
       return;
@@ -1390,11 +1253,9 @@ class VpnController extends ChangeNotifier {
     );
   }
 
-  Future<void> _ensureWindowsTunPrivilegesOrRollback({
-    required TrafficMode previousTrafficMode,
-    required SplitTunnelSettings previousSplitTunnelSettings,
-    required DomainSplitTunnelSettings previousDomainSplitTunnelSettings,
-  }) async {
+  Future<void> _ensureWindowsTunPrivilegesOrRollback(
+    _TunSensitiveSettingsSnapshot previousSettings,
+  ) async {
     if (!Platform.isWindows || _trafficMode != TrafficMode.tun) {
       return;
     }
@@ -1404,9 +1265,9 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    _trafficMode = previousTrafficMode;
-    _splitTunnelSettings = previousSplitTunnelSettings;
-    _domainSplitTunnelSettings = previousDomainSplitTunnelSettings;
+    _trafficMode = previousSettings.trafficMode;
+    _splitTunnelSettings = previousSettings.splitTunnelSettings;
+    _domainSplitTunnelSettings = previousSettings.domainSplitTunnelSettings;
     _setRuntimeError(
       'Administrator privileges are required for Windows TUN mode.',
     );
@@ -1415,52 +1276,72 @@ class VpnController extends ChangeNotifier {
   }
 
   void _setInputError(String? message) {
-    _inputErrorToken += 1;
-    _inputErrorTimer?.cancel();
-    _inputErrorTimer = null;
-    _inputError = message;
-    if (message == null) {
-      return;
-    }
-
-    final token = _inputErrorToken;
-    _inputErrorTimer = Timer(_transientErrorDuration, () {
-      if (_inputErrorToken != token || _inputError != message) {
-        return;
-      }
-      _inputError = null;
-      _inputErrorTimer = null;
-      notifyListeners();
-    });
+    _setTransientError(
+      message,
+      readError: () => _inputError,
+      writeError: (value) => _inputError = value,
+      readTimer: () => _inputErrorTimer,
+      writeTimer: (value) => _inputErrorTimer = value,
+      bumpToken: () {
+        _inputErrorToken += 1;
+        return _inputErrorToken;
+      },
+      readToken: () => _inputErrorToken,
+    );
   }
 
   void _setRuntimeError(String? message) {
-    _runtimeErrorToken += 1;
-    _runtimeErrorTimer?.cancel();
-    _runtimeErrorTimer = null;
-    _runtimeError = message;
+    _setTransientError(
+      message,
+      readError: () => _runtimeError,
+      writeError: (value) => _runtimeError = value,
+      readTimer: () => _runtimeErrorTimer,
+      writeTimer: (value) => _runtimeErrorTimer = value,
+      bumpToken: () {
+        _runtimeErrorToken += 1;
+        return _runtimeErrorToken;
+      },
+      readToken: () => _runtimeErrorToken,
+      onCleared: _resetRuntimeErrorPhase,
+    );
+  }
+
+  void _setTransientError(
+    String? message, {
+    required String? Function() readError,
+    required void Function(String?) writeError,
+    required Timer? Function() readTimer,
+    required void Function(Timer?) writeTimer,
+    required int Function() bumpToken,
+    required int Function() readToken,
+    VoidCallback? onCleared,
+  }) {
+    final token = bumpToken();
+    readTimer()?.cancel();
+    writeTimer(null);
+    writeError(message);
     if (message == null) {
-      _resetRuntimeErrorPhase();
+      onCleared?.call();
       return;
     }
 
-    final token = _runtimeErrorToken;
-    _runtimeErrorTimer = Timer(_transientErrorDuration, () {
-      if (_runtimeErrorToken != token || _runtimeError != message) {
-        return;
-      }
-      _runtimeError = null;
-      _runtimeErrorTimer = null;
-      _resetRuntimeErrorPhase();
-      notifyListeners();
-    });
+    writeTimer(
+      Timer(_transientErrorDuration, () {
+        if (readToken() != token || readError() != message) {
+          return;
+        }
+        writeError(null);
+        writeTimer(null);
+        onCleared?.call();
+        notifyListeners();
+      }),
+    );
   }
 
   void _resetRuntimeErrorPhase() {
     if (_phase != ConnectionPhase.error) {
       return;
     }
-    _activeProfile = null;
     _activeSourceId = null;
     _connectedAt = null;
     _phase = ConnectionPhase.disconnected;
@@ -1475,28 +1356,16 @@ class VpnController extends ChangeNotifier {
   }
 }
 
-class _TcpPingTarget {
-  const _TcpPingTarget({
-    required this.profileIndex,
-    required this.profileKey,
-    required this.profile,
+class _TunSensitiveSettingsSnapshot {
+  const _TunSensitiveSettingsSnapshot({
+    required this.trafficMode,
+    required this.splitTunnelSettings,
+    required this.domainSplitTunnelSettings,
   });
 
-  final int profileIndex;
-  final String profileKey;
-  final ParsedVpnProfile profile;
-}
-
-class _TcpPingMeasurement {
-  const _TcpPingMeasurement({
-    required this.profileIndex,
-    required this.profileKey,
-    required this.latencyMs,
-  });
-
-  final int profileIndex;
-  final String profileKey;
-  final int latencyMs;
+  final TrafficMode trafficMode;
+  final SplitTunnelSettings splitTunnelSettings;
+  final DomainSplitTunnelSettings domainSplitTunnelSettings;
 }
 
 extension on bool? {

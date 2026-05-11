@@ -1,7 +1,23 @@
-part of 'main.dart';
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io' show FileSystemException, Platform;
+import 'dart:math' as math;
 
-class _QuickSwitchPanel extends StatelessWidget {
-  const _QuickSwitchPanel({
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'l10n/app_strings.dart';
+import 'main_constants.dart';
+import 'main_flags.dart';
+import 'main_helpers.dart';
+import 'models/config_source.dart';
+import 'services/config_source_export.dart';
+import 'services/vpn_controller.dart';
+
+class QuickSwitchPanel extends StatelessWidget {
+  const QuickSwitchPanel({
+    super.key,
     required this.controller,
     required this.strings,
     this.firstTileCardKey,
@@ -23,7 +39,7 @@ class _QuickSwitchPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isMobile = MediaQuery.sizeOf(context).width < _mobileShellBreakpoint;
+    final isMobile = MediaQuery.sizeOf(context).width < mobileShellBreakpoint;
     if (isMobile) {
       return _MobileSourcePager(
         controller: controller,
@@ -44,6 +60,58 @@ class _QuickSwitchPanel extends StatelessWidget {
   }
 }
 
+class _SourcePagerSelection {
+  _SourcePagerSelection(VpnController controller)
+    : currentPage = selectedSourceIndex(controller),
+      _lastSelectedSourceId = controller.selectedSource?.id;
+
+  int currentPage;
+  String? _lastSelectedSourceId;
+
+  int? controllerUpdatePage(VpnController controller) {
+    final selectedId = controller.selectedSource?.id;
+    if (selectedId != _lastSelectedSourceId) {
+      _lastSelectedSourceId = selectedId;
+      return selectedSourceIndex(controller);
+    }
+
+    final sources = controller.sources;
+    if (sources.isEmpty) {
+      return null;
+    }
+
+    final clampedPage = pageForSources(sources);
+    return clampedPage == currentPage ? null : clampedPage;
+  }
+
+  int? targetPage(VpnController controller, int index) {
+    final sources = controller.sources;
+    if (sources.isEmpty) {
+      return null;
+    }
+    return index.clamp(0, sources.length - 1).toInt();
+  }
+
+  bool containsPage(VpnController controller, int index) {
+    return index >= 0 && index < controller.sources.length;
+  }
+
+  int pageForSources(List<ConfigSource> sources) {
+    return currentPage.clamp(0, sources.length - 1).toInt();
+  }
+
+  static int selectedSourceIndex(VpnController controller) {
+    final sources = controller.sources;
+    if (sources.isEmpty) {
+      return 0;
+    }
+
+    final selectedId = controller.selectedSource?.id;
+    final index = sources.indexWhere((source) => source.id == selectedId);
+    return index < 0 ? 0 : index;
+  }
+}
+
 class _DesktopSourcePager extends StatefulWidget {
   const _DesktopSourcePager({
     required this.controller,
@@ -60,67 +128,36 @@ class _DesktopSourcePager extends StatefulWidget {
 }
 
 class _DesktopSourcePagerState extends State<_DesktopSourcePager> {
-  late int _currentPage;
-  String? _lastSelectedSourceId;
+  late final _SourcePagerSelection _selection;
 
   @override
   void initState() {
     super.initState();
-    _currentPage = _selectedSourceIndex;
-    _lastSelectedSourceId = widget.controller.selectedSource?.id;
+    _selection = _SourcePagerSelection(widget.controller);
   }
 
   @override
   void didUpdateWidget(covariant _DesktopSourcePager oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final selectedId = widget.controller.selectedSource?.id;
-    if (selectedId != _lastSelectedSourceId) {
-      _lastSelectedSourceId = selectedId;
-      _showPage(_selectedSourceIndex);
-      return;
+    final targetPage = _selection.controllerUpdatePage(widget.controller);
+    if (targetPage != null) {
+      _showPage(targetPage);
     }
-
-    if (widget.controller.sources.isEmpty) {
-      return;
-    }
-
-    final clampedPage = _currentPage
-        .clamp(0, widget.controller.sources.length - 1)
-        .toInt();
-    if (clampedPage != _currentPage) {
-      _showPage(clampedPage);
-    }
-  }
-
-  int get _selectedSourceIndex {
-    final sources = widget.controller.sources;
-    if (sources.isEmpty) {
-      return 0;
-    }
-
-    final selectedId = widget.controller.selectedSource?.id;
-    final index = sources.indexWhere((source) => source.id == selectedId);
-    return index < 0 ? 0 : index;
   }
 
   void _showPage(int index) {
-    final sources = widget.controller.sources;
-    if (sources.isEmpty) {
-      return;
-    }
-
-    final targetPage = index.clamp(0, sources.length - 1).toInt();
-    if (targetPage == _currentPage) {
+    final targetPage = _selection.targetPage(widget.controller, index);
+    if (targetPage == null || targetPage == _selection.currentPage) {
       return;
     }
 
     setState(() {
-      _currentPage = targetPage;
+      _selection.currentPage = targetPage;
     });
   }
 
   void _handlePageSelected(int index) {
-    if (index < 0 || index >= widget.controller.sources.length) {
+    if (!_selection.containsPage(widget.controller, index)) {
       return;
     }
 
@@ -134,11 +171,11 @@ class _DesktopSourcePagerState extends State<_DesktopSourcePager> {
       return const SizedBox.shrink();
     }
 
-    final pageIndex = _currentPage.clamp(0, sources.length - 1).toInt();
+    final pageIndex = _selection.pageForSources(sources);
     final source = sources[pageIndex];
     final hasPager = sources.length > 1;
     final minHeight = hasPager
-        ? _desktopSourceRailStackHeight(sources.length)
+        ? desktopSourceRailStackHeight(sources.length)
         : 0.0;
 
     return Padding(
@@ -170,7 +207,7 @@ class _DesktopSourcePagerState extends State<_DesktopSourcePager> {
             ),
             if (hasPager)
               Positioned(
-                top: _desktopSourceRailTopInset,
+                top: desktopSourceRailTopInset,
                 left: 0,
                 child: _DesktopSourcePageRail(
                   sources: sources,
@@ -185,20 +222,14 @@ class _DesktopSourcePagerState extends State<_DesktopSourcePager> {
   }
 }
 
-const double _desktopSourceRailTopInset = 0;
-const double _desktopSourceRailItemSize = 34;
-const double _desktopSourceRailItemRadius = _desktopSourceRailItemSize / 2;
-const double _desktopSourceRailItemGap = 4;
-const double _desktopSourceRailVerticalPadding = 6;
-
-double _desktopSourceRailStackHeight(int sourceCount) {
+double desktopSourceRailStackHeight(int sourceCount) {
   if (sourceCount <= 0) {
     return 0;
   }
-  return _desktopSourceRailTopInset +
-      _desktopSourceRailVerticalPadding * 2 +
-      sourceCount * _desktopSourceRailItemSize +
-      math.max(0, sourceCount - 1) * _desktopSourceRailItemGap;
+  return desktopSourceRailTopInset +
+      desktopSourceRailVerticalPadding * 2 +
+      sourceCount * desktopSourceRailItemSize +
+      math.max(0, sourceCount - 1) * desktopSourceRailItemGap;
 }
 
 class _DesktopSourcePageRail extends StatelessWidget {
@@ -235,7 +266,7 @@ class _DesktopSourcePageRail extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: 5,
-          vertical: _desktopSourceRailVerticalPadding,
+          vertical: desktopSourceRailVerticalPadding,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -250,7 +281,7 @@ class _DesktopSourcePageRail extends StatelessWidget {
                       : scheme.onSurfaceVariant.withValues(alpha: 0.82);
 
                   return Tooltip(
-                    message: _sourceSubscriptionTitle(source),
+                    message: sourceSubscriptionTitle(source),
                     child: InkResponse(
                       key: ValueKey<String>('desktop-source-page-dot-$i'),
                       radius: 20,
@@ -258,15 +289,15 @@ class _DesktopSourcePageRail extends StatelessWidget {
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 160),
                         curve: Curves.easeOutCubic,
-                        width: _desktopSourceRailItemSize,
-                        height: _desktopSourceRailItemSize,
+                        width: desktopSourceRailItemSize,
+                        height: desktopSourceRailItemSize,
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
                           color: isSelected
-                              ? _selectedConfigSurfaceColor(scheme)
+                              ? selectedConfigSurfaceColor(scheme)
                               : Colors.transparent,
                           borderRadius: BorderRadius.circular(
-                            _desktopSourceRailItemRadius,
+                            desktopSourceRailItemRadius,
                           ),
                         ),
                         child: source.isSubscription
@@ -286,7 +317,7 @@ class _DesktopSourcePageRail extends StatelessWidget {
                 },
               ),
               if (i != sources.length - 1)
-                const SizedBox(height: _desktopSourceRailItemGap),
+                const SizedBox(height: desktopSourceRailItemGap),
             ],
           ],
         ),
@@ -367,38 +398,23 @@ class _MobileSourcePager extends StatefulWidget {
 
 class _MobileSourcePagerState extends State<_MobileSourcePager> {
   late final PageController _pageController;
-  late int _currentPage;
-  String? _lastSelectedSourceId;
+  late final _SourcePagerSelection _selection;
   double _sourceDragDx = 0;
   bool _isDraggingPastLastPage = false;
 
   @override
   void initState() {
     super.initState();
-    _currentPage = _selectedSourceIndex;
-    _lastSelectedSourceId = widget.controller.selectedSource?.id;
-    _pageController = PageController(initialPage: _currentPage);
+    _selection = _SourcePagerSelection(widget.controller);
+    _pageController = PageController(initialPage: _selection.currentPage);
   }
 
   @override
   void didUpdateWidget(covariant _MobileSourcePager oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final selectedId = widget.controller.selectedSource?.id;
-    if (selectedId != _lastSelectedSourceId) {
-      _lastSelectedSourceId = selectedId;
-      _showPage(_selectedSourceIndex);
-      return;
-    }
-
-    if (widget.controller.sources.isEmpty) {
-      return;
-    }
-
-    final clampedPage = _currentPage
-        .clamp(0, widget.controller.sources.length - 1)
-        .toInt();
-    if (clampedPage != _currentPage) {
-      _showPage(clampedPage);
+    final targetPage = _selection.controllerUpdatePage(widget.controller);
+    if (targetPage != null) {
+      _showPage(targetPage);
     }
   }
 
@@ -406,17 +422,6 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
   void dispose() {
     _pageController.dispose();
     super.dispose();
-  }
-
-  int get _selectedSourceIndex {
-    final sources = widget.controller.sources;
-    if (sources.isEmpty) {
-      return 0;
-    }
-
-    final selectedId = widget.controller.selectedSource?.id;
-    final index = sources.indexWhere((source) => source.id == selectedId);
-    return index < 0 ? 0 : index;
   }
 
   void _syncPage(int page) {
@@ -430,36 +435,30 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
       }
       _pageController.animateToPage(
         page,
-        duration: _mobilePageTransitionDuration,
+        duration: mobilePageTransitionDuration,
         curve: Curves.easeOutCubic,
       );
     });
   }
 
   void _showPage(int index) {
-    if (widget.controller.sources.isEmpty) {
-      return;
-    }
-
-    final targetPage = index
-        .clamp(0, widget.controller.sources.length - 1)
-        .toInt();
-    if (targetPage == _currentPage) {
+    final targetPage = _selection.targetPage(widget.controller, index);
+    if (targetPage == null || targetPage == _selection.currentPage) {
       return;
     }
 
     setState(() {
-      _currentPage = targetPage;
+      _selection.currentPage = targetPage;
     });
     _syncPage(targetPage);
   }
 
   void _handlePageChanged(int index) {
-    if (index < 0 || index >= widget.controller.sources.length) {
+    if (!_selection.containsPage(widget.controller, index)) {
       return;
     }
     setState(() {
-      _currentPage = index;
+      _selection.currentPage = index;
     });
   }
 
@@ -495,7 +494,7 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
       return false;
     }
 
-    final pageIndex = _currentPage.clamp(0, sources.length - 1).toInt();
+    final pageIndex = _selection.pageForSources(sources);
     return pageIndex == sources.length - 1;
   }
 
@@ -524,10 +523,9 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
     final wasDraggingPastLastPage = _isDraggingPastLastPage;
     _isDraggingPastLastPage = false;
     int direction = 0;
-    if (velocityDx.abs() >= _mobileSourcePagerSwipeVelocityThreshold) {
+    if (velocityDx.abs() >= mobileSourcePagerSwipeVelocityThreshold) {
       direction = velocityDx < 0 ? -1 : 1;
-    } else if (_sourceDragDx.abs() >=
-        _mobileSourcePagerSwipeDistanceThreshold) {
+    } else if (_sourceDragDx.abs() >= mobileSourcePagerSwipeDistanceThreshold) {
       direction = _sourceDragDx < 0 ? -1 : 1;
     }
     _sourceDragDx = 0;
@@ -543,7 +541,7 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
       return;
     }
 
-    final pageIndex = _currentPage.clamp(0, sources.length - 1).toInt();
+    final pageIndex = _selection.pageForSources(sources);
     if (direction < 0) {
       if (pageIndex < sources.length - 1) {
         _showPage(pageIndex + 1);
@@ -574,15 +572,15 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
       return const SizedBox.shrink();
     }
 
-    const pagePhysics = _ProgrammaticPageSwipePhysics();
+    const pagePhysics = ProgrammaticPageSwipePhysics();
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final pageIndex = _currentPage.clamp(0, sources.length - 1).toInt();
+          final pageIndex = _selection.pageForSources(sources);
           final availableWidth = constraints.maxWidth;
-          final pageHeight = _mobileSourcePageHeight(
+          final pageHeight = mobileSourcePageHeight(
             context,
             sources[pageIndex],
             controller: widget.controller,
@@ -592,9 +590,9 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
 
           if (widget.fillSwipeArea) {
             final pagerHeaderHeight = sources.length > 1
-                ? _mobileSourcePagerHeaderHeight
+                ? mobileSourcePagerHeaderHeight
                 : 0.0;
-            final minHeight = _mobileSourcePagerMinHeight(
+            final minHeight = mobileSourcePagerMinHeight(
               context,
               sources,
               controller: widget.controller,
@@ -642,7 +640,7 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
             children: <Widget>[
               if (sources.length > 1) ...<Widget>[
                 _SourcePagerDots(count: sources.length, selected: pageIndex),
-                const SizedBox(height: _mobileSourcePagerDotGap),
+                const SizedBox(height: mobileSourcePagerDotGap),
               ],
               AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
@@ -693,7 +691,7 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
           return Align(
             alignment: Alignment.topCenter,
             child: SizedBox(
-              height: _mobileSourcePageHeight(
+              height: mobileSourcePageHeight(
                 context,
                 source,
                 controller: widget.controller,
@@ -762,44 +760,6 @@ class _SourcePagerDots extends StatelessWidget {
   }
 }
 
-const double _mobileSourcePagerDotGap = 10;
-const double _mobileSourcePagerDotHeight = 6;
-const double _mobileSourcePagerHeaderHeight =
-    _mobileSourcePagerDotHeight + _mobileSourcePagerDotGap;
-const double _mobileSourcePagerSwipeDistanceThreshold = 56;
-const double _mobileSourcePagerSwipeVelocityThreshold = 500;
-const double _mobileProfileCardHeight = 72;
-const double _mobileProfileCardSpacing = 10;
-const double _mobileSubscriptionPanelPadding = 8;
-const double _mobileSubscriptionHeaderLeftPadding = 0;
-const double _mobileSubscriptionHeaderRightPadding = 0;
-const double _mobileSubscriptionHeaderBottomPadding = 6;
-const double _mobileSubscriptionHeaderIconSize = 38;
-const double _mobileSubscriptionHeaderIconGap = 10;
-// Place the header row by baseline so font metrics, not paragraph-box centering,
-// determine how the text sits against the 38px subscription icon.
-const double _mobileSubscriptionHeaderTextBaseline = 21;
-const double _mobileSubscriptionHeaderGap = 6;
-const double _mobileSubscriptionTrafficTopGap = 5;
-const double _mobileSubscriptionTrafficProfileGap = 11;
-const double _mobileConfigCardVerticalPadding = 12;
-const double _mobileConfigCardMinHeight = 72;
-const double _desktopConfigCardMinHeight = 74;
-const double _configCardMinSegmentGap = 4;
-const double _configCardFlagSize = 32;
-const double _configCardFlagWidth =
-    _configCardFlagSize * defaultFlagAspectRatio;
-const double _configCardFlagGap = 10;
-const TextHeightBehavior _configCardTextHeightBehavior = TextHeightBehavior(
-  applyHeightToFirstAscent: false,
-  applyHeightToLastDescent: false,
-);
-const double _mobileProfileSubtitleFontSize = 13;
-const double _compactSourceActionSize = 34;
-const double _compactSourceActionGap = 3;
-const double _mobileSubscriptionHeaderActionWidth =
-    _compactSourceActionSize * 3 + _compactSourceActionGap * 2;
-
 class _SubscriptionProfilesPage extends StatelessWidget {
   const _SubscriptionProfilesPage({
     required this.controller,
@@ -831,7 +791,7 @@ class _SubscriptionProfilesPage extends StatelessWidget {
           borderRadius: BorderRadius.circular(26),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(_mobileSubscriptionPanelPadding),
+          padding: const EdgeInsets.all(mobileSubscriptionPanelPadding),
           child: Column(
             mainAxisSize: desktop ? MainAxisSize.min : MainAxisSize.max,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -847,7 +807,7 @@ class _SubscriptionProfilesPage extends StatelessWidget {
                 _SourceUpdateErrorBanner(message: source.lastUpdateError!),
               ],
               if (trafficUsage != null && trafficUsage.hasTotal) ...<Widget>[
-                const SizedBox(height: _mobileSubscriptionTrafficTopGap),
+                const SizedBox(height: mobileSubscriptionTrafficTopGap),
                 _SubscriptionTrafficUsageBar(
                   key: ValueKey<String>('subscription-traffic-${source.id}'),
                   usage: trafficUsage,
@@ -858,8 +818,8 @@ class _SubscriptionProfilesPage extends StatelessWidget {
               if (!desktop || source.profiles.isNotEmpty) ...<Widget>[
                 SizedBox(
                   height: trafficUsage != null && trafficUsage.hasTotal
-                      ? _mobileSubscriptionTrafficProfileGap
-                      : _mobileSubscriptionHeaderGap,
+                      ? mobileSubscriptionTrafficProfileGap
+                      : mobileSubscriptionHeaderGap,
                 ),
                 if (!desktop)
                   Expanded(child: _buildMobileProfileList())
@@ -919,7 +879,7 @@ class _SubscriptionProfilesPage extends StatelessWidget {
       physics: physics,
       itemCount: source.profiles.length,
       separatorBuilder: (context, index) =>
-          const SizedBox(height: _mobileProfileCardSpacing),
+          const SizedBox(height: mobileProfileCardSpacing),
       itemBuilder: (context, index) => _buildProfileCard(index),
     );
   }
@@ -940,7 +900,7 @@ class _SubscriptionProfilesPage extends StatelessWidget {
       for (var i = 0; i < source.profiles.length; i += 1) ...<Widget>[
         _buildProfileCard(i),
         if (i != source.profiles.length - 1)
-          const SizedBox(height: _mobileProfileCardSpacing),
+          const SizedBox(height: mobileProfileCardSpacing),
       ],
     ];
   }
@@ -963,26 +923,26 @@ class _MobileSubscriptionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final title = _sourceSubscriptionTitle(source);
-    final expiresLabel = _sourceTrafficExpiryDateLabel(source);
-    final titleStyle = _subscriptionHeaderTitleStyle(theme);
-    final expiresStyle = _subscriptionHeaderExpiryStyle(theme, scheme);
+    final title = sourceSubscriptionTitle(source);
+    final expiresLabel = sourceTrafficExpiryDateLabel(source);
+    final titleStyle = subscriptionHeaderTitleStyle(theme);
+    final expiresStyle = subscriptionHeaderExpiryStyle(theme, scheme);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
-        _mobileSubscriptionHeaderLeftPadding,
+        mobileSubscriptionHeaderLeftPadding,
         0,
-        _mobileSubscriptionHeaderRightPadding,
-        _mobileSubscriptionHeaderBottomPadding,
+        mobileSubscriptionHeaderRightPadding,
+        mobileSubscriptionHeaderBottomPadding,
       ),
       child: Row(
         children: <Widget>[
           Container(
-            width: _mobileSubscriptionHeaderIconSize,
-            height: _mobileSubscriptionHeaderIconSize,
+            width: mobileSubscriptionHeaderIconSize,
+            height: mobileSubscriptionHeaderIconSize,
             decoration: BoxDecoration(
               color: selected
-                  ? _selectedConfigSurfaceColor(scheme)
+                  ? selectedConfigSurfaceColor(scheme)
                   : scheme.surfaceContainerHighest,
               shape: BoxShape.circle,
             ),
@@ -993,12 +953,12 @@ class _MobileSubscriptionHeader extends StatelessWidget {
               color: selected ? scheme.primary : scheme.onSurfaceVariant,
             ),
           ),
-          const SizedBox(width: _mobileSubscriptionHeaderIconGap),
+          const SizedBox(width: mobileSubscriptionHeaderIconGap),
           Expanded(
             child: SizedBox(
-              height: _mobileSubscriptionHeaderIconSize,
+              height: mobileSubscriptionHeaderIconSize,
               child: Baseline(
-                baseline: _mobileSubscriptionHeaderTextBaseline,
+                baseline: mobileSubscriptionHeaderTextBaseline,
                 baselineType: TextBaseline.alphabetic,
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.baseline,
@@ -1011,7 +971,7 @@ class _MobileSubscriptionHeader extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: titleStyle,
                         textHeightBehavior:
-                            _subscriptionHeaderTextHeightBehavior,
+                            subscriptionHeaderTextHeightBehavior,
                       ),
                     ),
                     if (expiresLabel != null) ...<Widget>[
@@ -1020,7 +980,7 @@ class _MobileSubscriptionHeader extends StatelessWidget {
                         '|',
                         style: expiresStyle,
                         textHeightBehavior:
-                            _subscriptionHeaderTextHeightBehavior,
+                            subscriptionHeaderTextHeightBehavior,
                       ),
                       const SizedBox(width: 8),
                       Flexible(
@@ -1030,7 +990,7 @@ class _MobileSubscriptionHeader extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                           style: expiresStyle,
                           textHeightBehavior:
-                              _subscriptionHeaderTextHeightBehavior,
+                              subscriptionHeaderTextHeightBehavior,
                         ),
                       ),
                     ],
@@ -1041,14 +1001,14 @@ class _MobileSubscriptionHeader extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           SizedBox(
-            width: _mobileSubscriptionHeaderActionWidth,
-            height: _compactSourceActionSize,
+            width: mobileSubscriptionHeaderActionWidth,
+            height: compactSourceActionSize,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: <Widget>[
                 SizedBox(
-                  width: _compactSourceActionSize,
-                  height: _compactSourceActionSize,
+                  width: compactSourceActionSize,
+                  height: compactSourceActionSize,
                   child: Center(
                     child: source.isUpdating
                         ? SizedBox(
@@ -1072,13 +1032,13 @@ class _MobileSubscriptionHeader extends StatelessWidget {
                           ),
                   ),
                 ),
-                const SizedBox(width: _compactSourceActionGap),
+                const SizedBox(width: compactSourceActionGap),
                 _SourcePingButton(
                   controller: controller,
                   strings: strings,
                   source: source,
                 ),
-                const SizedBox(width: _compactSourceActionGap),
+                const SizedBox(width: compactSourceActionGap),
                 _SourceMenuButton(
                   controller: controller,
                   strings: strings,
@@ -1116,14 +1076,14 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     final profile = source.profiles[profileIndex];
     final core = controller.displayCoreForProfile(profile);
-    final cardHeight = _mobileProfileCardHeightFor(context);
-    final title = _profileChoiceTitle(profile);
-    final subtitle = _sourceSubtitle(strings, core, profile);
-    final titleStyle = _configCardTitleStyle(theme);
-    final subtitleStyle = _configCardSubtitleStyle(
+    final cardHeight = mobileProfileCardHeightFor(context);
+    final title = profileChoiceTitle(profile);
+    final subtitle = sourceSubtitle(strings, core, profile);
+    final titleStyle = configCardTitleStyle(theme);
+    final subtitleStyle = configCardSubtitleStyle(
       theme,
       scheme,
-    )?.copyWith(fontSize: _mobileProfileSubtitleFontSize);
+    )?.copyWith(fontSize: mobileProfileSubtitleFontSize);
     final tcpPingLatency = source.tcpPingLatencyForProfile(profileIndex);
     final showPingResult = tcpPingLatency != null;
 
@@ -1143,107 +1103,240 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(18, 0, 14, 0),
           decoration: BoxDecoration(
             color: selected
-                ? _selectedConfigSurfaceColor(scheme)
+                ? selectedConfigSurfaceColor(scheme)
                 : scheme.surfaceContainer,
             borderRadius: BorderRadius.circular(22),
           ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: <Widget>[
-              Transform.translate(
-                offset: const Offset(-3, -8),
-                child: _ServerFlagBadge(
-                  key: ValueKey<String>(
-                    'mobile-profile-flag-${source.id}-$profileIndex',
-                  ),
-                  server: profile.server,
-                  selected: selected,
-                  size: _configCardFlagSize,
-                ),
-              ),
-              const SizedBox(width: _configCardFlagGap),
-              Expanded(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final textWidth = constraints.maxWidth
-                        .clamp(64.0, double.infinity)
-                        .toDouble();
-                    final titleMetrics = _measuredTextVisualMetrics(
-                      context,
-                      title,
-                      titleStyle,
-                      maxWidth: textWidth,
-                      maxLines: 1,
-                      textHeightBehavior: _configCardTextHeightBehavior,
-                    );
-                    final subtitleMetrics = _measuredTextVisualMetrics(
-                      context,
-                      subtitle,
-                      subtitleStyle,
-                      maxWidth: textWidth,
-                      maxLines: 1,
-                      textHeightBehavior: _configCardTextHeightBehavior,
-                    );
-                    final titleCenterY = cardHeight / 3;
-                    final subtitleCenterY = cardHeight * 2 / 3;
-
-                    return SizedBox(
-                      height: cardHeight,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: <Widget>[
-                          Positioned(
-                            left: 0,
-                            top: titleCenterY - titleMetrics.visualCenterY,
-                            right: 0,
-                            child: Text(
-                              title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: titleStyle,
-                              textHeightBehavior: _configCardTextHeightBehavior,
-                            ),
-                          ),
-                          Positioned(
-                            left: 0,
-                            top:
-                                subtitleCenterY - subtitleMetrics.visualCenterY,
-                            right: 0,
-                            child: Text(
-                              subtitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: subtitleStyle,
-                              textHeightBehavior: _configCardTextHeightBehavior,
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(width: 12),
-              if (showPingResult) ...<Widget>[
-                _TcpPingResultLabel(milliseconds: tcpPingLatency),
-                const SizedBox(width: 8),
+          child: _SourceCardPrimaryRow(
+            height: cardHeight,
+            server: profile.server,
+            selected: selected,
+            flagKey: ValueKey<String>(
+              'mobile-profile-flag-${source.id}-$profileIndex',
+            ),
+            flagOffset: const Offset(-3, -8),
+            title: title,
+            subtitle: subtitle,
+            titleStyle: titleStyle,
+            subtitleStyle: subtitleStyle,
+            subtitleMaxLines: 1,
+            trailingGap: 12,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (showPingResult) ...<Widget>[
+                  _TcpPingResultLabel(milliseconds: tcpPingLatency),
+                  const SizedBox(width: 8),
+                ],
+                _SourceCardSelectionIndicator(selected: selected),
               ],
-              SizedBox(
-                width: 34,
-                height: 34,
-                child: Center(
-                  child: Icon(
-                    selected
-                        ? Icons.check_circle_rounded
-                        : Icons.radio_button_unchecked_rounded,
-                    size: 22,
-                    color: selected ? scheme.primary : scheme.outline,
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _SourceCardPrimaryRow extends StatelessWidget {
+  const _SourceCardPrimaryRow({
+    required this.height,
+    required this.server,
+    required this.selected,
+    required this.title,
+    required this.subtitle,
+    required this.titleStyle,
+    required this.subtitleStyle,
+    required this.subtitleMaxLines,
+    required this.trailing,
+    this.flagKey,
+    this.flagOffset = Offset.zero,
+    this.trailingGap = 14,
+    this.titleMetrics,
+    this.subtitleMetrics,
+  });
+
+  final double height;
+  final String server;
+  final bool selected;
+  final String title;
+  final String subtitle;
+  final TextStyle? titleStyle;
+  final TextStyle? subtitleStyle;
+  final int subtitleMaxLines;
+  final Widget trailing;
+  final Key? flagKey;
+  final Offset flagOffset;
+  final double trailingGap;
+  final MeasuredTextVisualMetrics? titleMetrics;
+  final MeasuredTextVisualMetrics? subtitleMetrics;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget flag = ServerFlagBadge(
+      key: flagKey,
+      server: server,
+      selected: selected,
+      size: configCardFlagSize,
+    );
+    if (flagOffset != Offset.zero) {
+      flag = Transform.translate(offset: flagOffset, child: flag);
+    }
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: <Widget>[
+        flag,
+        const SizedBox(width: configCardFlagGap),
+        Expanded(
+          child: _SourceCardTextStack(
+            height: height,
+            title: title,
+            subtitle: subtitle,
+            titleStyle: titleStyle,
+            subtitleStyle: subtitleStyle,
+            subtitleMaxLines: subtitleMaxLines,
+            titleMetrics: titleMetrics,
+            subtitleMetrics: subtitleMetrics,
+          ),
+        ),
+        SizedBox(width: trailingGap),
+        trailing,
+      ],
+    );
+  }
+}
+
+class _SourceCardTextStack extends StatelessWidget {
+  const _SourceCardTextStack({
+    required this.height,
+    required this.title,
+    required this.subtitle,
+    required this.titleStyle,
+    required this.subtitleStyle,
+    required this.subtitleMaxLines,
+    this.titleMetrics,
+    this.subtitleMetrics,
+  });
+
+  final double height;
+  final String title;
+  final String subtitle;
+  final TextStyle? titleStyle;
+  final TextStyle? subtitleStyle;
+  final int subtitleMaxLines;
+  final MeasuredTextVisualMetrics? titleMetrics;
+  final MeasuredTextVisualMetrics? subtitleMetrics;
+
+  @override
+  Widget build(BuildContext context) {
+    final titleMetrics = this.titleMetrics;
+    final subtitleMetrics = this.subtitleMetrics;
+    if (titleMetrics != null && subtitleMetrics != null) {
+      return _buildPositionedText(titleMetrics, subtitleMetrics);
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final textWidth = constraints.maxWidth
+            .clamp(64.0, double.infinity)
+            .toDouble();
+        final titleMetrics = measuredTextVisualMetrics(
+          context,
+          title,
+          titleStyle,
+          maxWidth: textWidth,
+          maxLines: 1,
+          textHeightBehavior: configCardTextHeightBehavior,
+        );
+        final subtitleMetrics = measuredTextVisualMetrics(
+          context,
+          subtitle,
+          subtitleStyle,
+          maxWidth: textWidth,
+          maxLines: subtitleMaxLines,
+          textHeightBehavior: configCardTextHeightBehavior,
+        );
+        return _buildPositionedText(titleMetrics, subtitleMetrics);
+      },
+    );
+  }
+
+  Widget _buildPositionedText(
+    MeasuredTextVisualMetrics titleMetrics,
+    MeasuredTextVisualMetrics subtitleMetrics,
+  ) {
+    final titleCenterY = height / 3;
+    final subtitleCenterY = height * 2 / 3;
+
+    return SizedBox(
+      height: height,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: <Widget>[
+          Positioned(
+            left: 0,
+            top: titleCenterY - titleMetrics.visualCenterY,
+            right: 0,
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: titleStyle,
+              textHeightBehavior: configCardTextHeightBehavior,
+            ),
+          ),
+          Positioned(
+            left: 0,
+            top: subtitleCenterY - subtitleMetrics.visualCenterY,
+            right: 0,
+            child: Text(
+              subtitle,
+              maxLines: subtitleMaxLines,
+              overflow: TextOverflow.ellipsis,
+              style: subtitleStyle,
+              textHeightBehavior: configCardTextHeightBehavior,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SourceCardSelectionIndicator extends StatelessWidget {
+  const _SourceCardSelectionIndicator({
+    required this.selected,
+    this.updating = false,
+  });
+
+  final bool selected;
+  final bool updating;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return SizedBox(
+      width: 34,
+      height: 34,
+      child: Center(
+        child: updating
+            ? SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.3,
+                  color: scheme.tertiary,
+                ),
+              )
+            : Icon(
+                selected
+                    ? Icons.check_circle_rounded
+                    : Icons.radio_button_unchecked_rounded,
+                size: 22,
+                color: selected ? scheme.primary : scheme.outline,
+              ),
       ),
     );
   }
@@ -1337,7 +1430,7 @@ class _SourceMenuController {
   final AppStrings strings;
   final ConfigSource source;
 
-  List<PopupMenuEntry<_SourceMenuAction>> items(BuildContext context) {
+  List<PopupMenuEntry<SourceMenuAction>> items(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final menuLabelStyle =
@@ -1349,7 +1442,7 @@ class _SourceMenuController {
     final removeColor = canRemoveSource
         ? scheme.error
         : scheme.onSurfaceVariant.withValues(alpha: 0.54);
-    final items = <PopupMenuEntry<_SourceMenuAction>>[];
+    final items = <PopupMenuEntry<SourceMenuAction>>[];
 
     if (source.isSubscription) {
       items.add(
@@ -1364,8 +1457,8 @@ class _SourceMenuController {
     }
 
     items.add(
-      PopupMenuItem<_SourceMenuAction>(
-        value: _SourceMenuAction.exportJson,
+      PopupMenuItem<SourceMenuAction>(
+        value: SourceMenuAction.exportJson,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
@@ -1378,8 +1471,8 @@ class _SourceMenuController {
     );
 
     items.add(
-      PopupMenuItem<_SourceMenuAction>(
-        value: _SourceMenuAction.delete,
+      PopupMenuItem<SourceMenuAction>(
+        value: SourceMenuAction.delete,
         enabled: canRemoveSource,
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1398,12 +1491,12 @@ class _SourceMenuController {
     return items;
   }
 
-  void handleAction(BuildContext context, _SourceMenuAction action) {
+  void handleAction(BuildContext context, SourceMenuAction action) {
     switch (action) {
-      case _SourceMenuAction.exportJson:
+      case SourceMenuAction.exportJson:
         unawaited(_exportJson(context));
         break;
-      case _SourceMenuAction.delete:
+      case SourceMenuAction.delete:
         unawaited(controller.removeSource(source.id));
         break;
     }
@@ -1441,7 +1534,7 @@ class _SourceMenuController {
     Rect anchor,
     Size overlaySize,
   ) async {
-    final action = await showMenu<_SourceMenuAction>(
+    final action = await showMenu<SourceMenuAction>(
       context: context,
       position: RelativeRect.fromRect(anchor, Offset.zero & overlaySize),
       items: items(context),
@@ -1464,7 +1557,7 @@ class _SourceMenuController {
       );
       final savedPath = await FilePicker.saveFile(
         dialogTitle: strings.exportJsonAction,
-        fileName: _sourceJsonFileName(source),
+        fileName: sourceJsonFileName(source),
         type: FileType.custom,
         allowedExtensions: const <String>['json'],
         bytes: bytes,
@@ -1513,8 +1606,8 @@ class _SourcePingButton extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
 
     return SizedBox(
-      width: _compactSourceActionSize,
-      height: _compactSourceActionSize,
+      width: compactSourceActionSize,
+      height: compactSourceActionSize,
       child: Center(
         child: source.isPinging
             ? SizedBox(
@@ -1541,9 +1634,9 @@ class _SourcePingButton extends StatelessWidget {
 
 ButtonStyle _compactSourceIconButtonStyle(ColorScheme scheme) {
   return IconButton.styleFrom(
-    fixedSize: const Size(_compactSourceActionSize, _compactSourceActionSize),
-    minimumSize: const Size(_compactSourceActionSize, _compactSourceActionSize),
-    maximumSize: const Size(_compactSourceActionSize, _compactSourceActionSize),
+    fixedSize: const Size(compactSourceActionSize, compactSourceActionSize),
+    minimumSize: const Size(compactSourceActionSize, compactSourceActionSize),
+    maximumSize: const Size(compactSourceActionSize, compactSourceActionSize),
     padding: EdgeInsets.zero,
     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
     visualDensity: VisualDensity.compact,
@@ -1609,7 +1702,7 @@ class _QuickSourceTile extends StatelessWidget {
     );
     final profile = source.selectedProfile;
     final trafficUsage = source.trafficUsage;
-    final isMobile = MediaQuery.sizeOf(context).width < _mobileShellBreakpoint;
+    final isMobile = MediaQuery.sizeOf(context).width < mobileShellBreakpoint;
     final showSourceState =
         source.isUpdating || !(isMobile && source.hasMultipleProfiles);
     final tcpPingLatency = source.tcpPingLatencyForProfile(
@@ -1618,19 +1711,19 @@ class _QuickSourceTile extends StatelessWidget {
     final showPingResult = tcpPingLatency != null;
     final actionRowWidth =
         34.0 + (showSourceState ? 40.0 : 0.0) + (showPingResult ? 72.0 : 0.0);
-    final title = _sourceHeadline(source, profile);
-    final subtitle = _sourceSubtitle(
+    final title = sourceHeadline(source, profile);
+    final subtitle = sourceSubtitle(
       strings,
       controller.displayCoreForProfile(profile),
       profile,
     );
-    final titleStyle = _configCardTitleStyle(theme);
-    final subtitleStyle = _configCardSubtitleStyle(theme, scheme);
+    final titleStyle = configCardTitleStyle(theme);
+    final subtitleStyle = configCardSubtitleStyle(theme, scheme);
     final minPrimaryHeight = isMobile
-        ? _mobileConfigCardMinHeight
-        : _desktopConfigCardMinHeight;
+        ? mobileConfigCardMinHeight
+        : desktopConfigCardMinHeight;
     final extraContentBottomPadding = isMobile
-        ? _mobileConfigCardVerticalPadding
+        ? mobileConfigCardVerticalPadding
         : 18.0;
 
     return LayoutBuilder(
@@ -1641,36 +1734,34 @@ class _QuickSourceTile extends StatelessWidget {
         final textWidth =
             (availableWidth -
                     18 -
-                    _configCardFlagWidth -
-                    _configCardFlagGap -
+                    configCardFlagWidth -
+                    configCardFlagGap -
                     14 -
                     14 -
                     actionRowWidth)
                 .clamp(64.0, double.infinity)
                 .toDouble();
-        final titleMetrics = _measuredTextVisualMetrics(
+        final titleMetrics = measuredTextVisualMetrics(
           context,
           title,
           titleStyle,
           maxWidth: textWidth,
           maxLines: 1,
-          textHeightBehavior: _configCardTextHeightBehavior,
+          textHeightBehavior: configCardTextHeightBehavior,
         );
-        final subtitleMetrics = _measuredTextVisualMetrics(
+        final subtitleMetrics = measuredTextVisualMetrics(
           context,
           subtitle,
           subtitleStyle,
           maxWidth: textWidth,
           maxLines: 2,
-          textHeightBehavior: _configCardTextHeightBehavior,
+          textHeightBehavior: configCardTextHeightBehavior,
         );
-        final primaryHeight = _configCardPrimaryHeight(
+        final primaryHeight = configCardPrimaryHeight(
           minHeight: minPrimaryHeight,
           titleHeight: titleMetrics.visualHeight,
           subtitleHeight: subtitleMetrics.visualHeight,
         );
-        final titleCenterY = primaryHeight / 3;
-        final subtitleCenterY = primaryHeight * 2 / 3;
         final hasTrafficUsage =
             source.isSubscription &&
             trafficUsage != null &&
@@ -1688,108 +1779,42 @@ class _QuickSourceTile extends StatelessWidget {
           children: <Widget>[
             SizedBox(
               height: primaryHeight,
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: <Widget>[
-                  _ServerFlagBadge(
-                    server: source.serverAddress,
-                    selected: selected,
-                    size: _configCardFlagSize,
-                  ),
-                  const SizedBox(width: _configCardFlagGap),
-                  Expanded(
-                    child: SizedBox(
-                      height: primaryHeight,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: <Widget>[
-                          Positioned(
-                            left: 0,
-                            top: titleCenterY - titleMetrics.visualCenterY,
-                            right: 0,
-                            child: Text(
-                              title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: titleStyle,
-                              textHeightBehavior: _configCardTextHeightBehavior,
-                            ),
-                          ),
-                          Positioned(
-                            left: 0,
-                            top:
-                                subtitleCenterY - subtitleMetrics.visualCenterY,
-                            right: 0,
-                            child: Text(
-                              subtitle,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: subtitleStyle,
-                              textHeightBehavior: _configCardTextHeightBehavior,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  SizedBox(
-                    width: actionRowWidth,
-                    height: 34,
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: <Widget>[
-                        if (showPingResult) ...<Widget>[
-                          _TcpPingResultLabel(milliseconds: tcpPingLatency),
-                          const SizedBox(width: 8),
-                        ],
-                        if (showSourceState) ...<Widget>[
-                          SizedBox(
-                            width: 34,
-                            height: 34,
-                            child: Center(
-                              child: source.isUpdating
-                                  ? SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2.3,
-                                        color: scheme.tertiary,
-                                      ),
-                                    )
-                                  : Icon(
-                                      selected
-                                          ? Icons.check_circle_rounded
-                                          : Icons
-                                                .radio_button_unchecked_rounded,
-                                      size: 22,
-                                      color: selected
-                                          ? scheme.primary
-                                          : scheme.outline,
-                                    ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                        Builder(
-                          builder: (buttonContext) {
-                            return IconButton(
-                              onPressed: () => unawaited(
-                                sourceMenu.showAtButton(buttonContext),
-                              ),
-                              tooltip: MaterialLocalizations.of(
-                                context,
-                              ).showMenuTooltip,
-                              icon: const Icon(Icons.more_horiz_rounded),
-                              iconSize: 22,
-                              style: _compactSourceIconButtonStyle(scheme),
-                            );
-                          },
-                        ),
+              child: _SourceCardPrimaryRow(
+                height: primaryHeight,
+                server: source.serverAddress,
+                selected: selected,
+                title: title,
+                subtitle: subtitle,
+                titleStyle: titleStyle,
+                subtitleStyle: subtitleStyle,
+                subtitleMaxLines: 2,
+                titleMetrics: titleMetrics,
+                subtitleMetrics: subtitleMetrics,
+                trailing: SizedBox(
+                  width: actionRowWidth,
+                  height: 34,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: <Widget>[
+                      if (showPingResult) ...<Widget>[
+                        _TcpPingResultLabel(milliseconds: tcpPingLatency),
+                        const SizedBox(width: 8),
                       ],
-                    ),
+                      if (showSourceState) ...<Widget>[
+                        _SourceCardSelectionIndicator(
+                          selected: selected,
+                          updating: source.isUpdating,
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      _SourceMenuButton(
+                        controller: controller,
+                        strings: strings,
+                        source: source,
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
             if (source.lastUpdateError != null) ...<Widget>[
@@ -1832,7 +1857,7 @@ class _QuickSourceTile extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(18, 0, 14, 0),
                 decoration: BoxDecoration(
                   color: selected
-                      ? _selectedConfigSurfaceColor(scheme)
+                      ? selectedConfigSurfaceColor(scheme)
                       : scheme.surfaceContainer,
                   borderRadius: BorderRadius.circular(22),
                 ),
@@ -1874,7 +1899,7 @@ class _ProfileDropdown extends StatelessWidget {
             for (var i = 0; i < source.profiles.length; i += 1)
               DropdownMenuEntry<int>(
                 value: i,
-                label: _profileOptionLabel(strings, source.profiles[i]),
+                label: profileOptionLabel(strings, source.profiles[i]),
               ),
           ],
           onSelected: (value) {
@@ -1910,12 +1935,12 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
 
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    const fillColor = _connectedColor;
-    final usedLabel = _formatTrafficBytes(usage.usedBytes);
-    final totalLabel = _formatTrafficBytes(totalBytes);
+    const fillColor = connectedColor;
+    final usedLabel = formatTrafficBytes(usage.usedBytes);
+    final totalLabel = formatTrafficBytes(totalBytes);
     final expiresLabel = !showExpiryDate || usage.expiresAt == null
         ? null
-        : _formatCompactDate(usage.expiresAt!);
+        : formatCompactDate(usage.expiresAt!);
     final percentLabel = '${(ratio * 100).round().clamp(0, 100)}%';
     final usageLabel = strings.subscriptionTrafficUsedOf(usedLabel, totalLabel);
     final semanticValue = <String>[
@@ -1925,7 +1950,7 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
         strings.subscriptionTrafficExpires(expiresLabel),
     ].join(', ');
     const barHeight = 24.0;
-    final detailStyle = _subscriptionTrafficExpiryStyle(theme, scheme);
+    final detailStyle = subscriptionTrafficExpiryStyle(theme, scheme);
     final barLabelStyle = theme.textTheme.bodySmall?.copyWith(
       fontFamily: 'Trebuchet MS',
       color: Colors.white,
@@ -1967,7 +1992,7 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
                     Positioned.fill(
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: _trafficBarTrackColor(scheme),
+                          color: trafficBarTrackColor(scheme),
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
@@ -2018,9 +2043,6 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
   }
 }
 
-const double _subscriptionTrafficExpiryIconSize = 13;
-const double _subscriptionTrafficExpiryIconGap = 4;
-
 class _SubscriptionTrafficExpiryDate extends StatelessWidget {
   const _SubscriptionTrafficExpiryDate({
     required this.dateLabel,
@@ -2040,10 +2062,10 @@ class _SubscriptionTrafficExpiryDate extends StatelessWidget {
       children: <Widget>[
         Icon(
           Icons.calendar_today_outlined,
-          size: _subscriptionTrafficExpiryIconSize,
+          size: subscriptionTrafficExpiryIconSize,
           color: color,
         ),
-        const SizedBox(width: _subscriptionTrafficExpiryIconGap),
+        const SizedBox(width: subscriptionTrafficExpiryIconGap),
         Expanded(
           child: Text(
             dateLabel,
@@ -2057,7 +2079,7 @@ class _SubscriptionTrafficExpiryDate extends StatelessWidget {
   }
 }
 
-class _SourceAutoUpdateMenuEntry extends PopupMenuEntry<_SourceMenuAction> {
+class _SourceAutoUpdateMenuEntry extends PopupMenuEntry<SourceMenuAction> {
   const _SourceAutoUpdateMenuEntry({
     required this.source,
     required this.strings,
@@ -2072,7 +2094,7 @@ class _SourceAutoUpdateMenuEntry extends PopupMenuEntry<_SourceMenuAction> {
   double get height => 64;
 
   @override
-  bool represents(_SourceMenuAction? value) => false;
+  bool represents(SourceMenuAction? value) => false;
 
   @override
   State<_SourceAutoUpdateMenuEntry> createState() =>

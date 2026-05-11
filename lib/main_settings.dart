@@ -1,81 +1,88 @@
-part of 'main.dart';
+import 'dart:async';
 
-class _TrafficModeSelector extends StatelessWidget {
-  const _TrafficModeSelector({required this.controller, required this.strings});
+import 'package:flutter/material.dart';
+
+import 'l10n/app_strings.dart';
+import 'models/split_tunnel.dart';
+import 'models/vpn_profile.dart';
+import 'services/vpn_controller.dart';
+
+class TrafficModeSelector extends StatelessWidget {
+  const TrafficModeSelector({
+    super.key,
+    required this.controller,
+    required this.strings,
+  });
 
   final VpnController controller;
   final AppStrings strings;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return DropdownButtonFormField<TrafficMode>(
-          key: ValueKey<TrafficMode>(controller.trafficMode),
-          initialValue: controller.trafficMode,
-          isExpanded: true,
-          decoration: InputDecoration(labelText: strings.trafficModeLabel),
-          icon: const Icon(Icons.keyboard_arrow_down_rounded),
-          items: <DropdownMenuItem<TrafficMode>>[
-            DropdownMenuItem<TrafficMode>(
-              value: TrafficMode.systemProxy,
-              child: Text(strings.systemProxyModeLabel),
-            ),
-            DropdownMenuItem<TrafficMode>(
-              value: TrafficMode.tun,
-              child: Text(strings.tunModeLabel),
-            ),
-          ],
-          onChanged: controller.canChangeTrafficMode
-              ? (mode) {
-                  if (mode != null) {
-                    unawaited(
-                      controller.setTrafficMode(
-                        mode,
-                        ensureWindowsTunPrivileges: true,
-                      ),
-                    );
-                  }
-                }
-              : null,
-        );
-      },
+    return DropdownButtonFormField<TrafficMode>(
+      key: ValueKey<TrafficMode>(controller.trafficMode),
+      initialValue: controller.trafficMode,
+      isExpanded: true,
+      decoration: InputDecoration(labelText: strings.trafficModeLabel),
+      icon: const Icon(Icons.keyboard_arrow_down_rounded),
+      items: <DropdownMenuItem<TrafficMode>>[
+        DropdownMenuItem<TrafficMode>(
+          value: TrafficMode.systemProxy,
+          child: Text(strings.systemProxyModeLabel),
+        ),
+        DropdownMenuItem<TrafficMode>(
+          value: TrafficMode.tun,
+          child: Text(strings.tunModeLabel),
+        ),
+      ],
+      onChanged: controller.canChangeTrafficMode
+          ? (mode) {
+              if (mode != null) {
+                unawaited(
+                  controller.setTrafficMode(
+                    mode,
+                    ensureWindowsTunPrivileges: true,
+                  ),
+                );
+              }
+            }
+          : null,
     );
   }
 }
 
-class _TunIpModeSelector extends StatelessWidget {
-  const _TunIpModeSelector({required this.controller, required this.strings});
+class TunIpModeSelector extends StatelessWidget {
+  const TunIpModeSelector({
+    super.key,
+    required this.controller,
+    required this.strings,
+  });
 
   final VpnController controller;
   final AppStrings strings;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        return DropdownButtonFormField<TunIpMode>(
-          key: ValueKey<TunIpMode>(controller.tunIpMode),
-          initialValue: controller.tunIpMode,
-          isExpanded: true,
-          decoration: InputDecoration(labelText: strings.tunIpModeLabel),
-          icon: const Icon(Icons.keyboard_arrow_down_rounded),
-          items: <DropdownMenuItem<TunIpMode>>[
-            for (final mode in TunIpMode.values)
-              DropdownMenuItem<TunIpMode>(
-                value: mode,
-                child: Text(strings.tunIpModeName(mode)),
-              ),
-          ],
-          onChanged: controller.canChangeTunIpMode
-              ? (mode) {
-                  if (mode != null) {
-                    controller.setTunIpMode(mode);
-                  }
-                }
-              : null,
-        );
-      },
+    return DropdownButtonFormField<TunIpMode>(
+      key: ValueKey<TunIpMode>(controller.tunIpMode),
+      initialValue: controller.tunIpMode,
+      isExpanded: true,
+      decoration: InputDecoration(labelText: strings.tunIpModeLabel),
+      icon: const Icon(Icons.keyboard_arrow_down_rounded),
+      items: <DropdownMenuItem<TunIpMode>>[
+        for (final mode in TunIpMode.values)
+          DropdownMenuItem<TunIpMode>(
+            value: mode,
+            child: Text(strings.tunIpModeName(mode)),
+          ),
+      ],
+      onChanged: controller.canChangeTunIpMode
+          ? (mode) {
+              if (mode != null) {
+                controller.setTunIpMode(mode);
+              }
+            }
+          : null,
     );
   }
 }
@@ -150,8 +157,9 @@ class _SettingsNavigationTile extends StatelessWidget {
   }
 }
 
-class _SplitTunnelSettingsTile extends StatelessWidget {
-  const _SplitTunnelSettingsTile({
+class SplitTunnelSettingsTile extends StatelessWidget {
+  const SplitTunnelSettingsTile({
+    super.key,
     required this.controller,
     required this.strings,
   });
@@ -416,8 +424,9 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
   }
 }
 
-class _DomainSplitTunnelSettingsTile extends StatelessWidget {
-  const _DomainSplitTunnelSettingsTile({
+class DomainSplitTunnelSettingsTile extends StatelessWidget {
+  const DomainSplitTunnelSettingsTile({
+    super.key,
     required this.controller,
     required this.strings,
   });

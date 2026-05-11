@@ -1,7 +1,17 @@
-part of 'main.dart';
+import 'dart:math' as math;
 
-class _ServerFlagBadge extends StatefulWidget {
-  const _ServerFlagBadge({
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:jovial_svg/jovial_svg.dart';
+
+import 'l10n/app_strings.dart';
+import 'models/vpn_profile.dart';
+import 'services/geo_ip_service.dart';
+import 'services/vpn_controller.dart';
+import 'utils/flag_aspect_ratio.dart';
+
+class ServerFlagBadge extends StatefulWidget {
+  const ServerFlagBadge({
     super.key,
     required this.server,
     required this.selected,
@@ -13,10 +23,10 @@ class _ServerFlagBadge extends StatefulWidget {
   final double size;
 
   @override
-  State<_ServerFlagBadge> createState() => _ServerFlagBadgeState();
+  State<ServerFlagBadge> createState() => ServerFlagBadgeState();
 }
 
-class _ServerFlagBadgeState extends State<_ServerFlagBadge> {
+class ServerFlagBadgeState extends State<ServerFlagBadge> {
   static final GeoIpService _geoIpService = GeoIpService();
 
   late Future<GeoIpInfo?> _lookup;
@@ -28,7 +38,7 @@ class _ServerFlagBadgeState extends State<_ServerFlagBadge> {
   }
 
   @override
-  void didUpdateWidget(covariant _ServerFlagBadge oldWidget) {
+  void didUpdateWidget(covariant ServerFlagBadge oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.server != widget.server) {
       _lookup = _geoIpService.resolveServer(widget.server);
@@ -181,8 +191,12 @@ class _CountryFlagAssetImage extends StatelessWidget {
   }
 }
 
-class _LanguageSelector extends StatelessWidget {
-  const _LanguageSelector({required this.controller, required this.strings});
+class LanguageSelector extends StatelessWidget {
+  const LanguageSelector({
+    super.key,
+    required this.controller,
+    required this.strings,
+  });
 
   final VpnController controller;
   final AppStrings strings;
