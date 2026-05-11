@@ -146,9 +146,7 @@ void main() {
   test(
     'Windows Xray TUN setup JSON serialization works on PowerShell 5',
     () async {
-      final source = await File(
-        'lib/services/core_runtime_service.dart',
-      ).readAsString();
+      final source = await _runtimeServiceSource();
       expect(source, contains(r'Routes = $routeResults.ToArray()'));
       expect(source, isNot(contains(r'Routes = @($routeResults)')));
 
@@ -203,9 +201,7 @@ $timings.Add('wait_adapter=0ms')
   );
 
   test('Windows TUN TCP ping bypass routes are action-scoped', () async {
-    final source = await File(
-      'lib/services/core_runtime_service.dart',
-    ).readAsString();
+    final source = await _runtimeServiceSource();
 
     expect(source, contains('final existingRouteKeys'));
     expect(source, contains('final pingRoutes'));
@@ -282,6 +278,18 @@ $timings.Add('wait_adapter=0ms')
 
     expect(timingLines, isNotEmpty);
   });
+}
+
+Future<String> _runtimeServiceSource() async {
+  final files = <String>[
+    'lib/services/core_runtime_service.dart',
+    'lib/services/core_runtime_service_windows.dart',
+    'lib/services/core_runtime_service_windows_types.dart',
+  ];
+  final chunks = await Future.wait(
+    files.map((path) => File(path).readAsString()),
+  );
+  return chunks.join('\n');
 }
 
 Future<bool> _isRunningAsAdministrator() async {
