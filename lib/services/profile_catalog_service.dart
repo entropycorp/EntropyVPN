@@ -157,7 +157,7 @@ class ProfileCatalogService {
   }) async {
     final client = _httpClientFactory();
     client.connectionTimeout = const Duration(seconds: 15);
-    client.userAgent = 'EntropyVPN/1.3.0';
+    client.userAgent = 'EntropyVPN/1.3.1';
 
     try {
       final request = await client.getUrl(Uri.parse(url));

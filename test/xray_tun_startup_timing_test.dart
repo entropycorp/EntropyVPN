@@ -202,6 +202,22 @@ $timings.Add('wait_adapter=0ms')
     },
   );
 
+  test('Windows TUN TCP ping bypass routes are action-scoped', () async {
+    final source = await File(
+      'lib/services/core_runtime_service.dart',
+    ).readAsString();
+
+    expect(source, contains('final existingRouteKeys'));
+    expect(source, contains('final pingRoutes'));
+    expect(source, contains('return await action();'));
+    expect(source, contains('finally {'));
+    expect(
+      source,
+      contains('_removeTemporaryServerRoute(routes: scopedPingRoutes)'),
+    );
+    expect(source, contains('_forgetTemporaryServerRoutes(scopedPingRoutes)'));
+  });
+
   test('prints Xray process startup timing smoke test', () async {
     if (!Platform.isWindows) {
       print(

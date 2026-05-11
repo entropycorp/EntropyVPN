@@ -105,26 +105,44 @@ class CoreRuntimeService {
     _rememberAppLog(
       'Preparing Windows TUN TCP ping bypass routes for ${targets.length} target(s)...',
     );
+    final existingRouteKeys = _temporaryServerRoutes.map(_hostRouteKey).toSet();
+    final pingRoutes = <_WindowsHostRoute>[];
     final failedTargets = <String>[];
-    for (final profile in targets) {
-      final routing = await _prepareTunServerRouting(
-        profile,
-        trafficMode: trafficMode,
-        tunIpMode: tunIpMode,
-      );
-      if (routing?.hasHostRoute != true) {
-        failedTargets.add(profile.endpointLabel);
+    try {
+      for (final profile in targets) {
+        final routing = await _prepareTunServerRouting(
+          profile,
+          trafficMode: trafficMode,
+          tunIpMode: tunIpMode,
+        );
+        if (routing?.hasHostRoute == true) {
+          pingRoutes.addAll(routing!.hostRoutes);
+        } else {
+          failedTargets.add(profile.endpointLabel);
+        }
+      }
+
+      if (failedTargets.isNotEmpty) {
+        _rememberAppLog(
+          'Windows TUN TCP ping bypass route preparation failed for: ${failedTargets.join(', ')}.',
+        );
+        throw StateError(
+          'TCP ping could not prepare direct Windows routes while TUN is active.',
+        );
+      }
+      return await action();
+    } finally {
+      final scopedPingRoutes = pingRoutes
+          .where((route) => !existingRouteKeys.contains(_hostRouteKey(route)))
+          .toList(growable: false);
+      if (scopedPingRoutes.isNotEmpty) {
+        _rememberAppLog(
+          'Removing Windows TUN TCP ping bypass routes for ${scopedPingRoutes.length} target(s)...',
+        );
+        await _removeTemporaryServerRoute(routes: scopedPingRoutes);
+        _forgetTemporaryServerRoutes(scopedPingRoutes);
       }
     }
-    if (failedTargets.isNotEmpty) {
-      _rememberAppLog(
-        'Windows TUN TCP ping bypass route preparation failed for: ${failedTargets.join(', ')}.',
-      );
-      throw StateError(
-        'TCP ping could not prepare direct Windows routes while TUN is active.',
-      );
-    }
-    return action();
   }
 
   Future<void> saveAndroidStartPayload({
@@ -1628,6 +1646,7 @@ try {
         outboundBindInterface: alias,
         serverAddressOverride: uniqueAddresses.first.address,
         hasHostRoute: routes.isNotEmpty,
+        hostRoutes: routes,
       );
     } catch (error) {
       _rememberAppLog(
@@ -1865,6 +1884,7 @@ try {
             : pinnedRoute.interfaceAlias,
         serverAddressOverride: null,
         hasHostRoute: routes.isNotEmpty,
+        hostRoutes: routes,
       );
     } catch (error) {
       _rememberAppLog(
@@ -1960,6 +1980,7 @@ try {
       outboundBindInterface: interfaceAlias,
       serverAddressOverride: null,
       hasHostRoute: true,
+      hostRoutes: <_WindowsHostRoute>[route],
     );
   }
 
@@ -2055,6 +2076,7 @@ try {
         outboundBindInterface: interfaceAlias,
         serverAddressOverride: null,
         hasHostRoute: true,
+        hostRoutes: <_WindowsHostRoute>[route],
       );
     } catch (error) {
       _rememberAppLog(
@@ -2313,6 +2335,18 @@ try {
     }
     _temporaryServerRoutes = List<_WindowsHostRoute>.unmodifiable(
       routesByKey.values,
+    );
+  }
+
+  void _forgetTemporaryServerRoutes(List<_WindowsHostRoute> routes) {
+    if (routes.isEmpty || _temporaryServerRoutes.isEmpty) {
+      return;
+    }
+    final routeKeys = routes.map(_hostRouteKey).toSet();
+    _temporaryServerRoutes = List<_WindowsHostRoute>.unmodifiable(
+      _temporaryServerRoutes.where(
+        (route) => !routeKeys.contains(_hostRouteKey(route)),
+      ),
     );
   }
 
@@ -4841,11 +4875,13 @@ class _TunRoutingPreparation {
     this.outboundBindInterface,
     this.serverAddressOverride,
     this.hasHostRoute = false,
+    this.hostRoutes = const <_WindowsHostRoute>[],
   });
 
   final String? outboundBindInterface;
   final String? serverAddressOverride;
   final bool hasHostRoute;
+  final List<_WindowsHostRoute> hostRoutes;
 }
 
 class _WindowsTunSetup {
