@@ -75,10 +75,15 @@ class ConfigSource {
     this.profiles = const <ParsedVpnProfile>[],
     this.selectedProfileIndex = 0,
     this.isUpdating = false,
+    this.isPinging = false,
     this.lastUpdatedAt,
     this.lastUpdateError,
     this.autoUpdateIntervalMinutes = defaultSubscriptionAutoUpdateMinutes,
     this.trafficUsage,
+    this.tcpPingLatenciesMs = const <int, int>{},
+    this.tcpPingLatencyMs,
+    this.tcpPingProfileIndex,
+    this.tcpPingError,
   });
 
   final String id;
@@ -88,10 +93,15 @@ class ConfigSource {
   final List<ParsedVpnProfile> profiles;
   final int selectedProfileIndex;
   final bool isUpdating;
+  final bool isPinging;
   final DateTime? lastUpdatedAt;
   final String? lastUpdateError;
   final int autoUpdateIntervalMinutes;
   final SubscriptionTrafficUsage? trafficUsage;
+  final Map<int, int> tcpPingLatenciesMs;
+  final int? tcpPingLatencyMs;
+  final int? tcpPingProfileIndex;
+  final String? tcpPingError;
 
   bool get isSubscription => kind == ConfigSourceKind.subscription;
   bool get hasMultipleProfiles => profiles.length > 1;
@@ -110,6 +120,11 @@ class ConfigSource {
     return profiles[safeIndex];
   }
 
+  int? tcpPingLatencyForProfile(int profileIndex) {
+    return tcpPingLatenciesMs[profileIndex] ??
+        (tcpPingProfileIndex == profileIndex ? tcpPingLatencyMs : null);
+  }
+
   ConfigSource copyWith({
     String? id,
     String? rawInput,
@@ -119,6 +134,7 @@ class ConfigSource {
     List<ParsedVpnProfile>? profiles,
     int? selectedProfileIndex,
     bool? isUpdating,
+    bool? isPinging,
     DateTime? lastUpdatedAt,
     bool clearLastUpdatedAt = false,
     String? lastUpdateError,
@@ -126,6 +142,15 @@ class ConfigSource {
     int? autoUpdateIntervalMinutes,
     SubscriptionTrafficUsage? trafficUsage,
     bool clearTrafficUsage = false,
+    Map<int, int>? tcpPingLatenciesMs,
+    bool clearTcpPingLatencies = false,
+    int? tcpPingLatencyMs,
+    bool clearTcpPingLatency = false,
+    int? tcpPingProfileIndex,
+    bool clearTcpPingProfileIndex = false,
+    String? tcpPingError,
+    bool clearTcpPingError = false,
+    bool clearTcpPing = false,
   }) {
     final nextProfiles = profiles ?? this.profiles;
     final nextIndex = nextProfiles.isEmpty
@@ -143,6 +168,7 @@ class ConfigSource {
       profiles: nextProfiles,
       selectedProfileIndex: nextIndex,
       isUpdating: isUpdating ?? this.isUpdating,
+      isPinging: clearTcpPing ? false : (isPinging ?? this.isPinging),
       lastUpdatedAt: clearLastUpdatedAt
           ? null
           : (lastUpdatedAt ?? this.lastUpdatedAt),
@@ -155,6 +181,18 @@ class ConfigSource {
       trafficUsage: clearTrafficUsage
           ? null
           : (trafficUsage ?? this.trafficUsage),
+      tcpPingLatenciesMs: clearTcpPing || clearTcpPingLatencies
+          ? const <int, int>{}
+          : (tcpPingLatenciesMs ?? this.tcpPingLatenciesMs),
+      tcpPingLatencyMs: clearTcpPing || clearTcpPingLatency
+          ? null
+          : (tcpPingLatencyMs ?? this.tcpPingLatencyMs),
+      tcpPingProfileIndex: clearTcpPing || clearTcpPingProfileIndex
+          ? null
+          : (tcpPingProfileIndex ?? this.tcpPingProfileIndex),
+      tcpPingError: clearTcpPing || clearTcpPingError
+          ? null
+          : (tcpPingError ?? this.tcpPingError),
     );
   }
 

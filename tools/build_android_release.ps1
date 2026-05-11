@@ -5,6 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$pubspecPath = Join-Path $repoRoot 'pubspec.yaml'
 $flutterApkDir = Join-Path $repoRoot 'build\app\outputs\flutter-apk'
 $gradleWrapper = Join-Path $repoRoot 'android\gradlew.bat'
 $flutterCommand = (Get-Command flutter -ErrorAction SilentlyContinue).Source
@@ -16,6 +17,17 @@ if ($null -eq $flutterCommand) {
 if (!(Test-Path $flutterCommand)) {
   throw "flutter was not found at $flutterCommand"
 }
+
+if (!(Test-Path $pubspecPath)) {
+  throw "pubspec.yaml not found at $pubspecPath"
+}
+
+$versionLine = Select-String -Path $pubspecPath -Pattern '^version:\s*([^\s]+)' | Select-Object -First 1
+if ($null -eq $versionLine -or $versionLine.Matches.Count -eq 0) {
+  throw 'Could not read app version from pubspec.yaml'
+}
+
+$appVersion = ($versionLine.Matches[0].Groups[1].Value -split '\+')[0]
 
 function Stop-GradleDaemons {
   if (Test-Path -LiteralPath $gradleWrapper) {
@@ -58,8 +70,8 @@ foreach ($artifact in $defaultReleaseArtifacts) {
 }
 
 $releaseApks = @(
-  'entropyvpn-arm64-v8a.apk',
-  'entropyvpn-armeabi-v7a.apk'
+  "entropyvpn-$appVersion-arm64-v8a.apk",
+  "entropyvpn-$appVersion-armeabi-v7a.apk"
 )
 
 $missingApks = @(

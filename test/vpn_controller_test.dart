@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:entropy_vpn/models/config_source.dart';
 import 'package:entropy_vpn/models/split_tunnel.dart';
 import 'package:entropy_vpn/models/vpn_profile.dart';
@@ -160,6 +162,203 @@ void main() {
     expect(added, isTrue);
     expect(controller.didAddSourceRecently, isTrue);
     expect(controller.recentAddSuccessTarget, AddSourceSuccessTarget.add);
+  });
+
+  test('TCP ping records latency for the selected profile', () async {
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final socketSubscription = server.listen((socket) {
+      socket.destroy();
+    });
+    addTearDown(() async {
+      await socketSubscription.cancel();
+      await server.close();
+    });
+
+    final controller = VpnController(
+      appStateStore: _MemoryAppStateStore(
+        PersistedAppState(
+          language: AppLanguage.en,
+          trafficMode: TrafficMode.systemProxy,
+          tunIpMode: TunIpMode.ipv4,
+          selectedSourceId: 'local',
+          sources: <ConfigSource>[
+            ConfigSource(
+              id: 'local',
+              rawInput: 'vless://local',
+              kind: ConfigSourceKind.config,
+              profiles: <ParsedVpnProfile>[
+                ParsedVpnProfile(
+                  protocol: LinkProtocol.vless,
+                  server: InternetAddress.loopbackIPv4.address,
+                  port: server.port,
+                  transport: TransportMode.raw,
+                  tlsMode: TlsMode.tls,
+                  userId: '11111111-1111-1111-1111-111111111111',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.pingSource('local');
+
+    final source = controller.sources.single;
+    expect(source.isPinging, isFalse);
+    expect(source.tcpPingProfileIndex, 0);
+    expect(source.tcpPingLatencyMs, isNotNull);
+    expect(source.tcpPingLatencyMs!, greaterThan(0));
+    expect(controller.runtimeError, isNull);
+  });
+
+  test('TCP ping records latency for every subscription profile', () async {
+    final firstServer = await ServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    final secondServer = await ServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    final firstSubscription = firstServer.listen((socket) {
+      socket.destroy();
+    });
+    final secondSubscription = secondServer.listen((socket) {
+      socket.destroy();
+    });
+    addTearDown(() async {
+      await firstSubscription.cancel();
+      await secondSubscription.cancel();
+      await firstServer.close();
+      await secondServer.close();
+    });
+
+    final controller = VpnController(
+      appStateStore: _MemoryAppStateStore(
+        PersistedAppState(
+          language: AppLanguage.en,
+          trafficMode: TrafficMode.systemProxy,
+          tunIpMode: TunIpMode.ipv4,
+          selectedSourceId: 'subscription',
+          sources: <ConfigSource>[
+            ConfigSource(
+              id: 'subscription',
+              rawInput: 'https://example.com/subscription',
+              kind: ConfigSourceKind.subscription,
+              profiles: <ParsedVpnProfile>[
+                ParsedVpnProfile(
+                  protocol: LinkProtocol.vless,
+                  server: InternetAddress.loopbackIPv4.address,
+                  port: firstServer.port,
+                  transport: TransportMode.raw,
+                  tlsMode: TlsMode.tls,
+                  userId: '11111111-1111-1111-1111-111111111111',
+                  remark: 'First',
+                ),
+                ParsedVpnProfile(
+                  protocol: LinkProtocol.vless,
+                  server: InternetAddress.loopbackIPv4.address,
+                  port: secondServer.port,
+                  transport: TransportMode.raw,
+                  tlsMode: TlsMode.tls,
+                  userId: '22222222-2222-2222-2222-222222222222',
+                  remark: 'Second',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.pingSource('subscription');
+
+    final source = controller.sources.single;
+    expect(source.isPinging, isFalse);
+    expect(source.tcpPingLatenciesMs.keys, containsAll(<int>[0, 1]));
+    expect(source.tcpPingLatencyForProfile(0), isNotNull);
+    expect(source.tcpPingLatencyForProfile(1), isNotNull);
+    expect(source.tcpPingLatencyForProfile(0), greaterThan(0));
+    expect(source.tcpPingLatencyForProfile(1), greaterThan(0));
+    expect(controller.runtimeError, isNull);
+  });
+
+  test('TCP ping asks runtime to prepare bypass routes for targets', () async {
+    final firstServer = await ServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    final secondServer = await ServerSocket.bind(
+      InternetAddress.loopbackIPv4,
+      0,
+    );
+    final firstSubscription = firstServer.listen((socket) {
+      socket.destroy();
+    });
+    final secondSubscription = secondServer.listen((socket) {
+      socket.destroy();
+    });
+    addTearDown(() async {
+      await firstSubscription.cancel();
+      await secondSubscription.cancel();
+      await firstServer.close();
+      await secondServer.close();
+    });
+
+    final runtimeService = _RecordingTcpPingBypassRuntimeService();
+    final controller = VpnController(
+      runtimeService: runtimeService,
+      appStateStore: _MemoryAppStateStore(
+        PersistedAppState(
+          language: AppLanguage.en,
+          trafficMode: TrafficMode.tun,
+          tunIpMode: TunIpMode.ipv4,
+          selectedSourceId: 'subscription',
+          sources: <ConfigSource>[
+            ConfigSource(
+              id: 'subscription',
+              rawInput: 'https://example.com/subscription',
+              kind: ConfigSourceKind.subscription,
+              profiles: <ParsedVpnProfile>[
+                ParsedVpnProfile(
+                  protocol: LinkProtocol.vless,
+                  server: InternetAddress.loopbackIPv4.address,
+                  port: firstServer.port,
+                  transport: TransportMode.raw,
+                  tlsMode: TlsMode.tls,
+                  userId: '11111111-1111-1111-1111-111111111111',
+                  remark: 'First',
+                ),
+                ParsedVpnProfile(
+                  protocol: LinkProtocol.vless,
+                  server: InternetAddress.loopbackIPv4.address,
+                  port: secondServer.port,
+                  transport: TransportMode.raw,
+                  tlsMode: TlsMode.tls,
+                  userId: '22222222-2222-2222-2222-222222222222',
+                  remark: 'Second',
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.pingSource('subscription');
+
+    expect(runtimeService.tcpPingBypassTrafficModes, <TrafficMode>[
+      TrafficMode.tun,
+    ]);
+    expect(runtimeService.tcpPingBypassTunIpModes, <TunIpMode>[TunIpMode.ipv4]);
+    expect(runtimeService.tcpPingBypassPorts.single, <int>[
+      firstServer.port,
+      secondServer.port,
+    ]);
   });
 
   test('refreshDueSubscriptions respects per-source intervals', () async {
@@ -342,6 +541,28 @@ class _RecordingCoreRuntimeService extends _FakeCoreRuntimeService {
   @override
   Future<void> stop({bool waitForCleanup = false}) async {
     stopWaitForCleanupValues.add(waitForCleanup);
+  }
+}
+
+class _RecordingTcpPingBypassRuntimeService extends _FakeCoreRuntimeService {
+  final List<TrafficMode> tcpPingBypassTrafficModes = <TrafficMode>[];
+  final List<TunIpMode> tcpPingBypassTunIpModes = <TunIpMode>[];
+  final List<List<int>> tcpPingBypassPorts = <List<int>>[];
+
+  @override
+  Future<T> withTcpPingBypassRoutes<T>({
+    required Iterable<ParsedVpnProfile> profiles,
+    required TrafficMode trafficMode,
+    required TunIpMode tunIpMode,
+    required Future<T> Function() action,
+  }) async {
+    final profileList = profiles.toList(growable: false);
+    tcpPingBypassTrafficModes.add(trafficMode);
+    tcpPingBypassTunIpModes.add(tunIpMode);
+    tcpPingBypassPorts.add(
+      profileList.map((profile) => profile.port).toList(growable: false),
+    );
+    return action();
   }
 }
 

@@ -20,6 +20,8 @@ class AppStrings {
 
   bool get _ru => language == AppLanguage.ru;
 
+  String get tcpPingAction => 'Ping';
+
   String get trafficModeLabel => _ru ? 'Режим' : 'Mode';
   String get systemProxyModeLabel => _ru ? 'Системный proxy' : 'System proxy';
   String get tunModeLabel => 'TUN';
@@ -124,7 +126,7 @@ class AppStrings {
 
   String get noProfilesLoaded =>
       _ru ? 'Профили еще не загружены' : 'Profiles are not loaded yet';
-  String get removeSourceAction => _ru ? 'Удалить' : 'Remove';
+  String get removeSourceAction => _ru ? 'Удалить' : 'Delete';
   String get updateNowAction => _ru ? 'Обновить' : 'Update';
   String get powerConnectedLabel => _ru ? 'Подключено' : 'Connected';
   String get powerDisconnectedLabel => _ru ? 'Отключено' : 'Disconnected';

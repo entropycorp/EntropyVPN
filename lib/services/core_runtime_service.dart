@@ -78,6 +78,55 @@ class CoreRuntimeService {
     await _androidBridge?.refreshState();
   }
 
+  Future<T> withTcpPingBypassRoutes<T>({
+    required Iterable<ParsedVpnProfile> profiles,
+    required TrafficMode trafficMode,
+    required TunIpMode tunIpMode,
+    required Future<T> Function() action,
+  }) async {
+    if (!Platform.isWindows ||
+        trafficMode != TrafficMode.tun ||
+        _process == null) {
+      return action();
+    }
+
+    final targets = profiles
+        .where(
+          (profile) =>
+              profile.server.trim().isNotEmpty &&
+              profile.port > 0 &&
+              profile.port <= 65535,
+        )
+        .toList(growable: false);
+    if (targets.isEmpty) {
+      return action();
+    }
+
+    _rememberAppLog(
+      'Preparing Windows TUN TCP ping bypass routes for ${targets.length} target(s)...',
+    );
+    final failedTargets = <String>[];
+    for (final profile in targets) {
+      final routing = await _prepareTunServerRouting(
+        profile,
+        trafficMode: trafficMode,
+        tunIpMode: tunIpMode,
+      );
+      if (routing?.hasHostRoute != true) {
+        failedTargets.add(profile.endpointLabel);
+      }
+    }
+    if (failedTargets.isNotEmpty) {
+      _rememberAppLog(
+        'Windows TUN TCP ping bypass route preparation failed for: ${failedTargets.join(', ')}.',
+      );
+      throw StateError(
+        'TCP ping could not prepare direct Windows routes while TUN is active.',
+      );
+    }
+    return action();
+  }
+
   Future<void> saveAndroidStartPayload({
     required CoreFlavor core,
     required ParsedVpnProfile profile,
@@ -1578,6 +1627,7 @@ try {
       return _TunRoutingPreparation(
         outboundBindInterface: alias,
         serverAddressOverride: uniqueAddresses.first.address,
+        hasHostRoute: routes.isNotEmpty,
       );
     } catch (error) {
       _rememberAppLog(
@@ -1789,6 +1839,7 @@ try {
         return _TunRoutingPreparation(
           outboundBindInterface: route.interfaceAlias,
           serverAddressOverride: null,
+          hasHostRoute: false,
         );
       }
 
@@ -1813,6 +1864,7 @@ try {
             ? route.interfaceAlias
             : pinnedRoute.interfaceAlias,
         serverAddressOverride: null,
+        hasHostRoute: routes.isNotEmpty,
       );
     } catch (error) {
       _rememberAppLog(
@@ -1885,17 +1937,16 @@ try {
       return null;
     }
 
+    final createdRoute = result['routeStatus']?.toString() == 'created';
     final route = _WindowsHostRoute(
       destinationPrefix: destinationPrefix,
       interfaceAlias: interfaceAlias,
       interfaceIndex: interfaceIndex,
       nextHop: nextHop,
       removalTool: _WindowsRouteRemovalTool.routeExe,
+      removeWhenUnused: createdRoute,
     );
     _trackTemporaryServerRoutes(<_WindowsHostRoute>[route]);
-    final routeStatus = result['routeStatus']?.toString() == 'created'
-        ? 'created'
-        : 'already existed';
     _rememberAppLog(
       'Native IPv4 server route setup${elapsedMs == null ? '' : ' elapsed=${elapsedMs}ms'}.',
     );
@@ -1903,11 +1954,12 @@ try {
       'Windows route to ${serverIp.address}: interface=$interfaceAlias, source=${_orDash(sourceAddress)}, nextHop=$nextHop, hardware=${result['hardwareInterface']}, virtual=${result['virtual']}.',
     );
     _rememberAppLog(
-      'Native IPv4 host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) $routeStatus.',
+      'Native IPv4 host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) ${createdRoute ? 'created' : 'already existed'}.',
     );
     return _TunRoutingPreparation(
       outboundBindInterface: interfaceAlias,
       serverAddressOverride: null,
+      hasHostRoute: true,
     );
   }
 
@@ -1990,6 +2042,7 @@ try {
         interfaceIndex: 0,
         nextHop: defaultRoute.gateway,
         removalTool: _WindowsRouteRemovalTool.routeExe,
+        removeWhenUnused: !routeExists,
       );
       _trackTemporaryServerRoutes(<_WindowsHostRoute>[route]);
       _rememberAppLog(
@@ -2001,6 +2054,7 @@ try {
       return _TunRoutingPreparation(
         outboundBindInterface: interfaceAlias,
         serverAddressOverride: null,
+        hasHostRoute: true,
       );
     } catch (error) {
       _rememberAppLog(
@@ -2225,13 +2279,14 @@ try {
           nextHop.isEmpty) {
         continue;
       }
+      final status = item['Status']?.toString();
       final route = _WindowsHostRoute(
         destinationPrefix: destinationPrefix,
         interfaceAlias: interfaceAlias,
         interfaceIndex: interfaceIndex,
         nextHop: nextHop,
+        removeWhenUnused: status == 'created',
       );
-      final status = item['Status']?.toString();
       if (status != 'failed') {
         routes.add(route);
       }
@@ -2250,8 +2305,22 @@ try {
     if (routes.isEmpty) {
       return;
     }
+    final routesByKey = <String, _WindowsHostRoute>{
+      for (final route in _temporaryServerRoutes) _hostRouteKey(route): route,
+    };
+    for (final route in routes) {
+      routesByKey.putIfAbsent(_hostRouteKey(route), () => route);
+    }
     _temporaryServerRoutes = List<_WindowsHostRoute>.unmodifiable(
-      <_WindowsHostRoute>[..._temporaryServerRoutes, ...routes],
+      routesByKey.values,
+    );
+  }
+
+  String _hostRouteKey(_WindowsHostRoute route) {
+    return _routeRemovalKey(
+      destinationPrefix: route.destinationPrefix,
+      interfaceIndex: route.interfaceIndex,
+      nextHop: route.nextHop,
     );
   }
 
@@ -3732,10 +3801,13 @@ try {
   Future<void> _removeTemporaryServerRoute({
     List<_WindowsHostRoute>? routes,
   }) async {
-    final routesToRemove = routes ?? _temporaryServerRoutes;
+    final rawRoutesToRemove = routes ?? _temporaryServerRoutes;
     if (routes == null) {
       _temporaryServerRoutes = const <_WindowsHostRoute>[];
     }
+    final routesToRemove = rawRoutesToRemove
+        .where((route) => route.removeWhenUnused)
+        .toList(growable: false);
     if (routesToRemove.isEmpty) {
       return;
     }
@@ -4768,10 +4840,12 @@ class _TunRoutingPreparation {
   const _TunRoutingPreparation({
     this.outboundBindInterface,
     this.serverAddressOverride,
+    this.hasHostRoute = false,
   });
 
   final String? outboundBindInterface;
   final String? serverAddressOverride;
+  final bool hasHostRoute;
 }
 
 class _WindowsTunSetup {
@@ -4818,6 +4892,7 @@ class _WindowsHostRoute {
     required this.interfaceIndex,
     required this.nextHop,
     this.removalTool = _WindowsRouteRemovalTool.powerShell,
+    this.removeWhenUnused = true,
   });
 
   final String destinationPrefix;
@@ -4825,6 +4900,7 @@ class _WindowsHostRoute {
   final int interfaceIndex;
   final String nextHop;
   final _WindowsRouteRemovalTool removalTool;
+  final bool removeWhenUnused;
 }
 
 enum _WindowsRouteRemovalTool { powerShell, routeExe }

@@ -2,7 +2,7 @@ name: entropy_vpn
 description: "Windows VPN client for Xray-core and Sing-box."
 publish_to: 'none'
 
-version: 1.2.0+5
+version: 1.3.0+6
 
 environment:
   sdk: ^3.11.5
@@ -36,9 +36,9 @@ flutter:
     - assets/flags/
 
   fonts:
-    - family: SpaceGrotesk
+    - family: GolosText
       fonts:
-        - asset: assets/fonts/SpaceGrotesk-Variable.ttf
+        - asset: assets/fonts/GolosText-Variable.ttf
     - family: JetBrainsMono
       fonts:
         - asset: assets/fonts/JetBrainsMono-Variable.ttf

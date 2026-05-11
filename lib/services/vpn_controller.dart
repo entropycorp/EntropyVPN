@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 
@@ -17,6 +18,8 @@ enum AddSourceSuccessTarget { add, paste, qr, json }
 
 class VpnController extends ChangeNotifier {
   static const Duration _transientErrorDuration = Duration(seconds: 3);
+  static const Duration _tcpPingTimeout = Duration(seconds: 5);
+  static const int _tcpPingMaxConcurrent = 8;
 
   VpnController({
     ShareLinkParser? parser,
@@ -577,6 +580,111 @@ class VpnController extends ChangeNotifier {
     await _refreshSource(sourceId);
   }
 
+  bool canPingSource(String sourceId) {
+    final source = _sourceById(sourceId);
+    return !isBusy &&
+        source != null &&
+        !source.isUpdating &&
+        !source.isPinging &&
+        _tcpPingTargetsForSource(source).isNotEmpty;
+  }
+
+  Future<void> pingSource(String sourceId) async {
+    await _hydration;
+
+    final source = _sourceById(sourceId);
+    if (source == null || source.isUpdating || source.isPinging || isBusy) {
+      return;
+    }
+
+    final targets = _tcpPingTargetsForSource(source);
+    if (targets.isEmpty) {
+      _setRuntimeError('TCP ping needs a host and port.');
+      notifyListeners();
+      return;
+    }
+
+    _replaceSource(
+      source.copyWith(
+        isPinging: true,
+        tcpPingProfileIndex: targets.first.profileIndex,
+        clearTcpPingLatencies: true,
+        clearTcpPingLatency: true,
+        clearTcpPingError: true,
+      ),
+    );
+    _setRuntimeError(null);
+    notifyListeners();
+
+    try {
+      final measurements = await _runtimeService
+          .withTcpPingBypassRoutes<List<_TcpPingMeasurement>>(
+            profiles: targets.map((target) => target.profile),
+            trafficMode: _trafficMode,
+            tunIpMode: _tunIpMode,
+            action: () => _measureTcpPingTargets(targets),
+          );
+      final current = _sourceById(sourceId);
+      if (current == null) {
+        return;
+      }
+      final latenciesByProfile = <int, int>{};
+      for (final measurement in measurements) {
+        var profileIndex = -1;
+        if (measurement.profileIndex >= 0 &&
+            measurement.profileIndex < current.profiles.length &&
+            _profileKey(current.profiles[measurement.profileIndex]) ==
+                measurement.profileKey) {
+          profileIndex = measurement.profileIndex;
+        } else {
+          profileIndex = current.profiles.indexWhere(
+            (item) => _profileKey(item) == measurement.profileKey,
+          );
+        }
+        if (profileIndex >= 0) {
+          latenciesByProfile[profileIndex] = measurement.latencyMs;
+        }
+      }
+      if (latenciesByProfile.isEmpty) {
+        _replaceSource(current.copyWith(clearTcpPing: true));
+        notifyListeners();
+        return;
+      }
+      final selectedLatency = latenciesByProfile[current.selectedProfileIndex];
+      final primaryPingProfileIndex = selectedLatency == null
+          ? latenciesByProfile.keys.first
+          : current.selectedProfileIndex;
+
+      _replaceSource(
+        current.copyWith(
+          isPinging: false,
+          tcpPingLatenciesMs: Map<int, int>.unmodifiable(latenciesByProfile),
+          tcpPingLatencyMs:
+              selectedLatency ?? latenciesByProfile[primaryPingProfileIndex],
+          tcpPingProfileIndex: primaryPingProfileIndex,
+          clearTcpPingError: true,
+        ),
+      );
+      notifyListeners();
+    } catch (error) {
+      final current = _sourceById(sourceId);
+      if (current == null) {
+        return;
+      }
+      final message = _renderError(error);
+      _replaceSource(
+        current.copyWith(
+          isPinging: false,
+          tcpPingError: message,
+          clearTcpPingLatencies: true,
+          clearTcpPingLatency: true,
+        ),
+      );
+      _setRuntimeError('TCP ping failed: $message');
+      notifyListeners();
+    }
+  }
+
   Future<void> refreshDueSubscriptions() async {
     await _hydration;
 
@@ -867,6 +975,7 @@ class VpnController extends ChangeNotifier {
           clearLastUpdateError: true,
           trafficUsage: catalog.trafficUsage,
           clearTrafficUsage: catalog.trafficUsage == null,
+          clearTcpPing: true,
         ),
       );
     } catch (error) {
@@ -881,6 +990,100 @@ class VpnController extends ChangeNotifier {
 
     _queuePersistState();
     notifyListeners();
+  }
+
+  bool _hasTcpPingEndpoint(ParsedVpnProfile? profile) {
+    final host = profile?.server.trim();
+    final port = profile?.port ?? 0;
+    return host != null && host.isNotEmpty && port > 0 && port <= 65535;
+  }
+
+  List<_TcpPingTarget> _tcpPingTargetsForSource(ConfigSource source) {
+    if (source.isSubscription) {
+      return <_TcpPingTarget>[
+        for (var i = 0; i < source.profiles.length; i += 1)
+          if (_hasTcpPingEndpoint(source.profiles[i]))
+            _TcpPingTarget(
+              profileIndex: i,
+              profileKey: _profileKey(source.profiles[i]),
+              profile: source.profiles[i],
+            ),
+      ];
+    }
+
+    final profile = source.selectedProfile;
+    if (!_hasTcpPingEndpoint(profile)) {
+      return const <_TcpPingTarget>[];
+    }
+
+    return <_TcpPingTarget>[
+      _TcpPingTarget(
+        profileIndex: source.selectedProfileIndex,
+        profileKey: _profileKey(profile!),
+        profile: profile,
+      ),
+    ];
+  }
+
+  Future<List<_TcpPingMeasurement>> _measureTcpPingTargets(
+    List<_TcpPingTarget> targets,
+  ) async {
+    final measurements = <_TcpPingMeasurement>[];
+    final errors = <Object>[];
+    var nextTarget = 0;
+
+    Future<void> runWorker() async {
+      while (true) {
+        final targetIndex = nextTarget;
+        nextTarget += 1;
+        if (targetIndex >= targets.length) {
+          return;
+        }
+
+        final target = targets[targetIndex];
+        try {
+          final latencyMs = await _measureTcpPing(target.profile);
+          measurements.add(
+            _TcpPingMeasurement(
+              profileIndex: target.profileIndex,
+              profileKey: target.profileKey,
+              latencyMs: latencyMs,
+            ),
+          );
+        } catch (error) {
+          errors.add(error);
+        }
+      }
+    }
+
+    final workerCount = math.min(_tcpPingMaxConcurrent, targets.length);
+    await Future.wait(<Future<void>>[
+      for (var i = 0; i < workerCount; i += 1) runWorker(),
+    ]);
+
+    if (measurements.isEmpty && errors.isNotEmpty) {
+      Error.throwWithStackTrace(errors.first, StackTrace.current);
+    }
+
+    measurements.sort(
+      (left, right) => left.profileIndex.compareTo(right.profileIndex),
+    );
+    return measurements;
+  }
+
+  Future<int> _measureTcpPing(ParsedVpnProfile profile) async {
+    final host = profile.server.trim();
+    final port = profile.port;
+    final stopwatch = Stopwatch()..start();
+    Socket? socket;
+    try {
+      socket = await Socket.connect(host, port, timeout: _tcpPingTimeout);
+      stopwatch.stop();
+      final elapsedMs = stopwatch.elapsedMilliseconds;
+      return elapsedMs <= 0 ? 1 : elapsedMs;
+    } finally {
+      socket?.destroy();
+    }
   }
 
   bool _isSubscriptionDueForAutoUpdate(ConfigSource source, DateTime now) {
@@ -1270,6 +1473,30 @@ class VpnController extends ChangeNotifier {
     final text = error.toString().trim();
     return text.startsWith('StateError: ') ? text.substring(12) : text;
   }
+}
+
+class _TcpPingTarget {
+  const _TcpPingTarget({
+    required this.profileIndex,
+    required this.profileKey,
+    required this.profile,
+  });
+
+  final int profileIndex;
+  final String profileKey;
+  final ParsedVpnProfile profile;
+}
+
+class _TcpPingMeasurement {
+  const _TcpPingMeasurement({
+    required this.profileIndex,
+    required this.profileKey,
+    required this.latencyMs,
+  });
+
+  final int profileIndex;
+  final String profileKey;
+  final int latencyMs;
 }
 
 extension on bool? {

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show File, FileSystemException, Platform;
 import 'dart:math' as math;
+import 'dart:ui' show BoxHeightStyle, BoxWidthStyle;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
@@ -60,7 +61,7 @@ final _mobilePageSwipeSpring = SpringDescription.withDurationAndBounce(
   duration: _mobilePageTransitionDuration,
 );
 
-enum _SourceMenuAction { exportJson, updateNow, delete }
+enum _SourceMenuAction { exportJson, delete }
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -174,7 +175,7 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
       brightness: Brightness.dark,
       colorScheme: scheme,
       scaffoldBackgroundColor: _appBackgroundColor,
-      fontFamily: 'SpaceGrotesk',
+      fontFamily: 'GolosText',
     );
 
     final textTheme = base.textTheme
@@ -193,7 +194,7 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
             fontWeight: FontWeight.w700,
           ),
           titleSmall: base.textTheme.titleSmall?.copyWith(
-            fontWeight: FontWeight.w600,
+            fontWeight: FontWeight.w500,
           ),
           bodyLarge: base.textTheme.bodyLarge?.copyWith(height: 1.45),
           bodyMedium: base.textTheme.bodyMedium?.copyWith(height: 1.45),
@@ -559,6 +560,9 @@ class _MobileShell extends StatefulWidget {
 
 class _MobileShellState extends State<_MobileShell> {
   late final PageController _pageController;
+  int? _programmaticPageTarget;
+  int? _sourceOverflowDragStartIndex;
+  int _pageSyncGeneration = 0;
 
   @override
   void initState() {
@@ -591,13 +595,23 @@ class _MobileShellState extends State<_MobileShell> {
       }
       final currentPage = _pageController.page;
       if (currentPage != null && currentPage.round() == targetIndex) {
+        _programmaticPageTarget = null;
         return;
       }
-      _pageController.animateToPage(
-        targetIndex,
-        duration: _mobilePageTransitionDuration,
-        curve: Curves.easeOutCubic,
-      );
+      final syncGeneration = ++_pageSyncGeneration;
+      _programmaticPageTarget = targetIndex;
+      _pageController
+          .animateToPage(
+            targetIndex,
+            duration: _mobilePageTransitionDuration,
+            curve: Curves.easeOutCubic,
+          )
+          .whenComplete(() {
+            if (!mounted || syncGeneration != _pageSyncGeneration) {
+              return;
+            }
+            _programmaticPageTarget = null;
+          });
     }
 
     if (_pageController.hasClients) {
@@ -611,6 +625,16 @@ class _MobileShellState extends State<_MobileShell> {
     if (index < 0 || index >= _homeSections.length) {
       return;
     }
+    if (_sourceOverflowDragStartIndex != null) {
+      return;
+    }
+    final programmaticPageTarget = _programmaticPageTarget;
+    if (programmaticPageTarget != null) {
+      if (index != programmaticPageTarget) {
+        return;
+      }
+      _programmaticPageTarget = null;
+    }
     widget.onChanged(_homeSections[index]);
   }
 
@@ -620,6 +644,105 @@ class _MobileShellState extends State<_MobileShell> {
       return;
     }
     widget.onChanged(_homeSections[currentIndex + 1]);
+  }
+
+  void _handleConnectSourcePagerOverflowDragUpdate(double deltaDx) {
+    if (!_pageController.hasClients) {
+      return;
+    }
+
+    final currentIndex = _homeSections.indexOf(widget.selected);
+    if (currentIndex < 0 || currentIndex >= _homeSections.length - 1) {
+      return;
+    }
+
+    final startIndex = _sourceOverflowDragStartIndex ?? currentIndex;
+    if (_sourceOverflowDragStartIndex == null) {
+      _pageSyncGeneration += 1;
+      _programmaticPageTarget = null;
+      _sourceOverflowDragStartIndex = startIndex;
+    }
+
+    final position = _pageController.position;
+    final viewport = position.viewportDimension;
+    if (viewport <= 0) {
+      return;
+    }
+
+    final startPixels = startIndex * viewport;
+    final targetPixels = (startIndex + 1) * viewport;
+    final nextPixels = (position.pixels - deltaDx)
+        .clamp(startPixels, targetPixels)
+        .toDouble();
+    position.jumpTo(nextPixels);
+  }
+
+  void _handleConnectSourcePagerOverflowDragEnd(double velocityDx) {
+    final startIndex = _sourceOverflowDragStartIndex;
+    if (startIndex == null) {
+      _handleConnectSourcePagerOverflow();
+      return;
+    }
+    if (!_pageController.hasClients || startIndex >= _homeSections.length - 1) {
+      _sourceOverflowDragStartIndex = null;
+      return;
+    }
+
+    final position = _pageController.position;
+    final viewport = position.viewportDimension;
+    final draggedPixels = viewport <= 0
+        ? 0.0
+        : position.pixels - startIndex * viewport;
+    final completeByVelocity =
+        velocityDx <= -_mobileSourcePagerSwipeVelocityThreshold;
+    final cancelByVelocity =
+        velocityDx >= _mobileSourcePagerSwipeVelocityThreshold;
+    final shouldComplete =
+        completeByVelocity ||
+        (!cancelByVelocity &&
+            draggedPixels >= _mobileSourcePagerSwipeDistanceThreshold);
+    _settleConnectSourcePagerOverflowDrag(
+      shouldComplete ? startIndex + 1 : startIndex,
+    );
+  }
+
+  void _handleConnectSourcePagerOverflowDragCancel() {
+    final startIndex = _sourceOverflowDragStartIndex;
+    if (startIndex == null) {
+      return;
+    }
+    _settleConnectSourcePagerOverflowDrag(startIndex);
+  }
+
+  void _settleConnectSourcePagerOverflowDrag(int targetIndex) {
+    final startIndex = _sourceOverflowDragStartIndex;
+    if (startIndex == null || !_pageController.hasClients) {
+      _sourceOverflowDragStartIndex = null;
+      return;
+    }
+
+    final clampedTargetIndex = targetIndex
+        .clamp(0, _homeSections.length - 1)
+        .toInt();
+    final completesOverflow = clampedTargetIndex != startIndex;
+    final syncGeneration = ++_pageSyncGeneration;
+    _programmaticPageTarget = clampedTargetIndex;
+    _pageController
+        .animateToPage(
+          clampedTargetIndex,
+          duration: _mobilePageTransitionDuration,
+          curve: Curves.easeOutCubic,
+        )
+        .whenComplete(() {
+          if (!mounted || syncGeneration != _pageSyncGeneration) {
+            return;
+          }
+          _programmaticPageTarget = null;
+          _sourceOverflowDragStartIndex = null;
+          if (completesOverflow) {
+            widget.onChanged(_homeSections[clampedTargetIndex]);
+          }
+        });
   }
 
   @override
@@ -678,6 +801,12 @@ class _MobileShellState extends State<_MobileShell> {
                       controller: widget.controller,
                       strings: widget.strings,
                       onSwipePastLastSource: _handleConnectSourcePagerOverflow,
+                      onSwipePastLastSourceDragUpdate:
+                          _handleConnectSourcePagerOverflowDragUpdate,
+                      onSwipePastLastSourceDragEnd:
+                          _handleConnectSourcePagerOverflowDragEnd,
+                      onSwipePastLastSourceDragCancel:
+                          _handleConnectSourcePagerOverflowDragCancel,
                     ),
                     _AddSourcePageBody(
                       controller: widget.controller,
@@ -947,9 +1076,7 @@ class _MobileSectionButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final indicatorColor = selected ? scheme.primary : Colors.transparent;
-    final tileColor = selected
-        ? scheme.surfaceContainerHighest.withValues(alpha: 0.9)
-        : scheme.surfaceContainer;
+    final tileColor = _sectionButtonTileColor(scheme, selected);
     final iconColor = selected ? scheme.onSurface : scheme.onSurfaceVariant;
 
     return SizedBox(
@@ -991,6 +1118,12 @@ class _MobileSectionButton extends StatelessWidget {
   }
 }
 
+Color _sectionButtonTileColor(ColorScheme scheme, bool selected) {
+  return selected
+      ? scheme.surfaceContainerHighest.withValues(alpha: 0.9)
+      : Colors.transparent;
+}
+
 class _SectionRailButton extends StatelessWidget {
   const _SectionRailButton({
     required this.icon,
@@ -1009,9 +1142,7 @@ class _SectionRailButton extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     final itemHeight = compact ? 46.0 : 52.0;
     final indicatorColor = selected ? scheme.primary : Colors.transparent;
-    final tileColor = selected
-        ? scheme.surfaceContainerHighest.withValues(alpha: 0.9)
-        : Colors.transparent;
+    final tileColor = _sectionButtonTileColor(scheme, selected);
     final iconColor = selected ? scheme.onSurface : scheme.onSurfaceVariant;
 
     return SizedBox(
@@ -1068,11 +1199,17 @@ class _ConnectPageBody extends StatefulWidget {
     required this.controller,
     required this.strings,
     this.onSwipePastLastSource,
+    this.onSwipePastLastSourceDragUpdate,
+    this.onSwipePastLastSourceDragEnd,
+    this.onSwipePastLastSourceDragCancel,
   });
 
   final VpnController controller;
   final AppStrings strings;
   final VoidCallback? onSwipePastLastSource;
+  final ValueChanged<double>? onSwipePastLastSourceDragUpdate;
+  final ValueChanged<double>? onSwipePastLastSourceDragEnd;
+  final VoidCallback? onSwipePastLastSourceDragCancel;
 
   @override
   State<_ConnectPageBody> createState() => _ConnectPageBodyState();
@@ -1115,6 +1252,12 @@ class _ConnectPageBodyState extends State<_ConnectPageBody> {
               strings: widget.strings,
               fillMobileSwipeArea: useMobileSourcePager,
               onSwipePastLastMobileSource: widget.onSwipePastLastSource,
+              onSwipePastLastMobileSourceDragUpdate:
+                  widget.onSwipePastLastSourceDragUpdate,
+              onSwipePastLastMobileSourceDragEnd:
+                  widget.onSwipePastLastSourceDragEnd,
+              onSwipePastLastMobileSourceDragCancel:
+                  widget.onSwipePastLastSourceDragCancel,
             ),
           ),
         );
@@ -1455,6 +1598,9 @@ class _QuickSwitchPanel extends StatelessWidget {
     this.firstTileCardKey,
     this.fillMobileSwipeArea = false,
     this.onSwipePastLastMobileSource,
+    this.onSwipePastLastMobileSourceDragUpdate,
+    this.onSwipePastLastMobileSourceDragEnd,
+    this.onSwipePastLastMobileSourceDragCancel,
   });
 
   final VpnController controller;
@@ -1462,6 +1608,9 @@ class _QuickSwitchPanel extends StatelessWidget {
   final Key? firstTileCardKey;
   final bool fillMobileSwipeArea;
   final VoidCallback? onSwipePastLastMobileSource;
+  final ValueChanged<double>? onSwipePastLastMobileSourceDragUpdate;
+  final ValueChanged<double>? onSwipePastLastMobileSourceDragEnd;
+  final VoidCallback? onSwipePastLastMobileSourceDragCancel;
 
   @override
   Widget build(BuildContext context) {
@@ -1472,6 +1621,9 @@ class _QuickSwitchPanel extends StatelessWidget {
         strings: strings,
         fillSwipeArea: fillMobileSwipeArea,
         onSwipePastLastPage: onSwipePastLastMobileSource,
+        onSwipePastLastPageDragUpdate: onSwipePastLastMobileSourceDragUpdate,
+        onSwipePastLastPageDragEnd: onSwipePastLastMobileSourceDragEnd,
+        onSwipePastLastPageDragCancel: onSwipePastLastMobileSourceDragCancel,
       );
     }
 
@@ -1626,6 +1778,7 @@ class _DesktopSourcePagerState extends State<_DesktopSourcePager> {
 
 const double _desktopSourceRailTopInset = 0;
 const double _desktopSourceRailItemSize = 34;
+const double _desktopSourceRailItemRadius = _desktopSourceRailItemSize / 2;
 const double _desktopSourceRailItemGap = 4;
 const double _desktopSourceRailVerticalPadding = 6;
 
@@ -1683,6 +1836,9 @@ class _DesktopSourcePageRail extends StatelessWidget {
                 builder: (context) {
                   final source = sources[i];
                   final isSelected = i == selected;
+                  final iconColor = isSelected
+                      ? scheme.primary
+                      : scheme.onSurfaceVariant.withValues(alpha: 0.82);
 
                   return Tooltip(
                     message: _sourceSubscriptionTitle(source),
@@ -1695,36 +1851,26 @@ class _DesktopSourcePageRail extends StatelessWidget {
                         curve: Curves.easeOutCubic,
                         width: _desktopSourceRailItemSize,
                         height: _desktopSourceRailItemSize,
+                        alignment: Alignment.center,
                         decoration: BoxDecoration(
                           color: isSelected
-                              ? scheme.primary.withValues(alpha: 0.16)
+                              ? _selectedConfigSurfaceColor(scheme)
                               : Colors.transparent,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: isSelected
-                                ? scheme.primary.withValues(alpha: 0.68)
-                                : Colors.transparent,
+                          borderRadius: BorderRadius.circular(
+                            _desktopSourceRailItemRadius,
                           ),
-                          boxShadow: isSelected
-                              ? <BoxShadow>[
-                                  BoxShadow(
-                                    color: scheme.primary.withValues(
-                                      alpha: 0.22,
-                                    ),
-                                    blurRadius: 10,
-                                  ),
-                                ]
-                              : null,
                         ),
-                        child: Icon(
-                          source.isSubscription
-                              ? Icons.link_rounded
-                              : Icons.description_outlined,
-                          size: 18,
-                          color: isSelected
-                              ? scheme.primary
-                              : scheme.onSurfaceVariant.withValues(alpha: 0.82),
-                        ),
+                        child: source.isSubscription
+                            ? Icon(
+                                Icons.link_rounded,
+                                size: 18,
+                                color: iconColor,
+                              )
+                            : Icon(
+                                Icons.description_outlined,
+                                size: 18,
+                                color: iconColor,
+                              ),
                       ),
                     ),
                   );
@@ -1792,12 +1938,18 @@ class _MobileSourcePager extends StatefulWidget {
     required this.strings,
     required this.fillSwipeArea,
     this.onSwipePastLastPage,
+    this.onSwipePastLastPageDragUpdate,
+    this.onSwipePastLastPageDragEnd,
+    this.onSwipePastLastPageDragCancel,
   });
 
   final VpnController controller;
   final AppStrings strings;
   final bool fillSwipeArea;
   final VoidCallback? onSwipePastLastPage;
+  final ValueChanged<double>? onSwipePastLastPageDragUpdate;
+  final ValueChanged<double>? onSwipePastLastPageDragEnd;
+  final VoidCallback? onSwipePastLastPageDragCancel;
 
   @override
   State<_MobileSourcePager> createState() => _MobileSourcePagerState();
@@ -1808,6 +1960,7 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
   late int _currentPage;
   String? _lastSelectedSourceId;
   double _sourceDragDx = 0;
+  bool _isDraggingPastLastPage = false;
 
   @override
   void initState() {
@@ -1902,30 +2055,64 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
 
   void _handleSourceDragStart(DragStartDetails details) {
     _sourceDragDx = 0;
+    _isDraggingPastLastPage = false;
   }
 
   void _handleSourceDragUpdate(DragUpdateDetails details) {
-    _sourceDragDx += details.primaryDelta ?? details.delta.dx;
+    final deltaDx = details.primaryDelta ?? details.delta.dx;
+    _sourceDragDx += deltaDx;
+    if (_isDraggingPastLastPage || _shouldDragPastLastPage(deltaDx)) {
+      _isDraggingPastLastPage = true;
+      widget.onSwipePastLastPageDragUpdate?.call(deltaDx);
+    }
   }
 
   void _handleSourceDragCancel() {
     _sourceDragDx = 0;
+    if (_isDraggingPastLastPage) {
+      _isDraggingPastLastPage = false;
+      widget.onSwipePastLastPageDragCancel?.call();
+    }
+  }
+
+  bool _shouldDragPastLastPage(double deltaDx) {
+    if (deltaDx >= 0 && _sourceDragDx >= 0) {
+      return false;
+    }
+
+    final sources = widget.controller.sources;
+    if (sources.isEmpty) {
+      return false;
+    }
+
+    final pageIndex = _currentPage.clamp(0, sources.length - 1).toInt();
+    return pageIndex == sources.length - 1;
   }
 
   void _handleSourceDragEnd(DragEndDetails details) {
     if (!widget.controller.canBrowseSources) {
       _sourceDragDx = 0;
+      if (_isDraggingPastLastPage) {
+        _isDraggingPastLastPage = false;
+        widget.onSwipePastLastPageDragCancel?.call();
+      }
       return;
     }
 
     final sources = widget.controller.sources;
     if (sources.isEmpty) {
       _sourceDragDx = 0;
+      if (_isDraggingPastLastPage) {
+        _isDraggingPastLastPage = false;
+        widget.onSwipePastLastPageDragCancel?.call();
+      }
       return;
     }
 
     final velocityDx =
         details.primaryVelocity ?? details.velocity.pixelsPerSecond.dx;
+    final wasDraggingPastLastPage = _isDraggingPastLastPage;
+    _isDraggingPastLastPage = false;
     int direction = 0;
     if (velocityDx.abs() >= _mobileSourcePagerSwipeVelocityThreshold) {
       direction = velocityDx < 0 ? -1 : 1;
@@ -1936,6 +2123,13 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
     _sourceDragDx = 0;
 
     if (direction == 0) {
+      if (wasDraggingPastLastPage) {
+        if (widget.onSwipePastLastPageDragEnd != null) {
+          widget.onSwipePastLastPageDragEnd!(velocityDx);
+        } else {
+          widget.onSwipePastLastPageDragCancel?.call();
+        }
+      }
       return;
     }
 
@@ -1943,12 +2137,21 @@ class _MobileSourcePagerState extends State<_MobileSourcePager> {
     if (direction < 0) {
       if (pageIndex < sources.length - 1) {
         _showPage(pageIndex + 1);
+      } else if (wasDraggingPastLastPage) {
+        if (widget.onSwipePastLastPageDragEnd != null) {
+          widget.onSwipePastLastPageDragEnd!(velocityDx);
+        } else {
+          widget.onSwipePastLastPage?.call();
+        }
       } else {
         widget.onSwipePastLastPage?.call();
       }
       return;
     }
 
+    if (wasDraggingPastLastPage) {
+      widget.onSwipePastLastPageDragCancel?.call();
+    }
     if (pageIndex > 0) {
       _showPage(pageIndex - 1);
     }
@@ -2158,16 +2361,34 @@ const double _mobileSourcePagerSwipeVelocityThreshold = 500;
 const double _mobileProfileCardHeight = 72;
 const double _mobileProfileCardSpacing = 10;
 const double _mobileSubscriptionPanelPadding = 8;
-const double _mobileSubscriptionHeaderVerticalPadding = 6;
+const double _mobileSubscriptionHeaderLeftPadding = 0;
+const double _mobileSubscriptionHeaderRightPadding = 0;
+const double _mobileSubscriptionHeaderBottomPadding = 6;
+const double _mobileSubscriptionHeaderIconSize = 38;
+const double _mobileSubscriptionHeaderIconGap = 10;
+// Place the header row by baseline so font metrics, not paragraph-box centering,
+// determine how the text sits against the 38px subscription icon.
+const double _mobileSubscriptionHeaderTextBaseline = 21;
 const double _mobileSubscriptionHeaderGap = 6;
 const double _mobileSubscriptionTrafficTopGap = 5;
 const double _mobileSubscriptionTrafficProfileGap = 11;
 const double _mobileConfigCardVerticalPadding = 12;
 const double _mobileConfigCardMinHeight = 72;
+const double _desktopConfigCardMinHeight = 74;
+const double _configCardMinSegmentGap = 4;
 const double _configCardFlagSize = 32;
 const double _configCardFlagWidth =
     _configCardFlagSize * defaultFlagAspectRatio;
-const double _configCardFlagGap = 12;
+const double _configCardFlagGap = 10;
+const TextHeightBehavior _configCardTextHeightBehavior = TextHeightBehavior(
+  applyHeightToFirstAscent: false,
+  applyHeightToLastDescent: false,
+);
+const double _mobileProfileSubtitleFontSize = 13;
+const double _compactSourceActionSize = 34;
+const double _compactSourceActionGap = 3;
+const double _mobileSubscriptionHeaderActionWidth =
+    _compactSourceActionSize * 3 + _compactSourceActionGap * 2;
 
 class _MobileSubscriptionProfilesPage extends StatelessWidget {
   const _MobileSubscriptionProfilesPage({
@@ -2211,12 +2432,11 @@ class _MobileSubscriptionProfilesPage extends StatelessWidget {
             ],
             if (trafficUsage != null && trafficUsage.hasTotal) ...<Widget>[
               const SizedBox(height: _mobileSubscriptionTrafficTopGap),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 2),
-                child: _SubscriptionTrafficUsageBar(
-                  usage: trafficUsage,
-                  strings: strings,
-                ),
+              _SubscriptionTrafficUsageBar(
+                key: ValueKey<String>('subscription-traffic-${source.id}'),
+                usage: trafficUsage,
+                strings: strings,
+                showExpiryDate: false,
               ),
             ],
             SizedBox(
@@ -2299,12 +2519,11 @@ class _DesktopSubscriptionProfilesPage extends StatelessWidget {
                 ],
                 if (trafficUsage != null && trafficUsage.hasTotal) ...<Widget>[
                   const SizedBox(height: _mobileSubscriptionTrafficTopGap),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    child: _SubscriptionTrafficUsageBar(
-                      usage: trafficUsage,
-                      strings: strings,
-                    ),
+                  _SubscriptionTrafficUsageBar(
+                    key: ValueKey<String>('subscription-traffic-${source.id}'),
+                    usage: trafficUsage,
+                    strings: strings,
+                    showExpiryDate: false,
                   ),
                 ],
                 if (source.profiles.isNotEmpty) ...<Widget>[
@@ -2389,100 +2608,131 @@ class _MobileSubscriptionHeader extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final title = _sourceSubscriptionTitle(source);
+    final expiresLabel = _sourceTrafficExpiryDateLabel(source);
+    final titleStyle = _subscriptionHeaderTitleStyle(theme);
+    final expiresStyle = _subscriptionHeaderExpiryStyle(theme, scheme);
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: controller.canEditSources
-            ? () => controller.selectSource(source.id)
-            : null,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(
-            10,
-            _mobileSubscriptionHeaderVerticalPadding,
-            8,
-            _mobileSubscriptionHeaderVerticalPadding,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        _mobileSubscriptionHeaderLeftPadding,
+        0,
+        _mobileSubscriptionHeaderRightPadding,
+        _mobileSubscriptionHeaderBottomPadding,
+      ),
+      child: Row(
+        children: <Widget>[
+          Container(
+            width: _mobileSubscriptionHeaderIconSize,
+            height: _mobileSubscriptionHeaderIconSize,
+            decoration: BoxDecoration(
+              color: selected
+                  ? _selectedConfigSurfaceColor(scheme)
+                  : scheme.surfaceContainerHighest,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: Icon(
+              Icons.link_rounded,
+              size: 22,
+              color: selected ? scheme.primary : scheme.onSurfaceVariant,
+            ),
           ),
-          child: Row(
-            children: <Widget>[
-              Container(
-                width: 38,
-                height: 38,
-                decoration: BoxDecoration(
-                  color: selected
-                      ? scheme.primary.withValues(alpha: 0.18)
-                      : scheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                alignment: Alignment.center,
-                child: Icon(
-                  Icons.link_rounded,
-                  size: 22,
-                  color: selected ? scheme.primary : scheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: <Widget>[
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleSmall,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 74,
-                height: 34,
+          const SizedBox(width: _mobileSubscriptionHeaderIconGap),
+          Expanded(
+            child: SizedBox(
+              height: _mobileSubscriptionHeaderIconSize,
+              child: Baseline(
+                baseline: _mobileSubscriptionHeaderTextBaseline,
+                baselineType: TextBaseline.alphabetic,
                 child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
                   children: <Widget>[
-                    SizedBox(
-                      width: 34,
-                      height: 34,
-                      child: Center(
-                        child: source.isUpdating
-                            ? SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.3,
-                                  color: scheme.tertiary,
-                                ),
-                              )
-                            : IconButton(
-                                onPressed: source.isSubscription
-                                    ? () => unawaited(
-                                        controller.refreshSource(source.id),
-                                      )
-                                    : null,
-                                tooltip: strings.updateNowAction,
-                                icon: const Icon(Icons.refresh_rounded),
-                                iconSize: 21,
-                                style: _compactSourceIconButtonStyle(scheme),
-                              ),
+                    Flexible(
+                      child: Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: titleStyle,
+                        textHeightBehavior:
+                            _subscriptionHeaderTextHeightBehavior,
                       ),
                     ),
-                    const SizedBox(width: 6),
-                    _SourceMenuButton(
-                      controller: controller,
-                      strings: strings,
-                      source: source,
-                      selected: selected,
-                    ),
+                    if (expiresLabel != null) ...<Widget>[
+                      const SizedBox(width: 8),
+                      Text(
+                        '|',
+                        style: expiresStyle,
+                        textHeightBehavior:
+                            _subscriptionHeaderTextHeightBehavior,
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          expiresLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: expiresStyle,
+                          textHeightBehavior:
+                              _subscriptionHeaderTextHeightBehavior,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
-            ],
+            ),
           ),
-        ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: _mobileSubscriptionHeaderActionWidth,
+            height: _compactSourceActionSize,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: <Widget>[
+                SizedBox(
+                  width: _compactSourceActionSize,
+                  height: _compactSourceActionSize,
+                  child: Center(
+                    child: source.isUpdating
+                        ? SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.3,
+                              color: scheme.tertiary,
+                            ),
+                          )
+                        : IconButton(
+                            onPressed: source.isSubscription
+                                ? () => unawaited(
+                                    controller.refreshSource(source.id),
+                                  )
+                                : null,
+                            tooltip: strings.updateNowAction,
+                            icon: const Icon(Icons.refresh_rounded),
+                            iconSize: 21,
+                            style: _compactSourceIconButtonStyle(scheme),
+                          ),
+                  ),
+                ),
+                const SizedBox(width: _compactSourceActionGap),
+                _SourcePingButton(
+                  controller: controller,
+                  strings: strings,
+                  source: source,
+                ),
+                const SizedBox(width: _compactSourceActionGap),
+                _SourceMenuButton(
+                  controller: controller,
+                  strings: strings,
+                  source: source,
+                  selected: selected,
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -2511,6 +2761,16 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
     final scheme = theme.colorScheme;
     final profile = source.profiles[profileIndex];
     final core = controller.displayCoreForProfile(profile);
+    final cardHeight = _mobileProfileCardHeightFor(context);
+    final title = _profileChoiceTitle(profile);
+    final subtitle = _sourceSubtitle(strings, core, profile);
+    final titleStyle = _configCardTitleStyle(theme);
+    final subtitleStyle = _configCardSubtitleStyle(
+      theme,
+      scheme,
+    )?.copyWith(fontSize: _mobileProfileSubtitleFontSize);
+    final tcpPingLatency = source.tcpPingLatencyForProfile(profileIndex);
+    final showPingResult = tcpPingLatency != null;
 
     return Material(
       color: Colors.transparent,
@@ -2524,11 +2784,11 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
             : null,
         child: Ink(
           key: cardKey,
-          height: _mobileProfileCardHeightFor(context),
-          padding: const EdgeInsets.fromLTRB(18, 10, 14, 10),
+          height: cardHeight,
+          padding: const EdgeInsets.fromLTRB(18, 0, 14, 0),
           decoration: BoxDecoration(
             color: selected
-                ? scheme.primaryContainer.withValues(alpha: 0.32)
+                ? _selectedConfigSurfaceColor(scheme)
                 : scheme.surfaceContainer,
             borderRadius: BorderRadius.circular(22),
           ),
@@ -2548,29 +2808,71 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
               ),
               const SizedBox(width: _configCardFlagGap),
               Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      _profileChoiceTitle(profile),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final textWidth = constraints.maxWidth
+                        .clamp(64.0, double.infinity)
+                        .toDouble();
+                    final titleMetrics = _measuredTextVisualMetrics(
+                      context,
+                      title,
+                      titleStyle,
+                      maxWidth: textWidth,
                       maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleSmall,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      _sourceSubtitle(strings, core, profile),
+                      textHeightBehavior: _configCardTextHeightBehavior,
+                    );
+                    final subtitleMetrics = _measuredTextVisualMetrics(
+                      context,
+                      subtitle,
+                      subtitleStyle,
+                      maxWidth: textWidth,
                       maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                      textHeightBehavior: _configCardTextHeightBehavior,
+                    );
+                    final titleCenterY = cardHeight / 3;
+                    final subtitleCenterY = cardHeight * 2 / 3;
+
+                    return SizedBox(
+                      height: cardHeight,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: <Widget>[
+                          Positioned(
+                            left: 0,
+                            top: titleCenterY - titleMetrics.visualCenterY,
+                            right: 0,
+                            child: Text(
+                              title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: titleStyle,
+                              textHeightBehavior: _configCardTextHeightBehavior,
+                            ),
+                          ),
+                          Positioned(
+                            left: 0,
+                            top:
+                                subtitleCenterY - subtitleMetrics.visualCenterY,
+                            right: 0,
+                            child: Text(
+                              subtitle,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: subtitleStyle,
+                              textHeightBehavior: _configCardTextHeightBehavior,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
+                    );
+                  },
                 ),
               ),
               const SizedBox(width: 12),
+              if (showPingResult) ...<Widget>[
+                _TcpPingResultLabel(milliseconds: tcpPingLatency),
+                const SizedBox(width: 8),
+              ],
               SizedBox(
                 width: 34,
                 height: 34,
@@ -2590,6 +2892,49 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _TcpPingResultLabel extends StatelessWidget {
+  const _TcpPingResultLabel({required this.milliseconds});
+
+  final int milliseconds;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final latencyColor = _tcpPingLatencyColor(milliseconds);
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 64),
+      child: Text(
+        '$milliseconds ms',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: (theme.textTheme.bodyMedium ?? const TextStyle()).copyWith(
+          color: latencyColor,
+          fontSize: 13,
+          fontWeight: FontWeight.w500,
+          height: 1,
+        ),
+      ),
+    );
+  }
+}
+
+Color _tcpPingLatencyColor(int milliseconds) {
+  if (milliseconds <= 50) {
+    return const Color(0xFF4CAF50);
+  }
+  if (milliseconds <= 100) {
+    return const Color(0xFF8BC34A);
+  }
+  if (milliseconds <= 150) {
+    return const Color(0xFFFFD54F);
+  }
+  if (milliseconds <= 200) {
+    return const Color(0xFFFF9800);
+  }
+  return const Color(0xFFF44336);
 }
 
 class _SourceMenuButton extends StatelessWidget {
@@ -2628,11 +2973,53 @@ class _SourceMenuButton extends StatelessWidget {
   }
 }
 
+class _SourcePingButton extends StatelessWidget {
+  const _SourcePingButton({
+    required this.controller,
+    required this.strings,
+    required this.source,
+  });
+
+  final VpnController controller;
+  final AppStrings strings;
+  final ConfigSource source;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+
+    return SizedBox(
+      width: _compactSourceActionSize,
+      height: _compactSourceActionSize,
+      child: Center(
+        child: source.isPinging
+            ? SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.3,
+                  color: scheme.tertiary,
+                ),
+              )
+            : IconButton(
+                onPressed: controller.canPingSource(source.id)
+                    ? () => unawaited(controller.pingSource(source.id))
+                    : null,
+                tooltip: strings.tcpPingAction,
+                icon: const Icon(Icons.rss_feed_rounded),
+                iconSize: 21,
+                style: _compactSourceIconButtonStyle(scheme),
+              ),
+      ),
+    );
+  }
+}
+
 ButtonStyle _compactSourceIconButtonStyle(ColorScheme scheme) {
   return IconButton.styleFrom(
-    fixedSize: const Size(34, 34),
-    minimumSize: const Size(34, 34),
-    maximumSize: const Size(34, 34),
+    fixedSize: const Size(_compactSourceActionSize, _compactSourceActionSize),
+    minimumSize: const Size(_compactSourceActionSize, _compactSourceActionSize),
+    maximumSize: const Size(_compactSourceActionSize, _compactSourceActionSize),
     padding: EdgeInsets.zero,
     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
     visualDensity: VisualDensity.compact,
@@ -2696,242 +3083,275 @@ class _QuickSourceTile extends StatelessWidget {
     final isMobile = MediaQuery.sizeOf(context).width < _mobileShellBreakpoint;
     final showSourceState =
         source.isUpdating || !(isMobile && source.hasMultipleProfiles);
-    final actionRowWidth = showSourceState ? 74.0 : 34.0;
-    final verticalPadding = isMobile ? _mobileConfigCardVerticalPadding : 18.0;
+    final tcpPingLatency = source.tcpPingLatencyForProfile(
+      source.selectedProfileIndex,
+    );
+    final showPingResult = tcpPingLatency != null;
+    final actionRowWidth =
+        34.0 + (showSourceState ? 40.0 : 0.0) + (showPingResult ? 72.0 : 0.0);
+    final title = _sourceHeadline(source, profile);
+    final subtitle = _sourceSubtitle(
+      strings,
+      controller.displayCoreForProfile(profile),
+      profile,
+    );
+    final titleStyle = _configCardTitleStyle(theme);
+    final subtitleStyle = _configCardSubtitleStyle(theme, scheme);
+    final minPrimaryHeight = isMobile
+        ? _mobileConfigCardMinHeight
+        : _desktopConfigCardMinHeight;
+    final extraContentBottomPadding = isMobile
+        ? _mobileConfigCardVerticalPadding
+        : 18.0;
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onSecondaryTapDown: (details) =>
-          _showSourceMenuAtCursor(context, details.globalPosition),
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(22),
-          onTap: controller.canEditSources
-              ? () => controller.selectSource(source.id)
-              : null,
-          child: Ink(
-            key: cardKey,
-            padding: EdgeInsets.fromLTRB(
-              18,
-              verticalPadding,
-              14,
-              verticalPadding,
-            ),
-            decoration: BoxDecoration(
-              color: selected
-                  ? scheme.primaryContainer.withValues(alpha: 0.32)
-                  : scheme.surfaceContainer,
-              borderRadius: BorderRadius.circular(22),
-            ),
-            child: Builder(
-              builder: (context) {
-                final body = Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Row(
-                      crossAxisAlignment: isMobile
-                          ? CrossAxisAlignment.center
-                          : CrossAxisAlignment.start,
-                      children: <Widget>[
-                        _ServerFlagBadge(
-                          server: source.serverAddress,
-                          selected: selected,
-                          size: _configCardFlagSize,
-                        ),
-                        const SizedBox(width: _configCardFlagGap),
-                        Expanded(
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 1),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: <Widget>[
-                                Text(
-                                  _sourceHeadline(source, profile),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.titleSmall,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _sourceSubtitle(
-                                    strings,
-                                    controller.displayCoreForProfile(profile),
-                                    profile,
-                                  ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: scheme.onSurfaceVariant,
-                                  ),
-                                ),
-                                if (source.isSubscription &&
-                                    trafficUsage != null &&
-                                    trafficUsage.hasTotal) ...<Widget>[
-                                  const SizedBox(height: 8),
-                                  _SubscriptionTrafficUsageBar(
-                                    usage: trafficUsage,
-                                    strings: strings,
-                                  ),
-                                ],
-                              ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final availableWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width;
+        final textWidth =
+            (availableWidth -
+                    18 -
+                    _configCardFlagWidth -
+                    _configCardFlagGap -
+                    14 -
+                    14 -
+                    actionRowWidth)
+                .clamp(64.0, double.infinity)
+                .toDouble();
+        final titleMetrics = _measuredTextVisualMetrics(
+          context,
+          title,
+          titleStyle,
+          maxWidth: textWidth,
+          maxLines: 1,
+          textHeightBehavior: _configCardTextHeightBehavior,
+        );
+        final subtitleMetrics = _measuredTextVisualMetrics(
+          context,
+          subtitle,
+          subtitleStyle,
+          maxWidth: textWidth,
+          maxLines: 2,
+          textHeightBehavior: _configCardTextHeightBehavior,
+        );
+        final primaryHeight = _configCardPrimaryHeight(
+          minHeight: minPrimaryHeight,
+          titleHeight: titleMetrics.visualHeight,
+          subtitleHeight: subtitleMetrics.visualHeight,
+        );
+        final titleCenterY = primaryHeight / 3;
+        final subtitleCenterY = primaryHeight * 2 / 3;
+        final hasTrafficUsage =
+            source.isSubscription &&
+            trafficUsage != null &&
+            trafficUsage.hasTotal;
+        final hasProfileDropdown =
+            selected && source.hasMultipleProfiles && !isMobile;
+        final hasExtraContent =
+            source.lastUpdateError != null ||
+            hasTrafficUsage ||
+            hasProfileDropdown;
+
+        final body = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            SizedBox(
+              height: primaryHeight,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: <Widget>[
+                  _ServerFlagBadge(
+                    server: source.serverAddress,
+                    selected: selected,
+                    size: _configCardFlagSize,
+                  ),
+                  const SizedBox(width: _configCardFlagGap),
+                  Expanded(
+                    child: SizedBox(
+                      height: primaryHeight,
+                      child: Stack(
+                        clipBehavior: Clip.none,
+                        children: <Widget>[
+                          Positioned(
+                            left: 0,
+                            top: titleCenterY - titleMetrics.visualCenterY,
+                            right: 0,
+                            child: Text(
+                              title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: titleStyle,
+                              textHeightBehavior: _configCardTextHeightBehavior,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 14),
-                        SizedBox(
-                          width: actionRowWidth,
-                          height: 34,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.end,
-                            children: <Widget>[
-                              if (showSourceState) ...<Widget>[
-                                SizedBox(
-                                  width: 34,
-                                  height: 34,
-                                  child: Center(
-                                    child: source.isUpdating
-                                        ? SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2.3,
-                                              color: scheme.tertiary,
-                                            ),
-                                          )
-                                        : Icon(
-                                            selected
-                                                ? Icons.check_circle_rounded
-                                                : Icons
-                                                      .radio_button_unchecked_rounded,
-                                            size: 22,
-                                            color: selected
-                                                ? scheme.primary
-                                                : scheme.outline,
-                                          ),
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                              ],
-                              Builder(
-                                builder: (buttonContext) {
-                                  return IconButton(
-                                    onPressed: () =>
-                                        _showSourceMenuAtButton(buttonContext),
-                                    tooltip: MaterialLocalizations.of(
-                                      context,
-                                    ).showMenuTooltip,
-                                    icon: const Icon(Icons.more_horiz_rounded),
-                                    iconSize: 22,
-                                    style: IconButton.styleFrom(
-                                      fixedSize: const Size(34, 34),
-                                      minimumSize: const Size(34, 34),
-                                      maximumSize: const Size(34, 34),
-                                      padding: EdgeInsets.zero,
-                                      tapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
-                                      visualDensity: VisualDensity.compact,
-                                      foregroundColor: scheme.onSurfaceVariant,
-                                      disabledForegroundColor: scheme
-                                          .onSurfaceVariant
-                                          .withValues(alpha: 0.38),
-                                      backgroundColor: Colors.transparent,
-                                      hoverColor: scheme.onSurface.withValues(
-                                        alpha: 0.12,
-                                      ),
-                                      highlightColor: scheme.onSurface
-                                          .withValues(alpha: 0.16),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(11),
-                                      ),
-                                    ),
-                                  );
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                    if (source.lastUpdateError != null) ...<Widget>[
-                      const SizedBox(height: 10),
-                      Row(
-                        children: <Widget>[
-                          Icon(
-                            Icons.error_outline_rounded,
-                            size: 16,
-                            color: scheme.error,
-                          ),
-                          const SizedBox(width: 7),
-                          Expanded(
+                          Positioned(
+                            left: 0,
+                            top:
+                                subtitleCenterY - subtitleMetrics.visualCenterY,
+                            right: 0,
                             child: Text(
-                              source.lastUpdateError!,
+                              subtitle,
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: scheme.error,
-                              ),
+                              style: subtitleStyle,
+                              textHeightBehavior: _configCardTextHeightBehavior,
                             ),
                           ),
                         ],
                       ),
-                    ],
-                    if (selected &&
-                        source.hasMultipleProfiles &&
-                        !isMobile) ...<Widget>[
-                      const SizedBox(height: 14),
-                      _ProfileDropdown(
-                        controller: controller,
-                        strings: strings,
-                        source: source,
-                      ),
-                    ],
-                  ],
-                );
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  SizedBox(
+                    width: actionRowWidth,
+                    height: 34,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: <Widget>[
+                        if (showPingResult) ...<Widget>[
+                          _TcpPingResultLabel(milliseconds: tcpPingLatency),
+                          const SizedBox(width: 8),
+                        ],
+                        if (showSourceState) ...<Widget>[
+                          SizedBox(
+                            width: 34,
+                            height: 34,
+                            child: Center(
+                              child: source.isUpdating
+                                  ? SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2.3,
+                                        color: scheme.tertiary,
+                                      ),
+                                    )
+                                  : Icon(
+                                      selected
+                                          ? Icons.check_circle_rounded
+                                          : Icons
+                                                .radio_button_unchecked_rounded,
+                                      size: 22,
+                                      color: selected
+                                          ? scheme.primary
+                                          : scheme.outline,
+                                    ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        Builder(
+                          builder: (buttonContext) {
+                            return IconButton(
+                              onPressed: () =>
+                                  _showSourceMenuAtButton(buttonContext),
+                              tooltip: MaterialLocalizations.of(
+                                context,
+                              ).showMenuTooltip,
+                              icon: const Icon(Icons.more_horiz_rounded),
+                              iconSize: 22,
+                              style: IconButton.styleFrom(
+                                fixedSize: const Size(34, 34),
+                                minimumSize: const Size(34, 34),
+                                maximumSize: const Size(34, 34),
+                                padding: EdgeInsets.zero,
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                visualDensity: VisualDensity.compact,
+                                foregroundColor: scheme.onSurfaceVariant,
+                                disabledForegroundColor: scheme.onSurfaceVariant
+                                    .withValues(alpha: 0.38),
+                                backgroundColor: Colors.transparent,
+                                hoverColor: scheme.onSurface.withValues(
+                                  alpha: 0.12,
+                                ),
+                                highlightColor: scheme.onSurface.withValues(
+                                  alpha: 0.16,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(11),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (source.lastUpdateError != null) ...<Widget>[
+              const SizedBox(height: 10),
+              _SourceUpdateErrorBanner(message: source.lastUpdateError!),
+            ],
+            if (hasTrafficUsage) ...<Widget>[
+              const SizedBox(height: 8),
+              _SubscriptionTrafficUsageBar(
+                usage: trafficUsage,
+                strings: strings,
+              ),
+            ],
+            if (hasProfileDropdown) ...<Widget>[
+              const SizedBox(height: 14),
+              _ProfileDropdown(
+                controller: controller,
+                strings: strings,
+                source: source,
+              ),
+            ],
+            if (hasExtraContent) SizedBox(height: extraContentBottomPadding),
+          ],
+        );
 
-                return body;
-              },
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onSecondaryTapDown: (details) =>
+              _showSourceMenuAtCursor(context, details.globalPosition),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(22),
+              onTap: controller.canEditSources
+                  ? () => controller.selectSource(source.id)
+                  : null,
+              child: Ink(
+                key: cardKey,
+                padding: const EdgeInsets.fromLTRB(18, 0, 14, 0),
+                decoration: BoxDecoration(
+                  color: selected
+                      ? _selectedConfigSurfaceColor(scheme)
+                      : scheme.surfaceContainer,
+                  borderRadius: BorderRadius.circular(22),
+                ),
+                child: body,
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
   List<PopupMenuEntry<_SourceMenuAction>> _sourceMenuItems(
     BuildContext context,
   ) {
-    final scheme = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final menuLabelStyle =
+        (theme.popupMenuTheme.textStyle ??
+                theme.textTheme.labelLarge ??
+                const TextStyle())
+            .copyWith(fontWeight: FontWeight.w600);
     final canRemoveSource = controller.canRemoveSource(source.id);
-    final canRefreshSource = source.isSubscription && !source.isUpdating;
-    final updateColor = canRefreshSource
-        ? scheme.onSurfaceVariant
-        : scheme.onSurfaceVariant.withValues(alpha: 0.54);
-    final updateTextColor = canRefreshSource
-        ? scheme.onSurface
-        : scheme.onSurfaceVariant.withValues(alpha: 0.54);
     final removeColor = canRemoveSource
         ? scheme.error
         : scheme.onSurfaceVariant.withValues(alpha: 0.54);
     final items = <PopupMenuEntry<_SourceMenuAction>>[];
 
     if (source.isSubscription) {
-      items.addAll(<PopupMenuEntry<_SourceMenuAction>>[
-        PopupMenuItem<_SourceMenuAction>(
-          value: _SourceMenuAction.updateNow,
-          enabled: canRefreshSource,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(Icons.refresh_rounded, color: updateColor),
-              const SizedBox(width: 10),
-              Text(
-                strings.updateNowAction,
-                style: TextStyle(color: updateTextColor),
-              ),
-            ],
-          ),
-        ),
+      items.add(
         _SourceAutoUpdateMenuEntry(
           source: source,
           strings: strings,
@@ -2939,7 +3359,7 @@ class _QuickSourceTile extends StatelessWidget {
             controller.setSourceAutoUpdateInterval(source.id, interval);
           },
         ),
-      ]);
+      );
     }
 
     items.add(
@@ -2950,7 +3370,7 @@ class _QuickSourceTile extends StatelessWidget {
           children: <Widget>[
             Icon(Icons.file_download_outlined, color: scheme.onSurfaceVariant),
             const SizedBox(width: 10),
-            Text(strings.exportJsonAction),
+            Text(strings.exportJsonAction, style: menuLabelStyle),
           ],
         ),
       ),
@@ -2967,7 +3387,7 @@ class _QuickSourceTile extends StatelessWidget {
             const SizedBox(width: 10),
             Text(
               strings.removeSourceAction,
-              style: TextStyle(color: removeColor),
+              style: menuLabelStyle.copyWith(color: removeColor),
             ),
           ],
         ),
@@ -2981,9 +3401,6 @@ class _QuickSourceTile extends StatelessWidget {
     switch (action) {
       case _SourceMenuAction.exportJson:
         unawaited(_exportSourceJson(context));
-        break;
-      case _SourceMenuAction.updateNow:
-        unawaited(controller.refreshSource(source.id));
         break;
       case _SourceMenuAction.delete:
         unawaited(controller.removeSource(source.id));
@@ -3132,12 +3549,15 @@ class _ProfileDropdown extends StatelessWidget {
 
 class _SubscriptionTrafficUsageBar extends StatelessWidget {
   const _SubscriptionTrafficUsageBar({
+    super.key,
     required this.usage,
     required this.strings,
+    this.showExpiryDate = true,
   });
 
   final SubscriptionTrafficUsage usage;
   final AppStrings strings;
+  final bool showExpiryDate;
 
   @override
   Widget build(BuildContext context) {
@@ -3149,23 +3569,22 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
 
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final fillColor = _trafficUsageColor(ratio, scheme);
+    const fillColor = _connectedColor;
     final usedLabel = _formatTrafficBytes(usage.usedBytes);
     final totalLabel = _formatTrafficBytes(totalBytes);
-    final expiresLabel = usage.expiresAt == null
+    final expiresLabel = !showExpiryDate || usage.expiresAt == null
         ? null
-        : strings.subscriptionTrafficExpires(
-            _formatCompactDate(usage.expiresAt!),
-          );
+        : _formatCompactDate(usage.expiresAt!);
     final percentLabel = '${(ratio * 100).round().clamp(0, 100)}%';
     final usageLabel = strings.subscriptionTrafficUsedOf(usedLabel, totalLabel);
+    final semanticValue = <String>[
+      usageLabel,
+      percentLabel,
+      if (expiresLabel != null)
+        strings.subscriptionTrafficExpires(expiresLabel),
+    ].join(', ');
     const barHeight = 24.0;
-    final detailStyle = theme.textTheme.bodySmall?.copyWith(
-      color: scheme.onSurface,
-      fontSize: 11,
-      height: 1.25,
-      fontWeight: FontWeight.w600,
-    );
+    final detailStyle = _subscriptionTrafficExpiryStyle(theme, scheme);
     final barLabelStyle = theme.textTheme.bodySmall?.copyWith(
       fontFamily: 'Trebuchet MS',
       color: Colors.white,
@@ -3184,7 +3603,7 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
 
     return Semantics(
       label: strings.subscriptionTrafficLabel,
-      value: '$usageLabel, $percentLabel',
+      value: semanticValue,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
@@ -3207,7 +3626,7 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
                     Positioned.fill(
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: scheme.outlineVariant.withValues(alpha: 0.42),
+                          color: _trafficBarTrackColor(scheme),
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
@@ -3247,10 +3666,52 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
           ),
           if (expiresLabel != null) ...<Widget>[
             const SizedBox(height: 7),
-            Text(expiresLabel, style: detailStyle),
+            _SubscriptionTrafficExpiryDate(
+              dateLabel: expiresLabel,
+              style: detailStyle,
+            ),
           ],
         ],
       ),
+    );
+  }
+}
+
+const double _subscriptionTrafficExpiryIconSize = 13;
+const double _subscriptionTrafficExpiryIconGap = 4;
+
+class _SubscriptionTrafficExpiryDate extends StatelessWidget {
+  const _SubscriptionTrafficExpiryDate({
+    required this.dateLabel,
+    required this.style,
+  });
+
+  final String dateLabel;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = style?.color ?? scheme.onSurface;
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: <Widget>[
+        Icon(
+          Icons.calendar_today_outlined,
+          size: _subscriptionTrafficExpiryIconSize,
+          color: color,
+        ),
+        const SizedBox(width: _subscriptionTrafficExpiryIconGap),
+        Expanded(
+          child: Text(
+            dateLabel,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: style,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -3300,7 +3761,10 @@ class _SourceAutoUpdateMenuEntryState
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final menuLabelStyle =
-        theme.popupMenuTheme.textStyle ?? theme.textTheme.labelLarge;
+        (theme.popupMenuTheme.textStyle ??
+                theme.textTheme.labelLarge ??
+                const TextStyle())
+            .copyWith(fontWeight: FontWeight.w600);
     final valueText = widget.strings.autoUpdateIntervalValue(
       Duration(minutes: _minutes),
     );
@@ -3331,7 +3795,7 @@ class _SourceAutoUpdateMenuEntryState
                         children: <InlineSpan>[
                           TextSpan(
                             text: widget.strings.autoUpdateLabel,
-                            style: menuLabelStyle?.copyWith(
+                            style: menuLabelStyle.copyWith(
                               color: scheme.onSurface,
                             ),
                           ),
@@ -4572,7 +5036,8 @@ class _ConnectionStatusLabelState extends State<_ConnectionStatusLabel> {
         textAlign: TextAlign.center,
         style: theme.textTheme.titleMedium?.copyWith(
           color: scheme.onSurface,
-          fontWeight: FontWeight.w700,
+          fontSize: 18,
+          fontWeight: FontWeight.w500,
           letterSpacing: 0.1,
         ),
       ),
@@ -6182,19 +6647,39 @@ double _mobileSourcePageHeight(
     final innerWidth = (maxWidth - _mobileSubscriptionPanelPadding * 2)
         .clamp(96.0, double.infinity)
         .toDouble();
-    final headerTextWidth = (innerWidth - 10 - 38 - 10 - 8 - 74 - 8)
-        .clamp(48.0, double.infinity)
-        .toDouble();
+    final headerTextWidth =
+        (innerWidth -
+                _mobileSubscriptionHeaderLeftPadding -
+                _mobileSubscriptionHeaderRightPadding -
+                _mobileSubscriptionHeaderIconSize -
+                _mobileSubscriptionHeaderIconGap -
+                8 -
+                _mobileSubscriptionHeaderActionWidth)
+            .clamp(48.0, double.infinity)
+            .toDouble();
     final headerTitleHeight = _measuredTextHeight(
       context,
       _sourceSubscriptionTitle(source),
-      theme.textTheme.titleSmall,
+      _subscriptionHeaderTitleStyle(theme),
       maxWidth: headerTextWidth,
       maxLines: 1,
     );
+    final expiresLabel = _sourceTrafficExpiryDateLabel(source);
+    final headerTextHeight = expiresLabel == null
+        ? headerTitleHeight
+        : math.max(
+            headerTitleHeight,
+            _measuredTextHeight(
+              context,
+              expiresLabel,
+              _subscriptionHeaderExpiryStyle(theme, theme.colorScheme),
+              maxWidth: headerTextWidth,
+              maxLines: 1,
+            ),
+          );
     final headerHeight =
-        _mobileSubscriptionHeaderVerticalPadding * 2 +
-        math.max(38.0, headerTitleHeight);
+        _mobileSubscriptionHeaderBottomPadding +
+        math.max(_mobileSubscriptionHeaderIconSize, headerTextHeight);
 
     var height =
         _mobileSubscriptionPanelPadding * 2 + headerHeight + listHeight;
@@ -6222,24 +6707,6 @@ double _mobileSourcePageHeight(
           _mobileSubscriptionTrafficTopGap +
           24 +
           _mobileSubscriptionTrafficProfileGap;
-      if (usage.expiresAt != null) {
-        final expiresLabel = strings.subscriptionTrafficExpires(
-          _formatCompactDate(usage.expiresAt!),
-        );
-        height +=
-            7 +
-            _measuredTextHeight(
-              context,
-              expiresLabel,
-              theme.textTheme.bodySmall?.copyWith(
-                fontSize: 11,
-                height: 1.25,
-                fontWeight: FontWeight.w600,
-              ),
-              maxWidth: innerWidth,
-              maxLines: 1,
-            );
-      }
     } else {
       height += _mobileSubscriptionHeaderGap;
     }
@@ -6251,6 +6718,8 @@ double _mobileSourcePageHeight(
   final profile = source.selectedProfile;
   final showSourceState = source.isUpdating || !source.hasMultipleProfiles;
   final actionRowWidth = showSourceState ? 74.0 : 34.0;
+  final titleStyle = _configCardTitleStyle(theme);
+  final subtitleStyle = _configCardSubtitleStyle(theme, theme.colorScheme);
   const flagWidth = _configCardFlagWidth;
   final textWidth =
       (maxWidth -
@@ -6262,55 +6731,54 @@ double _mobileSourcePageHeight(
               actionRowWidth)
           .clamp(64.0, double.infinity)
           .toDouble();
-  final titleHeight = _measuredTextHeight(
+  final titleMetrics = _measuredTextVisualMetrics(
     context,
     _sourceHeadline(source, profile),
-    theme.textTheme.titleSmall,
+    titleStyle,
     maxWidth: textWidth,
     maxLines: 1,
+    textHeightBehavior: _configCardTextHeightBehavior,
   );
-  final subtitleHeight = _measuredTextHeight(
+  final subtitleMetrics = _measuredTextVisualMetrics(
     context,
     _sourceSubtitle(
       strings,
       controller.displayCoreForProfile(profile),
       profile,
     ),
-    theme.textTheme.bodyMedium,
+    subtitleStyle,
     maxWidth: textWidth,
     maxLines: 2,
+    textHeightBehavior: _configCardTextHeightBehavior,
   );
 
-  var textColumnHeight = titleHeight + 4 + subtitleHeight;
+  var primaryHeight = _configCardPrimaryHeight(
+    minHeight: _mobileConfigCardMinHeight,
+    titleHeight: titleMetrics.visualHeight,
+    subtitleHeight: subtitleMetrics.visualHeight,
+  );
 
   final usage = source.trafficUsage;
   if (source.isSubscription && usage != null && usage.hasTotal) {
-    textColumnHeight += 8 + 24;
+    primaryHeight += 8 + 24;
     if (usage.expiresAt != null) {
-      final expiresLabel = strings.subscriptionTrafficExpires(
-        _formatCompactDate(usage.expiresAt!),
+      final expiresLabel = _formatCompactDate(usage.expiresAt!);
+      final expiresStyle = _subscriptionTrafficExpiryStyle(
+        theme,
+        theme.colorScheme,
       );
-      textColumnHeight +=
+      primaryHeight +=
           7 +
-          _measuredTextHeight(
+          _measuredTrafficExpiryHeight(
             context,
             expiresLabel,
-            theme.textTheme.bodySmall?.copyWith(
-              fontSize: 11,
-              height: 1.25,
-              fontWeight: FontWeight.w600,
-            ),
+            expiresStyle,
             maxWidth: textWidth,
-            maxLines: 1,
           );
     }
   }
 
-  var height =
-      _mobileConfigCardVerticalPadding +
-      math.max(_configCardFlagSize, math.max(34.0, textColumnHeight)) +
-      _mobileConfigCardVerticalPadding +
-      2;
+  var height = primaryHeight;
 
   if (source.lastUpdateError != null) {
     final errorTextWidth = (maxWidth - 18 - 14 - 16 - 7)
@@ -6326,7 +6794,7 @@ double _mobileSourcePageHeight(
         maxLines: 2,
       ),
     );
-    height += 10 + errorHeight;
+    height += 10 + errorHeight + _mobileConfigCardVerticalPadding;
   }
 
   return height
@@ -6369,12 +6837,37 @@ double _mobileProfileCardHeightFor(BuildContext context) {
       .toDouble();
 }
 
-double _measuredTextHeight(
+double _configCardPrimaryHeight({
+  required double minHeight,
+  required double titleHeight,
+  required double subtitleHeight,
+}) {
+  return math.max(
+    minHeight,
+    titleHeight + subtitleHeight + _configCardMinSegmentGap * 3,
+  );
+}
+
+class _MeasuredTextVisualMetrics {
+  const _MeasuredTextVisualMetrics({
+    required this.visualTop,
+    required this.visualBottom,
+  });
+
+  final double visualTop;
+  final double visualBottom;
+
+  double get visualHeight => visualBottom - visualTop;
+  double get visualCenterY => visualTop + visualHeight / 2;
+}
+
+_MeasuredTextVisualMetrics _measuredTextVisualMetrics(
   BuildContext context,
   String text,
   TextStyle? style, {
   required double maxWidth,
   required int maxLines,
+  TextHeightBehavior? textHeightBehavior,
 }) {
   final painter = TextPainter(
     text: TextSpan(
@@ -6384,8 +6877,134 @@ double _measuredTextHeight(
     textDirection: Directionality.maybeOf(context) ?? TextDirection.ltr,
     maxLines: maxLines,
     textScaler: MediaQuery.textScalerOf(context),
+    textHeightBehavior: textHeightBehavior,
+  )..layout(maxWidth: maxWidth);
+  final boxes = painter.getBoxesForSelection(
+    TextSelection(baseOffset: 0, extentOffset: text.length),
+    boxHeightStyle: BoxHeightStyle.tight,
+    boxWidthStyle: BoxWidthStyle.tight,
+  );
+  if (boxes.isEmpty) {
+    return _MeasuredTextVisualMetrics(
+      visualTop: 0,
+      visualBottom: painter.size.height,
+    );
+  }
+
+  var visualTop = boxes.first.top;
+  var visualBottom = boxes.first.bottom;
+  for (final box in boxes.skip(1)) {
+    visualTop = math.min(visualTop, box.top);
+    visualBottom = math.max(visualBottom, box.bottom);
+  }
+  return _MeasuredTextVisualMetrics(
+    visualTop: visualTop,
+    visualBottom: visualBottom,
+  );
+}
+
+double _measuredTextHeight(
+  BuildContext context,
+  String text,
+  TextStyle? style, {
+  required double maxWidth,
+  required int maxLines,
+  TextHeightBehavior? textHeightBehavior,
+}) {
+  final painter = TextPainter(
+    text: TextSpan(
+      text: text,
+      style: style ?? DefaultTextStyle.of(context).style,
+    ),
+    textDirection: Directionality.maybeOf(context) ?? TextDirection.ltr,
+    maxLines: maxLines,
+    textScaler: MediaQuery.textScalerOf(context),
+    textHeightBehavior: textHeightBehavior,
   )..layout(maxWidth: maxWidth);
   return painter.size.height;
+}
+
+TextStyle? _subscriptionTrafficExpiryStyle(
+  ThemeData theme,
+  ColorScheme scheme,
+) {
+  return theme.textTheme.bodySmall?.copyWith(
+    color: scheme.onSurface,
+    fontSize: 11,
+    height: 1.25,
+    fontWeight: FontWeight.w500,
+  );
+}
+
+TextStyle? _configCardTitleStyle(ThemeData theme) {
+  return theme.textTheme.titleSmall?.copyWith(height: 1);
+}
+
+TextStyle? _configCardSubtitleStyle(ThemeData theme, ColorScheme scheme) {
+  return _profileSubtitleStyle(theme, scheme)?.copyWith(height: 1);
+}
+
+TextStyle? _profileSubtitleStyle(ThemeData theme, ColorScheme scheme) {
+  return theme.textTheme.bodyMedium?.copyWith(
+    color: scheme.onSurfaceVariant,
+    fontSize: 12,
+    fontWeight: FontWeight.w500,
+    height: 1.15,
+    letterSpacing: 0,
+  );
+}
+
+Color _selectedConfigSurfaceColor(ColorScheme scheme) {
+  return scheme.primary.withValues(alpha: 0.24);
+}
+
+Color _trafficBarTrackColor(ColorScheme scheme) {
+  return scheme.primary.withValues(alpha: 0.16);
+}
+
+const TextHeightBehavior _subscriptionHeaderTextHeightBehavior =
+    TextHeightBehavior(
+      applyHeightToFirstAscent: false,
+      applyHeightToLastDescent: false,
+    );
+
+TextStyle? _subscriptionHeaderTitleStyle(ThemeData theme) {
+  return theme.textTheme.titleSmall?.copyWith(height: 1);
+}
+
+TextStyle? _subscriptionHeaderExpiryStyle(ThemeData theme, ColorScheme scheme) {
+  return _subscriptionTrafficExpiryStyle(theme, scheme)?.copyWith(height: 1);
+}
+
+String? _sourceTrafficExpiryDateLabel(ConfigSource source) {
+  final usage = source.trafficUsage;
+  final expiresAt = usage?.expiresAt;
+  if (usage == null || !usage.hasTotal || expiresAt == null) {
+    return null;
+  }
+  return _formatCompactDate(expiresAt);
+}
+
+double _measuredTrafficExpiryHeight(
+  BuildContext context,
+  String dateLabel,
+  TextStyle? style, {
+  required double maxWidth,
+}) {
+  final textWidth =
+      (maxWidth -
+              _subscriptionTrafficExpiryIconSize -
+              _subscriptionTrafficExpiryIconGap)
+          .clamp(1.0, double.infinity)
+          .toDouble();
+  final textHeight = _measuredTextHeight(
+    context,
+    dateLabel,
+    style,
+    maxWidth: textWidth,
+    maxLines: 1,
+  );
+  return math.max(_subscriptionTrafficExpiryIconSize, textHeight);
 }
 
 String _profileChoiceTitle(ParsedVpnProfile profile) {
@@ -6480,16 +7099,6 @@ Color _phaseColor(ConnectionPhase phase, ColorScheme scheme) {
   }
 }
 
-Color _trafficUsageColor(double ratio, ColorScheme scheme) {
-  if (ratio >= 0.92) {
-    return scheme.error;
-  }
-  if (ratio >= 0.75) {
-    return const Color(0xFFFFC857);
-  }
-  return _connectedColor;
-}
-
 String _formatTrafficBytes(int bytes) {
   final safeBytes = bytes < 0 ? 0 : bytes;
   const units = <String>['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -6515,7 +7124,8 @@ String _formatCompactDate(DateTime date) {
   final local = date.toLocal();
   final month = local.month.toString().padLeft(2, '0');
   final day = local.day.toString().padLeft(2, '0');
-  return '${local.year}-$month-$day';
+  final year = local.year.toString().padLeft(4, '0');
+  return '$day.$month.$year';
 }
 
 String _formatConnectedDuration(DateTime? connectedAt) {

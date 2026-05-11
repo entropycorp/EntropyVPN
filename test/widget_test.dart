@@ -237,6 +237,11 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     final controller = _subscriptionController(
+      trafficUsage: const SubscriptionTrafficUsage(
+        uploadBytes: 1024 * 1024 * 1024,
+        downloadBytes: 4 * 1024 * 1024 * 1024,
+        totalBytes: 10 * 1024 * 1024 * 1024,
+      ),
       profiles: const <ParsedVpnProfile>[
         ParsedVpnProfile(
           protocol: LinkProtocol.vless,
@@ -280,6 +285,20 @@ void main() {
       expect(find.text('Germany 1'), findsOneWidget);
       expect(find.text('Poland 1'), findsOneWidget);
       expect(find.byType(DropdownMenu<int>), findsNothing);
+
+      final menuButton = find.ancestor(
+        of: find.byIcon(Icons.more_horiz_rounded),
+        matching: find.byType(IconButton),
+      );
+      final trafficBar = find.byKey(
+        const ValueKey<String>('subscription-traffic-subscription'),
+      );
+      expect(menuButton, findsOneWidget);
+      expect(trafficBar, findsOneWidget);
+      expect(
+        tester.getRect(menuButton).right,
+        closeTo(tester.getRect(trafficBar).right, 1),
+      );
 
       await tester.tap(find.text('Germany 1'));
       await tester.pumpAndSettle();
@@ -568,6 +587,11 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     final controller = _subscriptionController(
+      trafficUsage: const SubscriptionTrafficUsage(
+        uploadBytes: 1024 * 1024 * 1024,
+        downloadBytes: 4 * 1024 * 1024 * 1024,
+        totalBytes: 10 * 1024 * 1024 * 1024,
+      ),
       profiles: const <ParsedVpnProfile>[
         ParsedVpnProfile(
           protocol: LinkProtocol.vless,
@@ -600,23 +624,173 @@ void main() {
       expect(find.text('subscription'), findsOneWidget);
       expect(find.textContaining('Profiles found'), findsNothing);
       expect(find.byIcon(Icons.refresh_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.rss_feed_rounded), findsOneWidget);
       expect(find.byIcon(Icons.more_horiz_rounded), findsOneWidget);
 
+      expect(
+        tester.getCenter(find.byIcon(Icons.refresh_rounded)).dx,
+        lessThan(tester.getCenter(find.byIcon(Icons.rss_feed_rounded)).dx),
+      );
+      expect(
+        tester.getCenter(find.byIcon(Icons.rss_feed_rounded)).dx,
+        lessThan(tester.getCenter(find.byIcon(Icons.more_horiz_rounded)).dx),
+      );
+
+      final refreshButton = find.ancestor(
+        of: find.byIcon(Icons.refresh_rounded),
+        matching: find.byType(IconButton),
+      );
+      final pingButton = find.ancestor(
+        of: find.byIcon(Icons.rss_feed_rounded),
+        matching: find.byType(IconButton),
+      );
       final menuButton = find.ancestor(
         of: find.byIcon(Icons.more_horiz_rounded),
         matching: find.byType(IconButton),
       );
+      final firstProfileCard = find.ancestor(
+        of: find.text('Netherlands 1'),
+        matching: find.byType(InkWell),
+      );
+      final trafficBar = find.byKey(
+        const ValueKey<String>('subscription-traffic-subscription'),
+      );
+      final subscriptionIcon = find.byWidgetPredicate(
+        (widget) =>
+            widget is Container &&
+            widget.child is Icon &&
+            (widget.child! as Icon).icon == Icons.link_rounded,
+      );
       expect(menuButton, findsOneWidget);
+      expect(firstProfileCard, findsOneWidget);
+      expect(trafficBar, findsOneWidget);
+      expect(subscriptionIcon, findsOneWidget);
+      expect(
+        tester.getRect(subscriptionIcon).left,
+        closeTo(tester.getRect(trafficBar).left, 1),
+      );
+      expect(
+        tester.getRect(pingButton).left,
+        closeTo(tester.getRect(refreshButton).right + 3, 1),
+      );
+      expect(
+        tester.getRect(menuButton).left,
+        closeTo(tester.getRect(pingButton).right + 3, 1),
+      );
+      expect(
+        tester.getRect(menuButton).right,
+        closeTo(tester.getRect(firstProfileCard).right, 1),
+      );
+      expect(
+        tester.getRect(menuButton).right,
+        closeTo(tester.getRect(trafficBar).right, 1),
+      );
+      expect(
+        tester.getRect(trafficBar).top -
+            tester.getRect(subscriptionIcon).bottom,
+        closeTo(11, 1),
+      );
+      expect(
+        tester.getRect(firstProfileCard).top -
+            tester.getRect(trafficBar).bottom,
+        closeTo(11, 1),
+      );
 
       await tester.tap(menuButton);
       await tester.pumpAndSettle();
 
-      expect(find.text('Update'), findsOneWidget);
+      expect(find.text('Update'), findsNothing);
       expect(
         find.textContaining('Auto-update', findRichText: true),
         findsOneWidget,
       );
-      expect(find.text('Remove'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  testWidgets('mobile subscription profile shows TCP ping near checkmark', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 820));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _subscriptionController(
+      tcpPingLatencyMs: 42,
+      tcpPingProfileIndex: 0,
+      profiles: const <ParsedVpnProfile>[
+        ParsedVpnProfile(
+          protocol: LinkProtocol.vless,
+          server: 'nl.example.com',
+          port: 443,
+          transport: TransportMode.raw,
+          tlsMode: TlsMode.tls,
+          userId: '11111111-1111-1111-1111-111111111111',
+          remark: 'Netherlands',
+        ),
+      ],
+    );
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(390, 820)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('42 ms'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
+      expect(
+        tester.getRect(find.text('42 ms')).right,
+        lessThan(tester.getRect(find.byIcon(Icons.check_circle_rounded)).left),
+      );
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  testWidgets('mobile subscription profiles show TCP ping for every profile', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 820));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _subscriptionController(
+      tcpPingLatenciesMs: const <int, int>{0: 42, 1: 87},
+      profiles: const <ParsedVpnProfile>[
+        ParsedVpnProfile(
+          protocol: LinkProtocol.vless,
+          server: 'nl.example.com',
+          port: 443,
+          transport: TransportMode.raw,
+          tlsMode: TlsMode.tls,
+          userId: '11111111-1111-1111-1111-111111111111',
+          remark: 'Netherlands',
+        ),
+        ParsedVpnProfile(
+          protocol: LinkProtocol.vless,
+          server: 'de.example.com',
+          port: 443,
+          transport: TransportMode.raw,
+          tlsMode: TlsMode.tls,
+          userId: '22222222-2222-2222-2222-222222222222',
+          remark: 'Germany',
+        ),
+      ],
+    );
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(390, 820)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('42 ms'), findsOneWidget);
+      expect(find.text('87 ms'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.radio_button_unchecked_rounded), findsOneWidget);
     } finally {
       controller.dispose();
     }
@@ -865,7 +1039,16 @@ void main() {
       expect(sourcePager, findsOneWidget);
       expect(find.text('Config 5'), findsOneWidget);
 
-      await tester.drag(sourcePager, const Offset(-320, 0));
+      final gesture = await tester.startGesture(tester.getCenter(sourcePager));
+      await gesture.moveBy(const Offset(-20, 0));
+      await tester.pump();
+      await gesture.moveBy(const Offset(-280, 0));
+      await tester.pump();
+
+      expect(find.text('Import from JSON'), findsOneWidget);
+      expect(tester.getRect(find.text('Import from JSON')).left, lessThan(390));
+
+      await gesture.up();
       await tester.pumpAndSettle();
 
       expect(find.text('Import from JSON'), findsOneWidget);
@@ -997,6 +1180,56 @@ void main() {
     }
   });
 
+  testWidgets('mobile tap navigation keeps final indicator during page jumps', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 820));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _configController();
+
+    AnimatedScale navScale(IconData icon) {
+      final button = find.widgetWithIcon(InkWell, icon);
+      expect(button, findsOneWidget);
+      final scale = find.descendant(
+        of: button,
+        matching: find.byType(AnimatedScale),
+      );
+      expect(scale, findsOneWidget);
+      return tester.widget<AnimatedScale>(scale);
+    }
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(390, 820)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final logsButton = find.widgetWithIcon(
+        InkWell,
+        Icons.receipt_long_outlined,
+      );
+      expect(navScale(Icons.receipt_long_outlined).scale, 1);
+
+      await tester.tap(logsButton);
+      await tester.pump();
+
+      expect(navScale(Icons.receipt_long_outlined).scale, 1.06);
+
+      await tester.pump(const Duration(milliseconds: 40));
+
+      expect(navScale(Icons.receipt_long_outlined).scale, 1.06);
+      expect(navScale(Icons.settings_rounded).scale, 1);
+
+      await tester.pumpAndSettle();
+
+      expect(navScale(Icons.receipt_long_outlined).scale, 1.06);
+    } finally {
+      controller.dispose();
+    }
+  });
+
   testWidgets(
     'power control and status align with config card in split layout',
     (WidgetTester tester) async {
@@ -1059,10 +1292,12 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     final controller = _subscriptionController(
-      trafficUsage: const SubscriptionTrafficUsage(
+      displayName: 'EntropyVPN',
+      trafficUsage: SubscriptionTrafficUsage(
         uploadBytes: 1024 * 1024 * 1024,
         downloadBytes: 4 * 1024 * 1024 * 1024,
         totalBytes: 10 * 1024 * 1024 * 1024,
+        expiresAt: DateTime(2026, 6, 1),
       ),
     );
 
@@ -1074,7 +1309,36 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       expect(find.text('5 GB / 10 GB'), findsOneWidget);
+      expect(find.byIcon(Icons.calendar_today_outlined), findsNothing);
+      expect(find.text('|'), findsOneWidget);
+      expect(find.text('01.06.2026'), findsOneWidget);
+      expect(find.textContaining('until'), findsNothing);
       expect(find.text('5 GB left'), findsNothing);
+
+      final titleRect = tester.getRect(find.text('EntropyVPN'));
+      final dividerRect = tester.getRect(find.text('|'));
+      final expiryRect = tester.getRect(find.text('01.06.2026'));
+      final trafficRect = tester.getRect(find.text('5 GB / 10 GB'));
+      final subscriptionIcon = find.byWidgetPredicate(
+        (widget) =>
+            widget is Container &&
+            widget.child is Icon &&
+            (widget.child! as Icon).icon == Icons.link_rounded,
+      );
+      final subscriptionIconRect = tester.getRect(subscriptionIcon);
+
+      expect(dividerRect.left, greaterThan(titleRect.right));
+      expect(expiryRect.left, greaterThan(dividerRect.right));
+      expect(expiryRect.center.dy, closeTo(titleRect.center.dy, 1));
+      expect(
+        titleRect.center.dy,
+        closeTo(subscriptionIconRect.center.dy - 1.5, 1),
+      );
+      expect(
+        expiryRect.center.dy,
+        closeTo(subscriptionIconRect.center.dy - 1.5, 1),
+      );
+      expect(expiryRect.bottom, lessThan(trafficRect.top));
     } finally {
       controller.dispose();
     }
@@ -1167,8 +1431,9 @@ void main() {
         find.textContaining('Auto-update', findRichText: true),
         findsOneWidget,
       );
+      expect(find.text('Update'), findsNothing);
       expect(exportJsonAction, findsOneWidget);
-      expect(find.text('Remove'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
 
       final sliderRect = tester.getRect(slider);
       final exportJsonActionRect = tester.getRect(exportJsonAction);
@@ -1206,7 +1471,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Save as JSON'), findsOneWidget);
-      expect(find.text('Remove'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
     } finally {
       controller.dispose();
     }
@@ -1215,6 +1480,9 @@ void main() {
 
 VpnController _subscriptionController({
   SubscriptionTrafficUsage? trafficUsage,
+  Map<int, int> tcpPingLatenciesMs = const <int, int>{},
+  int? tcpPingLatencyMs,
+  int? tcpPingProfileIndex,
   String rawInput = 'https://example.com/subscription',
   String? displayName,
   List<ParsedVpnProfile> profiles = const <ParsedVpnProfile>[
@@ -1245,6 +1513,9 @@ VpnController _subscriptionController({
             profiles: profiles,
             lastUpdatedAt: DateTime(2026, 5, 1),
             trafficUsage: trafficUsage,
+            tcpPingLatenciesMs: tcpPingLatenciesMs,
+            tcpPingLatencyMs: tcpPingLatencyMs,
+            tcpPingProfileIndex: tcpPingProfileIndex,
           ),
         ],
       ),
