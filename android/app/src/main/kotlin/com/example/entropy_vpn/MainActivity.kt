@@ -2,9 +2,13 @@ package com.example.entropy_vpn
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.app.NotificationCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -28,6 +33,9 @@ class MainActivity : FlutterActivity() {
         private const val incomingLinksEventsChannelName = "entropy_vpn/incoming_links/events"
         private const val vpnPermissionRequestCode = 1108
         private const val notificationPermissionRequestCode = 1109
+        private const val updateNotificationRequestCode = 1110
+        private const val updateNotificationId = 1111
+        private const val updateNotificationChannelId = "entropy_vpn.updates"
         private const val permissionPrefsName = "entropy_vpn.permissions"
         private const val notificationPermissionAskedKey = "notification_permission_asked"
     }
@@ -100,6 +108,7 @@ class MainActivity : FlutterActivity() {
             "getState" -> result.success(EntropyVpnRuntimeStore.snapshot())
             "getAppDataDirectory" -> result.success(filesDir.absolutePath)
             "listInstalledApps" -> listInstalledApps(result)
+            "showUpdateNotification" -> showUpdateNotification(call, result)
             else -> result.notImplemented()
         }
     }
@@ -166,6 +175,71 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    private fun showUpdateNotification(call: MethodCall, result: MethodChannel.Result) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            result.success(false)
+            return
+        }
+
+        val title = call.argument<String>("title").orEmpty().ifBlank { "New update" }
+        val body =
+            call.argument<String>("body")
+                .orEmpty()
+                .ifBlank { "A new EntropyVPN update is available" }
+        val releaseUrl =
+            call.argument<String>("releaseUrl")
+                .orEmpty()
+                .ifBlank { "https://github.com/entropycorp/EntropyVPN/releases" }
+
+        ensureUpdateNotificationChannel()
+
+        val releaseIntent =
+            Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val pendingIntent =
+            PendingIntent.getActivity(
+                this,
+                updateNotificationRequestCode,
+                releaseIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+        val notification =
+            NotificationCompat.Builder(this, updateNotificationChannelId)
+                .setSmallIcon(R.drawable.ic_notification_entropy)
+                .setContentTitle(title)
+                .setContentText(body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .build()
+
+        getSystemService(NotificationManager::class.java).notify(
+            updateNotificationId,
+            notification,
+        )
+        result.success(true)
+    }
+
+    private fun ensureUpdateNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(
+                updateNotificationChannelId,
+                "Updates",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ),
+        )
+    }
+
     private fun prepareVpn(result: MethodChannel.Result) {
         val intent = VpnService.prepare(this)
         if (intent == null) {
@@ -198,6 +272,7 @@ class MainActivity : FlutterActivity() {
             serverCountryCode = startPayload.serverCountryCode,
             language = startPayload.language,
             tunIpMode = startPayload.tunIpMode,
+            dnsServers = startPayload.dnsServers,
             splitTunnelMode = startPayload.splitTunnelMode,
             splitTunnelPackages = startPayload.splitTunnelPackages,
         )
@@ -221,6 +296,12 @@ class MainActivity : FlutterActivity() {
         val serverCountryCode = call.argument<String>("serverCountryCode").orEmpty()
         val language = call.argument<String>("language").orEmpty().ifBlank { "en" }
         val tunIpMode = call.argument<String>("tunIpMode").orEmpty().ifBlank { "ipv4" }
+        val dnsServers =
+            call.argument<List<Any?>>("dnsServers")
+                .orEmpty()
+                .mapNotNull { item ->
+                    item?.toString()?.trim()?.takeIf(String::isNotEmpty)
+                }
         val splitTunnelMode =
             call.argument<String>("splitTunnelMode").orEmpty().ifBlank { "off" }
         val splitTunnelPackages =
@@ -243,6 +324,7 @@ class MainActivity : FlutterActivity() {
             serverCountryCode = serverCountryCode,
             language = language,
             tunIpMode = tunIpMode,
+            dnsServers = dnsServers,
             splitTunnelMode = splitTunnelMode,
             splitTunnelPackages = splitTunnelPackages,
         )

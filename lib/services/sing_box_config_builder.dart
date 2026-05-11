@@ -4,6 +4,7 @@ Map<String, dynamic> _buildSingBoxConfig(
   ParsedVpnProfile profile, {
   TrafficMode trafficMode = TrafficMode.systemProxy,
   TunIpMode tunIpMode = TunIpMode.ipv4,
+  DnsSettings dnsSettings = const DnsSettings(),
   SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
   DomainSplitTunnelSettings domainSplitTunnelSettings =
       const DomainSplitTunnelSettings(),
@@ -29,6 +30,7 @@ Map<String, dynamic> _buildSingBoxConfig(
       ? _buildTunnelDnsServers(
           includeLocalResolver: !isAndroidTunMode,
           tunIpMode: effectiveTunIpMode,
+          dnsSettings: dnsSettings,
         )
       : const <Map<String, dynamic>>[];
   final routeRules = isTunMode

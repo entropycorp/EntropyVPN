@@ -6,6 +6,7 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
     required ParsedVpnProfile profile,
     required TrafficMode trafficMode,
     required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
     required SplitTunnelSettings splitTunnelSettings,
     required DomainSplitTunnelSettings domainSplitTunnelSettings,
   }) async {
@@ -125,6 +126,7 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
           profile: profile,
           trafficMode: trafficMode,
           tunIpMode: tunIpMode,
+          dnsSettings: dnsSettings,
           splitTunnelSettings: effectiveSplitTunnelSettings,
           domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
           tunInterfaceName: tunInterfaceName,
@@ -142,6 +144,7 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
           () => _installTemporaryXrayTunRoutes(
             interfaceAlias: tunInterfaceName,
             tunIpMode: tunIpMode,
+            dnsSettings: dnsSettings,
           ),
         );
       }

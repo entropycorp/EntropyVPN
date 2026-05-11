@@ -67,6 +67,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import org.json.JSONObject
 
 class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler {
     companion object {
@@ -80,6 +81,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         private const val extraServerCountryCode = "serverCountryCode"
         private const val extraLanguage = "language"
         private const val extraTunIpMode = "tunIpMode"
+        private const val extraDnsServers = "dnsServers"
         private const val extraSplitTunnelMode = "splitTunnelMode"
         private const val extraSplitTunnelPackages = "splitTunnelPackages"
         private const val notificationChannelId = "entropy_vpn.runtime"
@@ -101,9 +103,6 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         private const val splitTunnelModeBlacklist = "blacklist"
         private const val dnsRcodeNxDomain = 3
         private const val localDnsTimeoutSeconds = 10L
-        private val hevIpv4DnsServers = listOf("1.1.1.1", "8.8.8.8")
-        private val hevIpv6DnsServers =
-            listOf("2606:4700:4700::1111", "2001:4860:4860::8888")
 
         fun start(
             context: Context,
@@ -114,6 +113,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
             serverCountryCode: String,
             language: String,
             tunIpMode: String,
+            dnsServers: List<String>,
             splitTunnelMode: String,
             splitTunnelPackages: List<String>,
         ) {
@@ -126,6 +126,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
                 putExtra(extraServerCountryCode, serverCountryCode)
                 putExtra(extraLanguage, language)
                 putExtra(extraTunIpMode, tunIpMode)
+                putStringArrayListExtra(extraDnsServers, ArrayList(dnsServers))
                 putExtra(extraSplitTunnelMode, splitTunnelMode)
                 putStringArrayListExtra(
                     extraSplitTunnelPackages,
@@ -168,6 +169,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
     private var currentServerCountryCode: String = ""
     private var currentLanguage: String = "en"
     private var currentTunIpMode: String = tunIpModeIpv4
+    private var currentDnsServers: List<String> = emptyList()
     private var currentSplitTunnelMode: String = splitTunnelModeOff
     private var currentSplitTunnelPackages: Set<String> = emptySet()
     private var defaultInterfaceListener: InterfaceUpdateListener? = null
@@ -362,6 +364,15 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
             normalizeCountryCode(intent.getStringExtra(extraServerCountryCode)).orEmpty()
         val language = normalizeLanguage(intent.getStringExtra(extraLanguage))
         val tunIpMode = normalizeTunIpMode(intent.getStringExtra(extraTunIpMode))
+        val dnsServers =
+            normalizeDnsServers(
+                intent
+                    .getStringArrayListExtra(extraDnsServers)
+                    .orEmpty(),
+                tunIpMode,
+            ).ifEmpty {
+                dnsServersFromConfig(config, tunIpMode)
+            }
         val splitTunnelMode =
             normalizeSplitTunnelMode(intent.getStringExtra(extraSplitTunnelMode))
         val splitTunnelPackages =
@@ -385,6 +396,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
             currentServerCountryCode = serverCountryCode
             currentLanguage = language
             currentTunIpMode = tunIpMode
+            currentDnsServers = dnsServers
             currentSplitTunnelMode = splitTunnelMode
             currentSplitTunnelPackages = splitTunnelPackages
         }
@@ -540,7 +552,7 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         val timing = RuntimeTiming()
         val includeIpv4 = currentTunIpMode.includesIpv4()
         val includeIpv6 = currentTunIpMode.includesIpv6()
-        val dnsServers = hevDnsServersFor(currentTunIpMode)
+        val dnsServers = currentDnsServersFor(currentTunIpMode)
         val builder = timing.time("builder_create") {
             Builder()
                 .setSession(currentProfileName)
@@ -1388,12 +1400,37 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
 
     private fun String.includesIpv6(): Boolean = this != tunIpModeIpv4
 
-    private fun hevDnsServersFor(mode: String): List<String> =
-        when (mode) {
-            tunIpModeIpv4 -> hevIpv4DnsServers
-            tunIpModeIpv6 -> hevIpv6DnsServers
-            else -> hevIpv4DnsServers + hevIpv6DnsServers
-        }
+    private fun normalizeDnsServers(servers: List<String>, mode: String): List<String> =
+        servers
+            .mapNotNull { it.trim().takeIf(String::isNotEmpty) }
+            .filter { server ->
+                when {
+                    server.contains(':') -> mode.includesIpv6()
+                    else -> mode.includesIpv4()
+                }
+            }
+            .distinct()
+
+    private fun currentDnsServersFor(mode: String): List<String> =
+        normalizeDnsServers(currentDnsServers, mode)
+
+    private fun dnsServersFromConfig(config: String, mode: String): List<String> =
+        runCatching {
+            val dns = JSONObject(config).optJSONObject("dns") ?: return@runCatching emptyList()
+            val servers = dns.optJSONArray("servers") ?: return@runCatching emptyList()
+            val parsedServers = buildList {
+                for (index in 0 until servers.length()) {
+                    when (val item = servers.opt(index)) {
+                        is String -> add(item)
+                        is JSONObject -> {
+                            item.optString("server").takeIf(String::isNotBlank)?.let(::add)
+                            item.optString("address").takeIf(String::isNotBlank)?.let(::add)
+                        }
+                    }
+                }
+            }
+            normalizeDnsServers(parsedServers, mode)
+        }.getOrDefault(emptyList())
 
     private fun formatHevPrefix(enabled: Boolean, address: String, prefix: Int): String =
         if (enabled) {

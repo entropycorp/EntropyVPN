@@ -4,6 +4,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
   Future<void> _installTemporaryXrayTunRoutes({
     required String interfaceAlias,
     required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
   }) async {
     if (!Platform.isWindows) {
       return;
@@ -12,11 +13,16 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
       await _removeTemporaryTunRoutes();
     }
 
-    final adapterKey = _xrayTunAdapterKey(interfaceAlias, tunIpMode);
+    final adapterKey = _xrayTunAdapterKey(
+      interfaceAlias,
+      tunIpMode,
+      dnsSettings,
+    );
     var setupKind = WindowsTunSetupKind.full;
     var setup = await _prepareWindowsXrayTunFastRoutes(
       interfaceAlias: interfaceAlias,
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
     );
     if (setup != null) {
       setupKind =
@@ -37,6 +43,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
     setup ??= await _prepareWindowsXrayTunAdapterAndRoutes(
       interfaceAlias: interfaceAlias,
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
     );
     if (setup == null) {
       throw StateError('Failed to prepare Xray TUN adapter and routes.');
@@ -72,19 +79,30 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
     }
   }
 
-  String _xrayTunAdapterKey(String interfaceAlias, TunIpMode tunIpMode) {
-    return '${interfaceAlias.trim().toLowerCase()}|${tunIpMode.name}';
+  String _xrayTunAdapterKey(
+    String interfaceAlias,
+    TunIpMode tunIpMode,
+    DnsSettings dnsSettings,
+  ) {
+    final dnsKey = _xrayTunDnsServersText(dnsSettings, tunIpMode);
+    return '${interfaceAlias.trim().toLowerCase()}|${tunIpMode.name}|$dnsKey';
+  }
+
+  String _xrayTunDnsServersText(DnsSettings dnsSettings, TunIpMode tunIpMode) {
+    return dnsSettings.serversFor(tunIpMode).join(',');
   }
 
   Future<WindowsTunSetup?> _prepareWindowsXrayTunFastRoutes({
     required String interfaceAlias,
     required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
   }) async {
     if (tunIpMode != TunIpMode.ipv4) {
       return null;
     }
     final nativeSetup = await _prepareWindowsXrayTunIpv4RoutesWithNativeApi(
       interfaceAlias: interfaceAlias,
+      dnsSettings: dnsSettings,
     );
     if (nativeSetup != null) {
       return nativeSetup;
@@ -100,12 +118,18 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
 
     var configureMethod = WindowsTunFastConfigureMethod.nativeApi;
     var configureStopwatch = Stopwatch()..start();
-    var configured = await _configureXrayTunIpv4WithNativeApi(adapter);
+    var configured = await _configureXrayTunIpv4WithNativeApi(
+      adapter,
+      dnsSettings: dnsSettings,
+    );
     configureStopwatch.stop();
     if (!configured) {
       configureMethod = WindowsTunFastConfigureMethod.netsh;
       configureStopwatch = Stopwatch()..start();
-      configured = await _configureXrayTunIpv4WithNetsh(adapter);
+      configured = await _configureXrayTunIpv4WithNetsh(
+        adapter,
+        dnsSettings: dnsSettings,
+      );
       configureStopwatch.stop();
     }
     if (!configured) {
@@ -165,7 +189,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
       'Xray TUN adapter setup timing: ${configureMethod.timingLabel}=${configureStopwatch.elapsedMilliseconds}ms, route_exe=${stopwatch.elapsedMilliseconds}ms.',
     );
     _rememberAppLog(
-      'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30, ipv4-metric=1, dns=1.1.1.1,8.8.8.8.',
+      'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30, ipv4-metric=1, dns=${_xrayTunDnsServersText(dnsSettings, TunIpMode.ipv4)}.',
     );
 
     return WindowsTunSetup(
@@ -177,6 +201,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
 
   Future<WindowsTunSetup?> _prepareWindowsXrayTunIpv4RoutesWithNativeApi({
     required String interfaceAlias,
+    required DnsSettings dnsSettings,
   }) async {
     Object? rawResult;
     try {
@@ -187,7 +212,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
             'address': '172.19.0.1',
             'prefixLength': 30,
             'metric': 1,
-            'dnsServers': '1.1.1.1,8.8.8.8',
+            'dnsServers': _xrayTunDnsServersText(dnsSettings, TunIpMode.ipv4),
           });
     } on MissingPluginException {
       _rememberAppLog(
@@ -280,7 +305,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
       'Xray TUN adapter setup timing: native_prepare=${_orDash(elapsedMs)}ms, wait_adapter=${_orDash(result['waitMs']?.toString())}ms, native_configure=${_orDash(result['configureMs']?.toString())}ms, native_routes=${_orDash(result['routeMs']?.toString())}ms.',
     );
     _rememberAppLog(
-      'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30 (${result['addressStatus']}), ipv4-metric=1 (${result['metricStatus']}), dns=1.1.1.1,8.8.8.8 (${result['dnsStatus']}).',
+      'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30 (${result['addressStatus']}), ipv4-metric=1 (${result['metricStatus']}), dns=${_xrayTunDnsServersText(dnsSettings, TunIpMode.ipv4)} (${result['dnsStatus']}).',
     );
 
     return WindowsTunSetup(
@@ -291,8 +316,9 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
   }
 
   Future<bool> _configureXrayTunIpv4WithNativeApi(
-    NetshIpv4Interface adapter,
-  ) async {
+    NetshIpv4Interface adapter, {
+    required DnsSettings dnsSettings,
+  }) async {
     if (!Platform.isWindows) {
       return false;
     }
@@ -305,7 +331,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
             'address': '172.19.0.1',
             'prefixLength': 30,
             'metric': 1,
-            'dnsServers': '1.1.1.1,8.8.8.8',
+            'dnsServers': _xrayTunDnsServersText(dnsSettings, TunIpMode.ipv4),
           });
     } on MissingPluginException {
       _rememberAppLog(
@@ -350,8 +376,10 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
   }
 
   Future<bool> _configureXrayTunIpv4WithNetsh(
-    NetshIpv4Interface adapter,
-  ) async {
+    NetshIpv4Interface adapter, {
+    required DnsSettings dnsSettings,
+  }) async {
+    final dnsServers = dnsSettings.serversFor(TunIpMode.ipv4);
     final commands = <({String label, List<String> args})>[
       (
         label: 'netsh_xray_tun_ipv4_set_address',
@@ -380,33 +408,7 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
           'store=active',
         ],
       ),
-      (
-        label: 'netsh_xray_tun_ipv4_set_dns',
-        args: <String>[
-          'interface',
-          'ipv4',
-          'set',
-          'dnsservers',
-          'name=${adapter.name}',
-          'source=static',
-          'address=1.1.1.1',
-          'register=none',
-          'validate=no',
-        ],
-      ),
-      (
-        label: 'netsh_xray_tun_ipv4_add_dns',
-        args: <String>[
-          'interface',
-          'ipv4',
-          'add',
-          'dnsservers',
-          'name=${adapter.name}',
-          'address=8.8.8.8',
-          'index=2',
-          'validate=no',
-        ],
-      ),
+      ..._buildNetshIpv4DnsCommands(adapter, dnsServers),
     ];
 
     for (final command in commands) {
@@ -423,6 +425,45 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
       }
     }
     return true;
+  }
+
+  List<({String label, List<String> args})> _buildNetshIpv4DnsCommands(
+    NetshIpv4Interface adapter,
+    List<String> dnsServers,
+  ) {
+    if (dnsServers.isEmpty) {
+      return const <({String label, List<String> args})>[];
+    }
+    return <({String label, List<String> args})>[
+      (
+        label: 'netsh_xray_tun_ipv4_set_dns',
+        args: <String>[
+          'interface',
+          'ipv4',
+          'set',
+          'dnsservers',
+          'name=${adapter.name}',
+          'source=static',
+          'address=${dnsServers.first}',
+          'register=none',
+          'validate=no',
+        ],
+      ),
+      for (var index = 1; index < dnsServers.length; index += 1)
+        (
+          label: 'netsh_xray_tun_ipv4_add_dns',
+          args: <String>[
+            'interface',
+            'ipv4',
+            'add',
+            'dnsservers',
+            'name=${adapter.name}',
+            'address=${dnsServers[index]}',
+            'index=${index + 1}',
+            'validate=no',
+          ],
+        ),
+    ];
   }
 
   Future<NetshIpv4Interface?> _waitForNetshIpv4Interface(
@@ -692,12 +733,14 @@ try {
   Future<WindowsTunSetup?> _prepareWindowsXrayTunAdapterAndRoutes({
     required String interfaceAlias,
     required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
   }) async {
     const script = r'''
 param(
   [string]$InterfaceAlias,
   [int]$TimeoutMs,
-  [string]$TunIpMode
+  [string]$TunIpMode,
+  [string]$DnsServers
 )
 try {
   $timings = New-Object System.Collections.Generic.List[string]
@@ -818,18 +861,13 @@ try {
   }
 
   try {
-    $dnsServers = @()
-    if ($TunIpMode -eq 'ipv4') {
-      $dnsServers = @('1.1.1.1', '8.8.8.8')
-    } elseif ($TunIpMode -eq 'dualStack') {
-      $dnsServers = @(
-        '1.1.1.1',
-        '8.8.8.8',
-        '2606:4700:4700::1111',
-        '2001:4860:4860::8888'
-      )
-    } else {
-      $dnsServers = @('2606:4700:4700::1111', '2001:4860:4860::8888')
+    $dnsServers = @(
+      $DnsServers -split ',' |
+        ForEach-Object { [string]$_.Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($dnsServers.Count -eq 0) {
+      throw 'DNS server list is empty.'
     }
     $currentDns = @(
       Get-DnsClientServerAddress `
@@ -952,6 +990,7 @@ try {
           'InterfaceAlias': interfaceAlias,
           'TimeoutMs': '7000',
           'TunIpMode': tunIpMode.name,
+          'DnsServers': _xrayTunDnsServersText(dnsSettings, tunIpMode),
         },
       );
       if (result.exitCode != 0) {

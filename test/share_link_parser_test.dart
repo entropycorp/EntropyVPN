@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:entropy_vpn/models/dns_settings.dart';
 import 'package:entropy_vpn/models/split_tunnel.dart';
 import 'package:entropy_vpn/models/vpn_profile.dart';
 import 'package:entropy_vpn/services/core_config_builder.dart';
@@ -753,7 +754,7 @@ void main() {
       expect(settings.containsKey('gateway'), isFalse);
       expect(settings.containsKey('dns'), isFalse);
       expect(inbound.containsKey('auto_route'), isFalse);
-      expect(dns['servers'], <String>['1.1.1.1']);
+      expect(dns['servers'], DnsSettings.defaultIpv4Servers);
       expect(dns['queryStrategy'], 'UseIPv4');
       expect(dns['tag'], 'dns-query');
       expect(vnextServer['address'], '203.0.113.8');
@@ -768,6 +769,43 @@ void main() {
       expect(quicRule['port'], '443');
       expect(quicRule['outboundTag'], 'block');
       expect(directSockopt['interface'], 'Ethernet');
+    });
+
+    test('builds TUN configs with custom DNS settings', () {
+      final profile = parser.parse(
+        'trojan://password@example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fvpn&sni=server.example.com#Trojan',
+      );
+      const dnsSettings = DnsSettings(
+        ipv4Servers: <String>['9.9.9.9', '149.112.112.112'],
+        ipv6Servers: <String>['2620:fe::fe', '2620:fe::9'],
+      );
+
+      final singBoxConfig = builder.buildSingBox(
+        profile,
+        trafficMode: TrafficMode.tun,
+        dnsSettings: dnsSettings,
+      );
+      final singBoxDns = singBoxConfig['dns'] as Map<String, dynamic>;
+      final singBoxServers = singBoxDns['servers'] as List<dynamic>;
+      final remoteDns = singBoxServers.last as Map<String, dynamic>;
+
+      expect(remoteDns['server'], '9.9.9.9');
+      expect(remoteDns['server_port'], 53);
+
+      final xrayConfig = builder.buildXray(
+        profile,
+        trafficMode: TrafficMode.tun,
+        tunIpMode: TunIpMode.dualStack,
+        dnsSettings: dnsSettings,
+      );
+      final xrayDns = xrayConfig['dns'] as Map<String, dynamic>;
+
+      expect(xrayDns['servers'], <String>[
+        '9.9.9.9',
+        '149.112.112.112',
+        '2620:fe::fe',
+        '2620:fe::9',
+      ]);
     });
   });
 }

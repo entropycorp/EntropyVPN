@@ -1,9 +1,11 @@
 import 'dart:io';
 
 import 'package:entropy_vpn/models/config_source.dart';
+import 'package:entropy_vpn/models/dns_settings.dart';
 import 'package:entropy_vpn/models/split_tunnel.dart';
 import 'package:entropy_vpn/models/vpn_profile.dart';
 import 'package:entropy_vpn/services/app_state_store.dart';
+import 'package:entropy_vpn/services/app_update_service.dart';
 import 'package:entropy_vpn/services/core_runtime_service.dart';
 import 'package:entropy_vpn/services/profile_catalog_service.dart';
 import 'package:entropy_vpn/services/vpn_controller.dart';
@@ -129,6 +131,88 @@ void main() {
 
     expect(runtimeService.stopWaitForCleanupValues, <bool>[true]);
     expect(controller.isConnected, isFalse);
+  });
+
+  test('app update notification is pending once per release tag', () async {
+    final firstUpdate = AppUpdateInfo(
+      tagName: 'v1.3.2',
+      version: AppVersion.tryParse('1.3.2')!,
+      title: 'EntropyVPN 1.3.2',
+      releaseUrl: Uri.parse(appUpdateReleasesPageUrl),
+      currentVersion: '1.3.1',
+    );
+    final updateService = _FakeAppUpdateService(firstUpdate);
+    final controller = VpnController(
+      appStateStore: _MemoryAppStateStore(
+        PersistedAppState(
+          language: AppLanguage.en,
+          trafficMode: TrafficMode.systemProxy,
+          tunIpMode: TunIpMode.ipv4,
+          sources: const <ConfigSource>[],
+          selectedSourceId: null,
+          appUpdateLastCheckedAt: DateTime.now(),
+        ),
+      ),
+      appUpdateService: updateService,
+    );
+    addTearDown(controller.dispose);
+
+    await controller.checkForAppUpdate(force: true);
+    expect(controller.pendingAppUpdateNotification?.tagName, 'v1.3.2');
+
+    controller.markAppUpdateNotificationShown(firstUpdate);
+    expect(controller.pendingAppUpdateNotification, isNull);
+
+    await controller.checkForAppUpdate(force: true);
+    expect(controller.pendingAppUpdateNotification, isNull);
+
+    updateService.update = AppUpdateInfo(
+      tagName: 'v1.3.3',
+      version: AppVersion.tryParse('1.3.3')!,
+      title: 'EntropyVPN 1.3.3',
+      releaseUrl: Uri.parse(appUpdateReleasesPageUrl),
+      currentVersion: '1.3.1',
+    );
+    await controller.checkForAppUpdate(force: true);
+
+    expect(controller.pendingAppUpdateNotification?.tagName, 'v1.3.3');
+  });
+
+  test('in-app update notification setting controls pending dialog', () async {
+    final store = _MemoryAppStateStore(
+      PersistedAppState(
+        language: AppLanguage.en,
+        trafficMode: TrafficMode.systemProxy,
+        tunIpMode: TunIpMode.ipv4,
+        sources: const <ConfigSource>[],
+        selectedSourceId: null,
+        appUpdateLastCheckedAt: DateTime.now(),
+        showInAppUpdateNotifications: false,
+        showAndroidUpdateNotifications: false,
+      ),
+    );
+    final update = AppUpdateInfo(
+      tagName: 'v1.3.2',
+      version: AppVersion.tryParse('1.3.2')!,
+      title: 'EntropyVPN 1.3.2',
+      releaseUrl: Uri.parse(appUpdateReleasesPageUrl),
+      currentVersion: '1.3.1',
+    );
+    final controller = VpnController(
+      appStateStore: store,
+      appUpdateService: _FakeAppUpdateService(update),
+    );
+    addTearDown(controller.dispose);
+
+    await controller.checkForAppUpdate(force: true);
+    expect(controller.showInAppUpdateNotifications, isFalse);
+    expect(controller.showAndroidUpdateNotifications, isFalse);
+    expect(controller.pendingAppUpdateNotification, isNull);
+
+    controller.setShowInAppUpdateNotifications(true);
+    expect(controller.pendingAppUpdateNotification?.tagName, 'v1.3.2');
+    await Future<void>.delayed(Duration.zero);
+    expect(store.state?.showInAppUpdateNotifications, isTrue);
   });
 
   test('auto-adds valid pasted source input silently', () async {
@@ -476,6 +560,31 @@ void main() {
       controller.dispose();
     }
   });
+
+  test(
+    'declined Windows TUN elevation leaves connection button unchanged',
+    () async {
+      final controller = VpnController(
+        appStateStore: _MemoryAppStateStore(),
+        runtimeService: _DeclinedWindowsTunElevationRuntimeService(),
+      );
+
+      try {
+        const input =
+            'vless://11111111-1111-1111-1111-111111111111@tun.example.com:443?encryption=none&security=tls&type=ws&host=cdn.example.com&path=%2Fsocket&sni=server.example.com#Tun';
+
+        controller.setRawInput(input);
+        expect(await controller.addSource(), isTrue);
+
+        await controller.connect();
+
+        expect(controller.phase, ConnectionPhase.disconnected);
+        expect(controller.runtimeError, isNull);
+      } finally {
+        controller.dispose();
+      }
+    },
+  );
 }
 
 ParsedVpnProfile _profileFor(String server) {
@@ -518,6 +627,31 @@ class _FakeProfileCatalogService extends ProfileCatalogService {
   }
 }
 
+class _FakeAppUpdateService extends AppUpdateService {
+  _FakeAppUpdateService(this.update);
+
+  AppUpdateInfo? update;
+
+  @override
+  Future<AppUpdateInfo?> checkForUpdate({String? currentVersion}) async =>
+      update;
+
+  @override
+  Future<AppUpdateInfo> fetchLatestRelease({String? currentVersion}) async {
+    final latest = update;
+    if (latest == null) {
+      throw StateError('No update configured.');
+    }
+    return latest.copyWith(currentVersion: currentVersion);
+  }
+
+  @override
+  Future<String?> loadCurrentVersion() async => '1.3.1';
+
+  @override
+  Future<void> openRelease(AppUpdateInfo update) async {}
+}
+
 class _FakeCoreRuntimeService extends CoreRuntimeService {
   @override
   Future<void> start({
@@ -526,6 +660,7 @@ class _FakeCoreRuntimeService extends CoreRuntimeService {
     required AppLanguage language,
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
@@ -574,11 +709,32 @@ class _ThrowingCoreRuntimeService extends CoreRuntimeService {
     required AppLanguage language,
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
   }) async {
     throw StateError('Connection failed.');
+  }
+
+  @override
+  Future<void> stop({bool waitForCleanup = false}) async {}
+}
+
+class _DeclinedWindowsTunElevationRuntimeService extends CoreRuntimeService {
+  @override
+  Future<void> start({
+    required CoreFlavor core,
+    required ParsedVpnProfile profile,
+    required AppLanguage language,
+    required TrafficMode trafficMode,
+    TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
+    SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
+  }) async {
+    throw const WindowsTunPrivilegeDeniedException();
   }
 
   @override

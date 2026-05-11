@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+import '../models/dns_settings.dart';
 import '../models/split_tunnel.dart';
 import '../models/vpn_profile.dart';
 import 'core_config_native_tun.dart';
@@ -23,6 +24,7 @@ class CoreConfigBuilder {
     ParsedVpnProfile profile, {
     TrafficMode trafficMode = TrafficMode.systemProxy,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
@@ -36,6 +38,7 @@ class CoreConfigBuilder {
         profile,
         trafficMode: trafficMode,
         tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
         domainSplitTunnelSettings: domainSplitTunnelSettings,
         tunInterfaceName: tunInterfaceName,
         outboundBindInterface: outboundBindInterface,
@@ -45,6 +48,7 @@ class CoreConfigBuilder {
         profile,
         trafficMode: trafficMode,
         tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
         splitTunnelSettings: splitTunnelSettings,
         domainSplitTunnelSettings: domainSplitTunnelSettings,
         tunInterfaceName: tunInterfaceName,
@@ -58,6 +62,7 @@ class CoreConfigBuilder {
     ParsedVpnProfile profile, {
     TrafficMode trafficMode = TrafficMode.systemProxy,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
@@ -69,6 +74,7 @@ class CoreConfigBuilder {
       profile,
       trafficMode: trafficMode,
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
       splitTunnelSettings: splitTunnelSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
       tunInterfaceName: tunInterfaceName,
@@ -81,6 +87,7 @@ class CoreConfigBuilder {
     ParsedVpnProfile profile, {
     TrafficMode trafficMode = TrafficMode.systemProxy,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
     String? tunInterfaceName,
@@ -91,6 +98,7 @@ class CoreConfigBuilder {
       profile,
       trafficMode: trafficMode,
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
       tunInterfaceName: tunInterfaceName,
       outboundBindInterface: outboundBindInterface,

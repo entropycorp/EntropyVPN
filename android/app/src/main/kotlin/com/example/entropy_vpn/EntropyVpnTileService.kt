@@ -86,6 +86,7 @@ class EntropyVpnTileService : TileService() {
             serverCountryCode = payload.serverCountryCode,
             language = payload.language,
             tunIpMode = payload.tunIpMode,
+            dnsServers = payload.dnsServers,
             splitTunnelMode = payload.splitTunnelMode,
             splitTunnelPackages = payload.splitTunnelPackages,
         )

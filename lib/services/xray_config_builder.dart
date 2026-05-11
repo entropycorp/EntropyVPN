@@ -4,6 +4,7 @@ Map<String, dynamic> _buildXrayConfig(
   ParsedVpnProfile profile, {
   TrafficMode trafficMode = TrafficMode.systemProxy,
   TunIpMode tunIpMode = TunIpMode.ipv4,
+  DnsSettings dnsSettings = const DnsSettings(),
   DomainSplitTunnelSettings domainSplitTunnelSettings =
       const DomainSplitTunnelSettings(),
   String? tunInterfaceName,
@@ -32,8 +33,8 @@ Map<String, dynamic> _buildXrayConfig(
     if (useXrayDnsRouting)
       'dns': <String, dynamic>{
         'servers': isTunMode
-            ? _buildXrayTunDnsServers(tunIpMode)
-            : _buildXrayAndroidDnsServers(tunIpMode),
+            ? _buildXrayTunDnsServers(tunIpMode, dnsSettings)
+            : _buildXrayAndroidDnsServers(tunIpMode, dnsSettings),
         'queryStrategy': _buildXrayDnsQueryStrategy(tunIpMode),
         if (isTunMode) 'tag': 'dns-query',
       },
@@ -318,25 +319,15 @@ Map<String, dynamic> _buildXrayRealitySettings(ParsedVpnProfile profile) {
   };
 }
 
-List<String> _buildXrayAndroidDnsServers(TunIpMode mode) {
-  return switch (mode) {
-    TunIpMode.ipv4 => <String>['1.1.1.1', '8.8.8.8'],
-    TunIpMode.dualStack => <String>[
-      '1.1.1.1',
-      '8.8.8.8',
-      '2606:4700:4700::1111',
-      '2001:4860:4860::8888',
-    ],
-    TunIpMode.ipv6 => <String>['2606:4700:4700::1111', '2001:4860:4860::8888'],
-  };
+List<String> _buildXrayAndroidDnsServers(
+  TunIpMode mode,
+  DnsSettings dnsSettings,
+) {
+  return dnsSettings.serversFor(mode);
 }
 
-List<String> _buildXrayTunDnsServers(TunIpMode mode) {
-  return switch (mode) {
-    TunIpMode.ipv4 => <String>['1.1.1.1'],
-    TunIpMode.dualStack => <String>['1.1.1.1', '2606:4700:4700::1111'],
-    TunIpMode.ipv6 => <String>['2606:4700:4700::1111'],
-  };
+List<String> _buildXrayTunDnsServers(TunIpMode mode, DnsSettings dnsSettings) {
+  return dnsSettings.serversFor(mode);
 }
 
 String _buildXrayDnsQueryStrategy(TunIpMode mode) {

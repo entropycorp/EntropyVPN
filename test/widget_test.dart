@@ -9,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:entropy_vpn/l10n/app_strings.dart';
 import 'package:entropy_vpn/main.dart';
 import 'package:entropy_vpn/models/config_source.dart';
+import 'package:entropy_vpn/models/dns_settings.dart';
 import 'package:entropy_vpn/models/split_tunnel.dart';
 import 'package:entropy_vpn/models/vpn_profile.dart';
 import 'package:entropy_vpn/services/app_state_store.dart';
@@ -423,6 +424,300 @@ void main() {
     },
     skip: !Platform.isWindows,
   );
+
+  testWidgets('DNS settings edit primary and secondary IPv4 servers', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _configController();
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(900, 720)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.tap(find.byIcon(Icons.settings_rounded));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('DNS servers'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Primary DNS'), findsOneWidget);
+      expect(find.text('Secondary DNS'), findsOneWidget);
+
+      final fields = find.byType(TextField);
+      expect(fields, findsNWidgets(8));
+
+      await tester.enterText(fields.at(0), '123');
+      await tester.pump();
+      final secondOctet = tester.widget<TextField>(fields.at(1));
+      expect(secondOctet.focusNode?.hasFocus, isTrue);
+
+      final firstOctet = tester.widget<TextField>(fields.at(0));
+      firstOctet.focusNode?.requestFocus();
+      firstOctet.controller?.selection = const TextSelection.collapsed(
+        offset: 1,
+      );
+      await tester.pump();
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(secondOctet.focusNode?.hasFocus, isTrue);
+
+      final thirdOctet = tester.widget<TextField>(fields.at(2));
+      await tester.sendKeyRepeatEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      expect(thirdOctet.focusNode?.hasFocus, isTrue);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowRight);
+
+      final secondaryThirdOctet = tester.widget<TextField>(fields.at(6));
+      thirdOctet.controller?.selection = const TextSelection.collapsed(
+        offset: 1,
+      );
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(secondaryThirdOctet.focusNode?.hasFocus, isTrue);
+      expect(secondaryThirdOctet.controller?.selection.extentOffset, 1);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(thirdOctet.focusNode?.hasFocus, isTrue);
+
+      secondOctet.focusNode?.requestFocus();
+      secondOctet.controller?.selection = const TextSelection.collapsed(
+        offset: 1,
+      );
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+      expect(firstOctet.focusNode?.hasFocus, isTrue);
+
+      final values = <String>['9', '9', '9', '9', '149', '112', '112', '112'];
+      for (var index = 0; index < values.length; index += 1) {
+        await tester.enterText(fields.at(index), values[index]);
+      }
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(controller.dnsSettings.ipv4Servers, <String>[
+        '9.9.9.9',
+        '149.112.112.112',
+      ]);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  testWidgets('settings open notification sub-page with update toggles', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _configController();
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(900, 720)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.tap(find.byIcon(Icons.settings_rounded));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Notifications'), findsOneWidget);
+      expect(find.text('In-app update notifications'), findsNothing);
+      expect(
+        find.text('Show a window when a new update is available'),
+        findsNothing,
+      );
+      expect(controller.showInAppUpdateNotifications, isTrue);
+
+      await tester.tap(find.text('Notifications'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AlertDialog), findsNothing);
+      expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+      expect(find.text('Notifications'), findsOneWidget);
+      expect(find.text('In-app update notifications'), findsOneWidget);
+      if (Platform.isAndroid) {
+        expect(find.text('Push notifications for updates'), findsOneWidget);
+      } else {
+        expect(find.text('Push notifications for updates'), findsNothing);
+      }
+      expect(
+        find.text('Show a window when a new update is available'),
+        findsNothing,
+      );
+
+      await tester.tap(
+        find.widgetWithText(CheckboxListTile, 'In-app update notifications'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(controller.showInAppUpdateNotifications, isFalse);
+
+      await tester.tap(find.byIcon(Icons.arrow_back_rounded));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Notifications'), findsOneWidget);
+      expect(find.text('In-app update notifications'), findsNothing);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  testWidgets('settings use Russian labels in Russian locale', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _configController(language: AppLanguage.ru);
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(
+          controller,
+          size: const Size(900, 720),
+          locale: const Locale('ru'),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.tap(find.byIcon(Icons.settings_rounded));
+      await tester.pumpAndSettle();
+
+      expect(find.text('НАСТРОЙКИ ПРИЛОЖЕНИЯ'), findsOneWidget);
+      expect(find.text('НАСТРОЙКИ VPN'), findsOneWidget);
+      expect(find.text('Уведомления'), findsOneWidget);
+      expect(find.text('DNS серверы'), findsOneWidget);
+      expect(find.text('App settings'), findsNothing);
+      expect(find.text('VPN settings'), findsNothing);
+      expect(find.text('Notifications'), findsNothing);
+      expect(find.text('DNS servers'), findsNothing);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  testWidgets('DNS settings edit IPv6 servers in IPv6 mode', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _configController(
+      tunIpMode: TunIpMode.ipv6,
+      dnsSettings: const DnsSettings(ipv4Servers: <String>['9.9.9.9']),
+    );
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(900, 720)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.tap(find.byIcon(Icons.settings_rounded));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('DNS servers'));
+      await tester.pumpAndSettle();
+
+      final dialog = find.byType(AlertDialog);
+      expect(
+        find.descendant(of: dialog, matching: find.text('IPv4')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: dialog, matching: find.text('IPv6')),
+        findsNothing,
+      );
+
+      final fields = find.byType(TextField);
+      expect(fields, findsNWidgets(2));
+
+      final primaryIpv6 = tester.widget<TextField>(fields.at(0));
+      final secondaryIpv6 = tester.widget<TextField>(fields.at(1));
+      primaryIpv6.focusNode?.requestFocus();
+      primaryIpv6.controller?.selection = const TextSelection.collapsed(
+        offset: 4,
+      );
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(secondaryIpv6.focusNode?.hasFocus, isTrue);
+      expect(secondaryIpv6.controller?.selection.extentOffset, 4);
+
+      await tester.enterText(fields.at(0), '2620:fe::fe');
+      await tester.enterText(fields.at(1), '2620:fe::9');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(controller.dnsSettings.ipv4Servers, <String>['9.9.9.9']);
+      expect(controller.dnsSettings.ipv6Servers, <String>[
+        '2620:fe::fe',
+        '2620:fe::9',
+      ]);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  testWidgets('DNS settings include IPv6 servers in dual-stack mode', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final controller = _configController(tunIpMode: TunIpMode.dualStack);
+
+    try {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(900, 720)),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.tap(find.byIcon(Icons.settings_rounded));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('DNS servers'));
+      await tester.pumpAndSettle();
+
+      final dialog = find.byType(AlertDialog);
+      expect(
+        find.descendant(of: dialog, matching: find.text('IPv4')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(of: dialog, matching: find.text('IPv6')),
+        findsOneWidget,
+      );
+
+      final fields = find.byType(TextField);
+      expect(fields, findsNWidgets(10));
+
+      await tester.enterText(fields.at(8), '2606:4700:4700::1001');
+      await tester.enterText(fields.at(9), '2001:4860:4860::8844');
+      await tester.tap(find.text('Save'));
+      await tester.pumpAndSettle();
+
+      expect(controller.dnsSettings.ipv6Servers, <String>[
+        '2606:4700:4700::1001',
+        '2001:4860:4860::8844',
+      ]);
+    } finally {
+      controller.dispose();
+    }
+  });
 
   testWidgets('desktop source rail is not clipped by short config pages', (
     WidgetTester tester,
@@ -1523,13 +1818,18 @@ VpnController _subscriptionController({
   );
 }
 
-VpnController _configController() {
+VpnController _configController({
+  AppLanguage language = AppLanguage.en,
+  TunIpMode tunIpMode = TunIpMode.ipv4,
+  DnsSettings dnsSettings = const DnsSettings(),
+}) {
   return VpnController(
     appStateStore: _WidgetMemoryAppStateStore(
       PersistedAppState(
-        language: AppLanguage.en,
+        language: language,
         trafficMode: TrafficMode.systemProxy,
-        tunIpMode: TunIpMode.ipv4,
+        tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
         selectedSourceId: 'config',
         sources: const <ConfigSource>[
           ConfigSource(
@@ -1640,6 +1940,7 @@ class _FakeCoreRuntimeService extends CoreRuntimeService {
     required AppLanguage language,
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
@@ -1652,12 +1953,14 @@ class _FakeCoreRuntimeService extends CoreRuntimeService {
 Widget _subscriptionApp(
   VpnController controller, {
   required Size size,
+  Locale? locale,
   TextScaler textScaler = TextScaler.noScaling,
 }) {
   return MediaQuery(
     data: MediaQueryData(size: size, textScaler: textScaler),
     child: MaterialApp(
       debugShowCheckedModeBanner: false,
+      locale: locale,
       supportedLocales: AppStrings.supportedLocales,
       localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
         AppStrings.delegate,

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/config_source.dart';
+import '../models/dns_settings.dart';
 import '../models/split_tunnel.dart';
 import '../models/vpn_profile.dart';
 
@@ -15,8 +16,14 @@ class PersistedAppState {
     required this.tunIpMode,
     required this.sources,
     required this.selectedSourceId,
+    this.dnsSettings = const DnsSettings(),
     this.splitTunnelSettings = const SplitTunnelSettings(),
     this.domainSplitTunnelSettings = const DomainSplitTunnelSettings(),
+    this.appUpdateLastCheckedAt,
+    this.lastShownAppUpdateTag,
+    this.lastShownAndroidAppUpdateTag,
+    this.showInAppUpdateNotifications = true,
+    this.showAndroidUpdateNotifications = true,
   });
 
   final AppLanguage language;
@@ -24,18 +31,32 @@ class PersistedAppState {
   final TunIpMode tunIpMode;
   final List<ConfigSource> sources;
   final String? selectedSourceId;
+  final DnsSettings dnsSettings;
   final SplitTunnelSettings splitTunnelSettings;
   final DomainSplitTunnelSettings domainSplitTunnelSettings;
+  final DateTime? appUpdateLastCheckedAt;
+  final String? lastShownAppUpdateTag;
+  final String? lastShownAndroidAppUpdateTag;
+  final bool showInAppUpdateNotifications;
+  final bool showAndroidUpdateNotifications;
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
-      'version': 5,
+      'version': 8,
       'language': language.name,
       'trafficMode': trafficMode.name,
       'tunIpMode': tunIpMode.name,
       'selectedSourceId': selectedSourceId,
+      'dns': dnsSettings.normalized.toJson(),
       'splitTunnel': splitTunnelSettings.normalized.toJson(),
       'domainSplitTunnel': domainSplitTunnelSettings.normalized.toJson(),
+      'appUpdate': <String, Object?>{
+        'lastCheckedAt': appUpdateLastCheckedAt?.toIso8601String(),
+        'lastShownReleaseTag': lastShownAppUpdateTag,
+        'lastShownAndroidReleaseTag': lastShownAndroidAppUpdateTag,
+        'inAppNotificationsEnabled': showInAppUpdateNotifications,
+        'androidNotificationsEnabled': showAndroidUpdateNotifications,
+      },
       'sources': sources
           .map((source) => source.toJson())
           .toList(growable: false),
@@ -63,6 +84,7 @@ class PersistedAppState {
       fallback: TunIpMode.ipv4,
     );
     final shouldMigrateAndroidTunIpMode = Platform.isAndroid && version < 4;
+    final appUpdate = _stringKeyedMap(json['appUpdate']);
 
     return PersistedAppState(
       language: _appLanguageByName(json['language'] as String?),
@@ -70,11 +92,31 @@ class PersistedAppState {
       tunIpMode: shouldMigrateAndroidTunIpMode ? TunIpMode.ipv4 : tunIpMode,
       sources: sources,
       selectedSourceId: json['selectedSourceId'] as String?,
+      dnsSettings: DnsSettings.fromJson(
+        (json['dns'] as Map?)?.cast<String, dynamic>(),
+      ),
       splitTunnelSettings: SplitTunnelSettings.fromJson(
         (json['splitTunnel'] as Map?)?.cast<String, dynamic>(),
       ),
       domainSplitTunnelSettings: DomainSplitTunnelSettings.fromJson(
         (json['domainSplitTunnel'] as Map?)?.cast<String, dynamic>(),
+      ),
+      appUpdateLastCheckedAt: _parseDateTime(
+        appUpdate?['lastCheckedAt'] as String?,
+      ),
+      lastShownAppUpdateTag: _parseOptionalString(
+        appUpdate?['lastShownReleaseTag'],
+      ),
+      lastShownAndroidAppUpdateTag: _parseOptionalString(
+        appUpdate?['lastShownAndroidReleaseTag'],
+      ),
+      showInAppUpdateNotifications: _parseBool(
+        appUpdate?['inAppNotificationsEnabled'],
+        fallback: true,
+      ),
+      showAndroidUpdateNotifications: _parseBool(
+        appUpdate?['androidNotificationsEnabled'],
+        fallback: true,
       ),
     );
   }
@@ -273,6 +315,38 @@ TunIpMode _tunIpModeByName(
     if (mode.name == name) {
       return mode;
     }
+  }
+  return fallback;
+}
+
+DateTime? _parseDateTime(String? value) {
+  if (value == null || value.isEmpty) {
+    return null;
+  }
+  return DateTime.tryParse(value);
+}
+
+Map<String, dynamic>? _stringKeyedMap(Object? value) {
+  if (value is Map<String, dynamic>) {
+    return value;
+  }
+  if (value is Map) {
+    return value.map((key, value) => MapEntry(key.toString(), value));
+  }
+  return null;
+}
+
+String? _parseOptionalString(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  final trimmed = value.toString().trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+bool _parseBool(Object? value, {required bool fallback}) {
+  if (value is bool) {
+    return value;
   }
   return fallback;
 }

@@ -12,6 +12,8 @@ import 'main_sources.dart';
 import 'models/vpn_profile.dart';
 import 'services/vpn_controller.dart';
 
+const double _splitConnectTopOffset = 28;
+
 class ConnectPageBody extends StatefulWidget {
   const ConnectPageBody({
     super.key,
@@ -161,7 +163,10 @@ class _SplitConnectLayoutState extends State<_SplitConnectLayout> {
         Expanded(
           flex: 6,
           child: Padding(
-            padding: const EdgeInsets.only(right: 14),
+            padding: const EdgeInsets.only(
+              top: _splitConnectTopOffset,
+              right: 14,
+            ),
             child: Align(
               alignment: Alignment.topCenter,
               child: ConstrainedBox(
@@ -179,7 +184,10 @@ class _SplitConnectLayoutState extends State<_SplitConnectLayout> {
         Expanded(
           flex: 7,
           child: Padding(
-            padding: EdgeInsets.only(left: 14, top: splitTopInset),
+            padding: EdgeInsets.only(
+              left: 14,
+              top: splitTopInset + _splitConnectTopOffset,
+            ),
             child: QuickSwitchPanel(
               controller: widget.controller,
               strings: widget.strings,
@@ -571,7 +579,7 @@ class _ConnectionStatusLabelState extends State<_ConnectionStatusLabel> {
       switchOutCurve: Curves.easeInCubic,
       child: Text(
         statusText,
-        key: ValueKey<String>(statusText),
+        key: ValueKey<ConnectionPhase>(widget.controller.phase),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         textAlign: TextAlign.center,

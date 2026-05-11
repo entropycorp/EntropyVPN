@@ -644,7 +644,7 @@ EncodableValue ConfigureXrayTunIpv4(const EncodableMap& arguments) {
   }
 
   std::string ipv4_address = "172.19.0.1";
-  std::string dns_servers = "1.1.1.1,8.8.8.8";
+  std::string dns_servers;
   ReadString(arguments, "address", &ipv4_address);
   ReadString(arguments, "dnsServers", &dns_servers);
 
@@ -653,7 +653,8 @@ EncodableValue ConfigureXrayTunIpv4(const EncodableMap& arguments) {
   int64_t metric_argument = 1;
   ReadInt64(arguments, "metric", &metric_argument);
 
-  if (prefix_length_argument < 0 || prefix_length_argument > 32 ||
+  if (dns_servers.empty() || prefix_length_argument < 0 ||
+      prefix_length_argument > 32 ||
       metric_argument < 0 || metric_argument > 9999) {
     AddFailure(&response, "arguments", ERROR_INVALID_PARAMETER);
     return EncodableValue(std::move(response));
@@ -773,7 +774,7 @@ EncodableValue PrepareXrayTunIpv4Routes(const EncodableMap& arguments) {
   }
 
   std::string ipv4_address = "172.19.0.1";
-  std::string dns_servers = "1.1.1.1,8.8.8.8";
+  std::string dns_servers;
   ReadString(arguments, "address", &ipv4_address);
   ReadString(arguments, "dnsServers", &dns_servers);
 
@@ -783,7 +784,7 @@ EncodableValue PrepareXrayTunIpv4Routes(const EncodableMap& arguments) {
   ReadInt64(arguments, "timeoutMs", &timeout_ms);
   ReadInt64(arguments, "prefixLength", &prefix_length_argument);
   ReadInt64(arguments, "metric", &metric_argument);
-  if (timeout_ms < 1 || timeout_ms > 30000 ||
+  if (dns_servers.empty() || timeout_ms < 1 || timeout_ms > 30000 ||
       prefix_length_argument < 0 || prefix_length_argument > 32 ||
       metric_argument < 0 || metric_argument > 9999) {
     AddFailure(&response, "arguments", ERROR_INVALID_PARAMETER);

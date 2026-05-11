@@ -15,6 +15,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     required ParsedVpnProfile profile,
     required AppLanguage language,
     required TunIpMode tunIpMode,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
@@ -33,6 +34,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       language: language,
       serverCountryCode: await _resolveAndroidServerCountryCode(profile),
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
       splitTunnelSettings: splitTunnelSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
     );
@@ -44,6 +46,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       serverCountryCode: payload.serverCountryCode,
       language: payload.language,
       tunIpMode: payload.tunIpMode,
+      dnsServers: payload.dnsServers,
       splitTunnelSettings: payload.splitTunnelSettings,
     );
   }
@@ -53,6 +56,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     required ParsedVpnProfile profile,
     required AppLanguage language,
     required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
     required SplitTunnelSettings splitTunnelSettings,
     required DomainSplitTunnelSettings domainSplitTunnelSettings,
   }) async {
@@ -70,6 +74,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       language: language,
       serverCountryCode: await _resolveAndroidServerCountryCode(profile),
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
       splitTunnelSettings: splitTunnelSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
     );
@@ -81,6 +86,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       serverCountryCode: payload.serverCountryCode,
       language: payload.language,
       tunIpMode: payload.tunIpMode,
+      dnsServers: payload.dnsServers,
       splitTunnelSettings: payload.splitTunnelSettings,
     );
   }
@@ -91,9 +97,12 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     required AppLanguage language,
     required String? serverCountryCode,
     required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
     required SplitTunnelSettings splitTunnelSettings,
     required DomainSplitTunnelSettings domainSplitTunnelSettings,
   }) {
+    final effectiveDnsSettings = dnsSettings.normalized;
+    final dnsServers = effectiveDnsSettings.serversFor(tunIpMode);
     if (profile.isSingBoxConfig) {
       final config = _buildNativeSingBoxRuntimeConfig(
         profile: profile,
@@ -107,6 +116,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
         serverCountryCode: serverCountryCode,
         language: language,
         tunIpMode: tunIpMode,
+        dnsServers: dnsServers,
         splitTunnelSettings: splitTunnelSettings.normalized,
       );
     }
@@ -120,6 +130,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
         serverCountryCode: serverCountryCode,
         language: language,
         tunIpMode: tunIpMode,
+        dnsServers: dnsServers,
         splitTunnelSettings: splitTunnelSettings.normalized,
       );
     }
@@ -132,6 +143,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       profile,
       trafficMode: effectiveTrafficMode,
       tunIpMode: tunIpMode,
+      dnsSettings: effectiveDnsSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
     );
     return _AndroidStartPayload(
@@ -142,6 +154,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       serverCountryCode: serverCountryCode,
       language: language,
       tunIpMode: tunIpMode,
+      dnsServers: dnsServers,
       splitTunnelSettings: splitTunnelSettings.normalized,
     );
   }
@@ -189,6 +202,7 @@ class _AndroidStartPayload {
     required this.serverCountryCode,
     required this.language,
     required this.tunIpMode,
+    required this.dnsServers,
     required this.splitTunnelSettings,
   });
 
@@ -199,5 +213,6 @@ class _AndroidStartPayload {
   final String? serverCountryCode;
   final AppLanguage language;
   final TunIpMode tunIpMode;
+  final List<String> dnsServers;
   final SplitTunnelSettings splitTunnelSettings;
 }

@@ -10,13 +10,14 @@ data class EntropyVpnStartPayload(
     val serverCountryCode: String,
     val language: String,
     val tunIpMode: String,
+    val dnsServers: List<String>,
     val splitTunnelMode: String,
     val splitTunnelPackages: List<String>,
 )
 
 object EntropyVpnStartPayloadStore {
     private const val prefsName = "entropy_vpn_start_payload"
-    private const val currentVersion = 2
+    private const val currentVersion = 3
     private const val keyVersion = "version"
     private const val keyCore = "core"
     private const val keyConfig = "config"
@@ -25,6 +26,7 @@ object EntropyVpnStartPayloadStore {
     private const val keyServerCountryCode = "serverCountryCode"
     private const val keyLanguage = "language"
     private const val keyTunIpMode = "tunIpMode"
+    private const val keyDnsServers = "dnsServers"
     private const val keySplitTunnelMode = "splitTunnelMode"
     private const val keySplitTunnelPackages = "splitTunnelPackages"
 
@@ -40,6 +42,12 @@ object EntropyVpnStartPayloadStore {
             .putString(keyServerCountryCode, payload.serverCountryCode)
             .putString(keyLanguage, payload.language)
             .putString(keyTunIpMode, payload.tunIpMode)
+            .putString(
+                keyDnsServers,
+                payload.dnsServers
+                    .mapNotNull { it.trim().takeIf(String::isNotEmpty) }
+                    .joinToString(","),
+            )
             .putString(keySplitTunnelMode, payload.splitTunnelMode)
             .putStringSet(
                 keySplitTunnelPackages,
@@ -80,6 +88,12 @@ object EntropyVpnStartPayloadStore {
             serverCountryCode = prefs.getString(keyServerCountryCode, null).orEmpty(),
             language = prefs.getString(keyLanguage, null).orEmpty().ifBlank { "en" },
             tunIpMode = tunIpMode,
+            dnsServers =
+                prefs
+                    .getString(keyDnsServers, null)
+                    .orEmpty()
+                    .split(',')
+                    .mapNotNull { it.trim().takeIf(String::isNotEmpty) },
             splitTunnelMode = prefs.getString(keySplitTunnelMode, null).orEmpty().ifBlank { "off" },
             splitTunnelPackages =
                 prefs

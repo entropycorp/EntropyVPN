@@ -1,5 +1,13 @@
 part of 'core_runtime_service.dart';
 
+class WindowsTunPrivilegeDeniedException implements Exception {
+  const WindowsTunPrivilegeDeniedException();
+
+  @override
+  String toString() =>
+      'Administrator privileges are required for Windows TUN mode.';
+}
+
 extension CoreRuntimeServiceWindows on CoreRuntimeService {
   Future<void> _ensureWindowsTunPrerequisites(String binaryPath) async {
     if (!Platform.isWindows) {
@@ -15,9 +23,7 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
     }
 
     if (!await ensureWindowsTunPrivileges()) {
-      throw StateError(
-        'Administrator privileges are required for Windows TUN mode.',
-      );
+      throw const WindowsTunPrivilegeDeniedException();
     }
   }
 

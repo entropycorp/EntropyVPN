@@ -4,9 +4,12 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 
 import '../models/config_source.dart';
+import '../models/dns_settings.dart';
 import '../models/split_tunnel.dart';
 import '../models/vpn_profile.dart';
 import 'android_incoming_link_bridge.dart';
+import 'android_update_notification_service.dart';
+import 'app_update_service.dart';
 import 'app_state_store.dart';
 import 'core_runtime_service.dart';
 import 'profile_catalog_service.dart';
@@ -25,11 +28,17 @@ class VpnController extends ChangeNotifier {
     CoreRuntimeService? runtimeService,
     AppStateStore? appStateStore,
     WindowsAppCatalogService? appCatalogService,
+    AppUpdateService? appUpdateService,
+    AndroidUpdateNotificationService? androidUpdateNotificationService,
   }) : _profileCatalogService =
            profileCatalogService ?? ProfileCatalogService(parser: parser),
        _runtimeService = runtimeService ?? CoreRuntimeService(),
        _appStateStore = appStateStore ?? AppStateStore(),
-       _appCatalogService = appCatalogService ?? WindowsAppCatalogService() {
+       _appCatalogService = appCatalogService ?? WindowsAppCatalogService(),
+       _appUpdateService = appUpdateService ?? AppUpdateService(),
+       _androidUpdateNotificationService =
+           androidUpdateNotificationService ??
+           AndroidUpdateNotificationService() {
     _language = detectAppLanguage(Platform.localeName);
     _runtimeService.onProcessExit = _handleUnexpectedExit;
     _runtimeService.onLogUpdated = _handleRuntimeLogUpdated;
@@ -39,6 +48,11 @@ class VpnController extends ChangeNotifier {
     );
     _hydration = _restoreState();
     unawaited(_syncAndroidRuntimeAfterRestore());
+    _appUpdateTimer = Timer.periodic(
+      appUpdateCheckInterval,
+      (_) => unawaited(checkForAppUpdate()),
+    );
+    unawaited(checkForAppUpdate());
     _listenForAndroidIncomingLinks();
   }
 
@@ -46,12 +60,15 @@ class VpnController extends ChangeNotifier {
   final CoreRuntimeService _runtimeService;
   final AppStateStore _appStateStore;
   final WindowsAppCatalogService _appCatalogService;
+  final AppUpdateService _appUpdateService;
+  final AndroidUpdateNotificationService _androidUpdateNotificationService;
   final AndroidIncomingLinkBridge? _incomingLinkBridge = Platform.isAndroid
       ? AndroidIncomingLinkBridge()
       : null;
 
   final List<ConfigSource> _sources = <ConfigSource>[];
   final Map<String, DateTime> _lastAutoUpdateAttemptAt = <String, DateTime>{};
+  AppUpdateInfo? _availableAppUpdate;
 
   late final Future<void> _hydration;
   late AppLanguage _language;
@@ -59,6 +76,7 @@ class VpnController extends ChangeNotifier {
       ? TrafficMode.tun
       : TrafficMode.systemProxy;
   TunIpMode _tunIpMode = TunIpMode.ipv4;
+  DnsSettings _dnsSettings = const DnsSettings();
   SplitTunnelSettings _splitTunnelSettings = const SplitTunnelSettings();
   DomainSplitTunnelSettings _domainSplitTunnelSettings =
       const DomainSplitTunnelSettings();
@@ -78,13 +96,21 @@ class VpnController extends ChangeNotifier {
   bool _didAddSourceRecently = false;
   AddSourceSuccessTarget? _recentAddSuccessTarget;
   Timer? _autoUpdateTimer;
+  Timer? _appUpdateTimer;
   Timer? _recentAddSuccessTimer;
   StreamSubscription<String>? _incomingLinkSubscription;
   Future<void> _incomingLinkImportQueue = Future<void>.value();
+  DateTime? _appUpdateLastCheckedAt;
+  String? _lastShownAppUpdateTag;
+  String? _lastShownAndroidAppUpdateTag;
+  bool _showInAppUpdateNotifications = true;
+  bool _showAndroidUpdateNotifications = true;
+  bool _isCheckingAppUpdate = false;
 
   AppLanguage get language => _language;
   TrafficMode get trafficMode => _trafficMode;
   TunIpMode get tunIpMode => _tunIpMode;
+  DnsSettings get dnsSettings => _dnsSettings.normalized;
   SplitTunnelSettings get splitTunnelSettings =>
       _splitTunnelSettings.normalized;
   SplitTunnelMode get splitTunnelMode => _splitTunnelSettings.mode;
@@ -111,6 +137,21 @@ class VpnController extends ChangeNotifier {
   String? get runtimeError => _runtimeError;
   List<String> get runtimeLogs => _runtimeService.recentLogs;
   String get runtimeLogsText => runtimeLogs.join('\n');
+  AppUpdateInfo? get availableAppUpdate => _availableAppUpdate;
+  AppUpdateInfo? get pendingAppUpdateNotification {
+    final update = _availableAppUpdate;
+    if (!_showInAppUpdateNotifications ||
+        update == null ||
+        update.tagName == _lastShownAppUpdateTag) {
+      return null;
+    }
+    return update;
+  }
+
+  bool get showInAppUpdateNotifications => _showInAppUpdateNotifications;
+  bool get showAndroidUpdateNotifications => _showAndroidUpdateNotifications;
+  bool get supportsAndroidUpdateNotifications => Platform.isAndroid;
+
   bool get isBusy =>
       _phase == ConnectionPhase.connecting ||
       _phase == ConnectionPhase.disconnecting;
@@ -124,6 +165,7 @@ class VpnController extends ChangeNotifier {
   bool get canChangeTrafficMode =>
       supportsTrafficModeSelection && !isBusy && !isConnected;
   bool get canChangeTunIpMode => !isBusy && !isConnected;
+  bool get canChangeDnsSettings => !isBusy && !isConnected;
   bool get supportsSplitTunneling => Platform.isWindows || Platform.isAndroid;
   bool get canChangeSplitTunnel =>
       supportsSplitTunneling && !isBusy && !isConnected;
@@ -190,6 +232,38 @@ class VpnController extends ChangeNotifier {
     _setRuntimeError(null);
     _queuePersistState();
     notifyListeners();
+  }
+
+  void setDnsSettings(DnsSettings settings) {
+    final normalized = settings.normalized;
+    if (_dnsSettings == normalized || !canChangeDnsSettings) {
+      return;
+    }
+    _dnsSettings = normalized;
+    _setRuntimeError(null);
+    _queuePersistState();
+    notifyListeners();
+  }
+
+  void setShowInAppUpdateNotifications(bool enabled) {
+    if (_showInAppUpdateNotifications == enabled) {
+      return;
+    }
+    _showInAppUpdateNotifications = enabled;
+    _queuePersistState();
+    notifyListeners();
+  }
+
+  void setShowAndroidUpdateNotifications(bool enabled) {
+    if (_showAndroidUpdateNotifications == enabled) {
+      return;
+    }
+    _showAndroidUpdateNotifications = enabled;
+    _queuePersistState();
+    notifyListeners();
+    if (enabled) {
+      unawaited(_showAndroidAppUpdateNotificationIfNeeded());
+    }
   }
 
   void setRawInput(String value) {
@@ -662,6 +736,93 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> checkForAppUpdate({bool force = false}) async {
+    await _hydration;
+
+    if (_isCheckingAppUpdate) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final lastCheckedAt = _appUpdateLastCheckedAt;
+    if (!force && lastCheckedAt != null) {
+      final elapsed = now.difference(lastCheckedAt);
+      if (!elapsed.isNegative && elapsed < appUpdateCheckInterval) {
+        return;
+      }
+    }
+
+    _isCheckingAppUpdate = true;
+
+    try {
+      final currentVersion = await _appUpdateService.loadCurrentVersion();
+      if (currentVersion == null) {
+        return;
+      }
+
+      _appUpdateLastCheckedAt = now;
+      _queuePersistState();
+
+      final update = await _appUpdateService.checkForUpdate(
+        currentVersion: currentVersion,
+      );
+      if (update == null) {
+        if (_availableAppUpdate != null) {
+          _availableAppUpdate = null;
+          notifyListeners();
+        }
+        return;
+      }
+
+      if (_availableAppUpdate?.tagName != update.tagName) {
+        _availableAppUpdate = update;
+        notifyListeners();
+      } else {
+        _availableAppUpdate = update;
+      }
+      unawaited(_showAndroidAppUpdateNotificationIfNeeded(update));
+    } catch (_) {
+    } finally {
+      _isCheckingAppUpdate = false;
+    }
+  }
+
+  void markAppUpdateNotificationShown(AppUpdateInfo update) {
+    if (_lastShownAppUpdateTag == update.tagName) {
+      return;
+    }
+    _lastShownAppUpdateTag = update.tagName;
+    _queuePersistState();
+    notifyListeners();
+  }
+
+  Future<void> openAppUpdateRelease(AppUpdateInfo update) {
+    return _appUpdateService.openRelease(update);
+  }
+
+  Future<void> _showAndroidAppUpdateNotificationIfNeeded([
+    AppUpdateInfo? update,
+  ]) async {
+    if (!Platform.isAndroid || !_showAndroidUpdateNotifications) {
+      return;
+    }
+
+    final targetUpdate = update ?? _availableAppUpdate;
+    if (targetUpdate == null ||
+        targetUpdate.tagName == _lastShownAndroidAppUpdateTag) {
+      return;
+    }
+
+    final shown = await _androidUpdateNotificationService
+        .showUpdateNotification(targetUpdate);
+    if (!shown) {
+      return;
+    }
+
+    _lastShownAndroidAppUpdateTag = targetUpdate.tagName;
+    _queuePersistState();
+  }
+
   Future<void> toggleConnection() async {
     if (isConnected) {
       await disconnect();
@@ -717,12 +878,18 @@ class VpnController extends ChangeNotifier {
         language: _language,
         trafficMode: _trafficMode,
         tunIpMode: _tunIpMode,
+        dnsSettings: dnsSettings,
         splitTunnelSettings: splitTunnelSettings,
         domainSplitTunnelSettings: domainSplitTunnelSettings,
       );
       _activeSourceId = source.id;
       _connectedAt = DateTime.now();
       _phase = ConnectionPhase.connected;
+    } on WindowsTunPrivilegeDeniedException {
+      _activeSourceId = null;
+      _connectedAt = null;
+      _phase = ConnectionPhase.disconnected;
+      _setRuntimeError(null);
     } catch (error) {
       _activeSourceId = null;
       _connectedAt = null;
@@ -756,6 +923,7 @@ class VpnController extends ChangeNotifier {
 
   Future<void> shutdownForExit() async {
     _autoUpdateTimer?.cancel();
+    _appUpdateTimer?.cancel();
     _recentAddSuccessTimer?.cancel();
     _inputErrorTimer?.cancel();
     _runtimeErrorTimer?.cancel();
@@ -773,6 +941,7 @@ class VpnController extends ChangeNotifier {
   @override
   void dispose() {
     _autoUpdateTimer?.cancel();
+    _appUpdateTimer?.cancel();
     _recentAddSuccessTimer?.cancel();
     _inputErrorTimer?.cancel();
     _runtimeErrorTimer?.cancel();
@@ -1153,12 +1322,18 @@ class VpnController extends ChangeNotifier {
       _language = state.language;
       _trafficMode = Platform.isAndroid ? TrafficMode.tun : state.trafficMode;
       _tunIpMode = state.tunIpMode;
+      _dnsSettings = state.dnsSettings.normalized;
       _splitTunnelSettings = Platform.isWindows || Platform.isAndroid
           ? state.splitTunnelSettings.normalized
           : const SplitTunnelSettings();
       _domainSplitTunnelSettings = Platform.isWindows || Platform.isAndroid
           ? state.domainSplitTunnelSettings.normalized
           : const DomainSplitTunnelSettings();
+      _appUpdateLastCheckedAt = state.appUpdateLastCheckedAt;
+      _lastShownAppUpdateTag = state.lastShownAppUpdateTag;
+      _lastShownAndroidAppUpdateTag = state.lastShownAndroidAppUpdateTag;
+      _showInAppUpdateNotifications = state.showInAppUpdateNotifications;
+      _showAndroidUpdateNotifications = state.showAndroidUpdateNotifications;
       if (_splitTunnelSettings.mode != SplitTunnelMode.off ||
           _domainSplitTunnelSettings.mode != SplitTunnelMode.off) {
         _trafficMode = TrafficMode.tun;
@@ -1189,10 +1364,16 @@ class VpnController extends ChangeNotifier {
         language: _language,
         trafficMode: _trafficMode,
         tunIpMode: _tunIpMode,
+        dnsSettings: _dnsSettings.normalized,
         sources: List<ConfigSource>.unmodifiable(_sources),
         selectedSourceId: _selectedSourceId,
         splitTunnelSettings: _splitTunnelSettings.normalized,
         domainSplitTunnelSettings: _domainSplitTunnelSettings.normalized,
+        appUpdateLastCheckedAt: _appUpdateLastCheckedAt,
+        lastShownAppUpdateTag: _lastShownAppUpdateTag,
+        lastShownAndroidAppUpdateTag: _lastShownAndroidAppUpdateTag,
+        showInAppUpdateNotifications: _showInAppUpdateNotifications,
+        showAndroidUpdateNotifications: _showAndroidUpdateNotifications,
       ),
     );
     await _saveAndroidStartPayload();
@@ -1248,6 +1429,7 @@ class VpnController extends ChangeNotifier {
       profile: profile,
       language: _language,
       tunIpMode: _tunIpMode,
+      dnsSettings: _dnsSettings.normalized,
       splitTunnelSettings: _splitTunnelSettings,
       domainSplitTunnelSettings: _domainSplitTunnelSettings,
     );

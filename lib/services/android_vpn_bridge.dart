@@ -40,6 +40,7 @@ class AndroidVpnBridge {
     required String? serverCountryCode,
     required AppLanguage language,
     required TunIpMode tunIpMode,
+    required List<String> dnsServers,
     required SplitTunnelSettings splitTunnelSettings,
   }) async {
     await _ensureEventStream();
@@ -67,6 +68,7 @@ class AndroidVpnBridge {
         serverCountryCode: serverCountryCode,
         language: language,
         tunIpMode: tunIpMode,
+        dnsServers: dnsServers,
         splitTunnelSettings: splitTunnelSettings,
       ),
     );
@@ -83,6 +85,7 @@ class AndroidVpnBridge {
     required String? serverCountryCode,
     required AppLanguage language,
     required TunIpMode tunIpMode,
+    required List<String> dnsServers,
     required SplitTunnelSettings splitTunnelSettings,
   }) async {
     await _controlChannel.invokeMethod<bool>(
@@ -95,6 +98,7 @@ class AndroidVpnBridge {
         serverCountryCode: serverCountryCode,
         language: language,
         tunIpMode: tunIpMode,
+        dnsServers: dnsServers,
         splitTunnelSettings: splitTunnelSettings,
       ),
     );
@@ -187,6 +191,7 @@ class AndroidVpnBridge {
     required String? serverCountryCode,
     required AppLanguage language,
     required TunIpMode tunIpMode,
+    required List<String> dnsServers,
     required SplitTunnelSettings splitTunnelSettings,
   }) {
     final normalizedSplitTunnel = splitTunnelSettings.normalized;
@@ -198,6 +203,7 @@ class AndroidVpnBridge {
       'serverCountryCode': serverCountryCode,
       'language': language.name,
       'tunIpMode': tunIpMode.name,
+      'dnsServers': dnsServers,
       'splitTunnelMode': normalizedSplitTunnel.mode.name,
       'splitTunnelPackages': normalizedSplitTunnel.apps
           .map((app) => app.path.trim())

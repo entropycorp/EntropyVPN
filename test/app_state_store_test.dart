@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:entropy_vpn/models/config_source.dart';
+import 'package:entropy_vpn/models/dns_settings.dart';
 import 'package:entropy_vpn/models/split_tunnel.dart';
 import 'package:entropy_vpn/models/vpn_profile.dart';
 import 'package:entropy_vpn/services/app_state_store.dart';
@@ -29,6 +30,10 @@ void main() {
       trafficMode: TrafficMode.tun,
       tunIpMode: TunIpMode.dualStack,
       selectedSourceId: 'source-1',
+      dnsSettings: const DnsSettings(
+        ipv4Servers: <String>['9.9.9.9', '149.112.112.112'],
+        ipv6Servers: <String>['2620:fe::fe', '2620:fe::9'],
+      ),
       splitTunnelSettings: const SplitTunnelSettings(
         mode: SplitTunnelMode.blacklist,
         apps: <SplitTunnelApp>[
@@ -46,6 +51,11 @@ void main() {
           SplitTunnelDomain.fromInput('*.рф'),
         ],
       ),
+      appUpdateLastCheckedAt: DateTime.utc(2026, 5, 12, 10),
+      lastShownAppUpdateTag: 'v1.3.2',
+      lastShownAndroidAppUpdateTag: 'v1.3.3',
+      showInAppUpdateNotifications: false,
+      showAndroidUpdateNotifications: false,
       sources: <ConfigSource>[
         ConfigSource(
           id: 'source-1',
@@ -77,6 +87,14 @@ void main() {
     expect(restored.language, AppLanguage.ru);
     expect(restored.trafficMode, TrafficMode.tun);
     expect(restored.tunIpMode, TunIpMode.dualStack);
+    expect(restored.dnsSettings.ipv4Servers, <String>[
+      '9.9.9.9',
+      '149.112.112.112',
+    ]);
+    expect(restored.dnsSettings.ipv6Servers, <String>[
+      '2620:fe::fe',
+      '2620:fe::9',
+    ]);
     expect(restored.selectedSourceId, 'source-1');
     expect(restored.splitTunnelSettings.mode, SplitTunnelMode.blacklist);
     expect(restored.splitTunnelSettings.apps.single.name, 'Browser');
@@ -89,6 +107,11 @@ void main() {
       restored.domainSplitTunnelSettings.domains.map((domain) => domain.value),
       <String>['example.ru', '*.рф'],
     );
+    expect(restored.appUpdateLastCheckedAt, DateTime.utc(2026, 5, 12, 10));
+    expect(restored.lastShownAppUpdateTag, 'v1.3.2');
+    expect(restored.lastShownAndroidAppUpdateTag, 'v1.3.3');
+    expect(restored.showInAppUpdateNotifications, isFalse);
+    expect(restored.showAndroidUpdateNotifications, isFalse);
     expect(restored.sources, hasLength(2));
     expect(restored.sources.first.rawInput, 'vless://demo');
     expect(restored.sources.first.selectedProfile?.server, 'example.com');

@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/vpn_profile.dart';
+import '../models/dns_settings.dart';
 import '../models/split_tunnel.dart';
 import 'android_vpn_bridge.dart';
 import 'core_config_builder.dart';
@@ -160,6 +161,7 @@ class CoreRuntimeService {
     required ParsedVpnProfile profile,
     required AppLanguage language,
     required TunIpMode tunIpMode,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
@@ -169,6 +171,7 @@ class CoreRuntimeService {
       profile: profile,
       language: language,
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
       splitTunnelSettings: splitTunnelSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
     );
@@ -180,6 +183,7 @@ class CoreRuntimeService {
     required AppLanguage language,
     required TrafficMode trafficMode,
     TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
     SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
     DomainSplitTunnelSettings domainSplitTunnelSettings =
         const DomainSplitTunnelSettings(),
@@ -190,6 +194,7 @@ class CoreRuntimeService {
         profile: profile,
         language: language,
         tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
         splitTunnelSettings: splitTunnelSettings,
         domainSplitTunnelSettings: domainSplitTunnelSettings,
       );
@@ -201,6 +206,7 @@ class CoreRuntimeService {
       profile: profile,
       trafficMode: trafficMode,
       tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
       splitTunnelSettings: splitTunnelSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
     );

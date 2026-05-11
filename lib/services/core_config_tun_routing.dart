@@ -3,26 +3,18 @@ part of 'core_config_builder.dart';
 List<Map<String, dynamic>> _buildTunnelDnsServers({
   required bool includeLocalResolver,
   required TunIpMode tunIpMode,
+  required DnsSettings dnsSettings,
 }) {
-  final remoteDnsServer = switch (tunIpMode) {
-    TunIpMode.ipv4 => '1.1.1.1',
-    TunIpMode.dualStack => '1.1.1.1',
-    TunIpMode.ipv6 => '2606:4700:4700::1111',
-  };
+  final remoteDnsServer = dnsSettings.serversFor(tunIpMode).first;
 
   return <Map<String, dynamic>>[
     if (includeLocalResolver)
       <String, dynamic>{'type': 'local', 'tag': 'dns-local'},
     <String, dynamic>{
-      'type': 'https',
+      'type': 'udp',
       'tag': 'dns-remote',
       'server': remoteDnsServer,
-      'server_port': 443,
-      'path': '/dns-query',
-      'tls': <String, dynamic>{
-        'enabled': true,
-        'server_name': 'cloudflare-dns.com',
-      },
+      'server_port': 53,
       'detour': 'proxy',
     },
   ];

@@ -22,9 +22,23 @@ class AppStrings {
 
   String get tcpPingAction => 'Ping';
 
+  String get appSettingsCategoryLabel =>
+      _ru ? 'Настройки приложения' : 'App settings';
+  String get vpnSettingsCategoryLabel => _ru ? 'Настройки VPN' : 'VPN settings';
+  String get languageSettingsLabel => _ru ? 'Язык' : 'Language';
+
   String get trafficModeLabel => _ru ? 'Режим' : 'Mode';
   String get systemProxyModeLabel => _ru ? 'Системный proxy' : 'System proxy';
   String get tunModeLabel => 'TUN';
+  String get dnsSettingsLabel => _ru ? 'DNS серверы' : 'DNS servers';
+  String get primaryDnsServerLabel => 'Primary DNS';
+  String get secondaryDnsServerLabel => 'Secondary DNS';
+  String get ipv4DnsServersLabel => 'IPv4';
+  String get ipv6DnsServersLabel => 'IPv6';
+  String get resetAction => 'Reset';
+  String get saveAction => 'Save';
+  String get dnsServersIncompleteMessage => 'Enter both DNS servers.';
+  String dnsServersInvalid(String servers) => 'Invalid DNS: $servers';
   String get tunIpModeLabel => _ru ? 'IP-режим TUN' : 'TUN IP mode';
   String get splitTunnelLabel => _ru ? 'Сплит-туннелинг' : 'Split tunneling';
   String get splitTunnelAppsLabel => _ru ? 'Приложения' : 'Applications';
@@ -64,6 +78,25 @@ class AppStrings {
   String get copyLogsAction => _ru ? 'Копировать логи' : 'Copy logs';
   String get noLogsYet => _ru ? 'Логи пока не появились.' : 'No logs yet.';
   String get logsCopiedMessage => _ru ? 'Логи скопированы.' : 'Logs copied.';
+  String get notificationsSettingsLabel =>
+      _ru ? 'Уведомления' : 'Notifications';
+  String get inAppUpdateNotificationsLabel =>
+      _ru ? 'In-app update notifications' : 'In-app update notifications';
+  String get androidUpdateNotificationsLabel =>
+      _ru ? 'Push notifications for updates' : 'Push notifications for updates';
+  String get appUpdateDialogTitle => _ru ? 'New update' : 'New update';
+  String appUpdateAvailableMessage(String version) => _ru
+      ? 'EntropyVPN $version is available'
+      : 'EntropyVPN $version is available';
+  String appUpdateCurrentVersion(String version) =>
+      _ru ? 'Installed version: $version' : 'Installed version: $version';
+  String appUpdatePublishedAt(String date) =>
+      _ru ? 'Published: $date' : 'Published: $date';
+  String get appUpdateOpenReleaseAction =>
+      _ru ? 'Open release' : 'Open release';
+  String get appUpdateOpenFailedMessage => _ru
+      ? 'Could not open the release page.'
+      : 'Could not open the release page.';
   String get inputLabel =>
       _ru ? 'Добавить конфиг или подписку' : 'Add a config or subscription';
   String get inputHint => _ru

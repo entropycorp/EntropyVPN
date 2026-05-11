@@ -6,8 +6,8 @@ import 'package:flutter/services.dart';
 import 'l10n/app_strings.dart';
 import 'main_connect.dart';
 import 'main_constants.dart';
-import 'main_flags.dart';
 import 'main_pages.dart';
+import 'main_update_notification.dart';
 import 'services/vpn_controller.dart';
 
 const _brandImagePath = 'entropylogo.png';
@@ -45,6 +45,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
   late _HomeSection _section;
   late final bool _startedWithoutSources;
   bool _didAutoSwitchAfterRestore = false;
+  bool _isShowingUpdateNotification = false;
 
   @override
   void initState() {
@@ -59,6 +60,11 @@ class _VpnHomePageState extends State<VpnHomePage> {
     _section = widget.controller.hasSources
         ? _HomeSection.connect
         : _HomeSection.add;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _scheduleUpdateNotificationIfNeeded();
+      }
+    });
   }
 
   @override
@@ -86,6 +92,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
   }
 
   void _handleControllerUpdated() {
+    _scheduleUpdateNotificationIfNeeded();
     if ((_section != _HomeSection.add) &&
         (widget.controller.isAddingSource ||
             widget.controller.rawInput.trim().isNotEmpty) &&
@@ -108,6 +115,41 @@ class _VpnHomePageState extends State<VpnHomePage> {
     if (mounted) {
       setState(() {});
     }
+  }
+
+  void _scheduleUpdateNotificationIfNeeded() {
+    if (_isShowingUpdateNotification) {
+      return;
+    }
+    final update = widget.controller.pendingAppUpdateNotification;
+    if (update == null) {
+      return;
+    }
+
+    _isShowingUpdateNotification = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _isShowingUpdateNotification = false;
+        return;
+      }
+
+      widget.controller.markAppUpdateNotificationShown(update);
+      await showAppUpdateNotificationDialog(
+        context,
+        controller: widget.controller,
+        strings: AppStrings.of(context),
+        update: update,
+      );
+
+      if (!mounted) {
+        _isShowingUpdateNotification = false;
+        return;
+      }
+      setState(() {
+        _isShowingUpdateNotification = false;
+      });
+      _scheduleUpdateNotificationIfNeeded();
+    });
   }
 
   void _setSection(_HomeSection section) {
@@ -223,16 +265,6 @@ class _VpnHomePageState extends State<VpnHomePage> {
                                       crossAxisAlignment:
                                           CrossAxisAlignment.stretch,
                                       children: <Widget>[
-                                        Align(
-                                          alignment: Alignment.centerRight,
-                                          child: LanguageSelector(
-                                            controller: controller,
-                                            strings: strings,
-                                          ),
-                                        ),
-                                        SizedBox(
-                                          height: compactShell ? 14 : 20,
-                                        ),
                                         Expanded(child: sectionContent),
                                       ],
                                     ),
@@ -500,22 +532,7 @@ class _MobileShellState extends State<_MobileShell> {
             Padding(
               padding: const EdgeInsets.only(right: 14),
               child: Row(
-                children: <Widget>[
-                  const _BrandLogo(size: 74, radius: 24),
-                  const Spacer(),
-                  Flexible(
-                    child: Align(
-                      alignment: Alignment.centerRight,
-                      child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: LanguageSelector(
-                          controller: widget.controller,
-                          strings: widget.strings,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
+                children: <Widget>[const _BrandLogo(size: 74, radius: 24)],
               ),
             ),
             const SizedBox(height: 10),
