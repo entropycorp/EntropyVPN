@@ -194,7 +194,7 @@ class GeoIpService {
           .getUrl(_buildIpWhoIsUri(ipAddress))
           .timeout(const Duration(seconds: 5));
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      request.headers.set(HttpHeaders.userAgentHeader, 'EntropyVPN/1.4.1');
+      request.headers.set(HttpHeaders.userAgentHeader, 'EntropyVPN/1.5.0');
 
       final response = await request.close().timeout(
         const Duration(seconds: 5),

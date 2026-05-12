@@ -3,7 +3,7 @@
 #define MyAppPublisher "EntropyVPN"
 
 #ifndef MyAppVersion
-  #define MyAppVersion "1.4.1"
+  #define MyAppVersion "1.5.0"
 #endif
 
 #ifndef MySourceRoot
