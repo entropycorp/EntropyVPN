@@ -1525,60 +1525,71 @@ void main() {
     }
   });
 
-  testWidgets(
-    'power control and status align with config card in split layout',
-    (WidgetTester tester) async {
-      await tester.binding.setSurfaceSize(const Size(1260, 720));
-      addTearDown(() => tester.binding.setSurfaceSize(null));
+  testWidgets('power control stays fixed as split source card content grows', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1260, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
 
-      final controller = _subscriptionController(
-        trafficUsage: const SubscriptionTrafficUsage(
-          uploadBytes: 0,
-          downloadBytes: 5 * 1024 * 1024 * 1024,
-          totalBytes: 10 * 1024 * 1024 * 1024,
-        ),
+    final compactController = _subscriptionController();
+    final expandedController = _subscriptionController(
+      trafficUsage: const SubscriptionTrafficUsage(
+        uploadBytes: 0,
+        downloadBytes: 5 * 1024 * 1024 * 1024,
+        totalBytes: 10 * 1024 * 1024 * 1024,
+      ),
+    );
+
+    Future<({Rect header, Rect power, Rect source, Rect status})>
+    pumpSplitLayout(VpnController controller) async {
+      await tester.pumpWidget(
+        _subscriptionApp(controller, size: const Size(1260, 720)),
       );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump();
 
-      try {
-        await tester.pumpWidget(
-          _subscriptionApp(controller, size: const Size(1260, 720)),
-        );
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 300));
-        await tester.pump();
+      final powerButton = _powerButtonSurface();
+      final sourceCard = find.byKey(
+        const GlobalObjectKey('split-first-source-card'),
+      );
+      final sourceHeader = find.text('subscription');
+      final statusLabel = find.text('Disconnected');
 
-        final powerButton = _powerButtonSurface();
-        final sourceCard = find.byKey(
-          const GlobalObjectKey('split-first-source-card'),
-        );
-        final statusLabel = find.text('Disconnected');
+      expect(powerButton, findsOneWidget);
+      expect(sourceCard, findsOneWidget);
+      expect(sourceHeader, findsOneWidget);
+      expect(statusLabel, findsOneWidget);
 
-        expect(powerButton, findsOneWidget);
-        expect(sourceCard, findsOneWidget);
-        expect(statusLabel, findsOneWidget);
+      return (
+        header: tester.getRect(sourceHeader),
+        power: tester.getRect(powerButton),
+        source: tester.getRect(sourceCard),
+        status: tester.getRect(statusLabel),
+      );
+    }
 
-        final sourceCardRect = tester.getRect(sourceCard);
-        final powerButtonRect = tester.getRect(powerButton);
-        final statusLabelRect = tester.getRect(statusLabel);
-        final topOverhang = sourceCardRect.top - powerButtonRect.top;
-        final bottomOverhang = powerButtonRect.bottom - sourceCardRect.bottom;
+    try {
+      final compact = await pumpSplitLayout(compactController);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+      final expanded = await pumpSplitLayout(expandedController);
 
-        expect(powerButtonRect.left, greaterThan(0));
-        expect(powerButtonRect.width, closeTo(196, 1));
-        expect(powerButtonRect.height, closeTo(196, 1));
-        expect(
-          statusLabelRect.center.dx,
-          closeTo(powerButtonRect.center.dx, 1),
-        );
-        expect(statusLabelRect.top, greaterThan(powerButtonRect.bottom));
-        expect(powerButtonRect.top, lessThan(sourceCardRect.top));
-        expect(powerButtonRect.bottom, greaterThan(sourceCardRect.bottom));
-        expect(topOverhang, closeTo(bottomOverhang, 2));
-      } finally {
-        controller.dispose();
-      }
-    },
-  );
+      expect(expanded.source.top, greaterThan(compact.source.top));
+      expect(expanded.power.top, closeTo(compact.power.top, 1));
+      expect(expanded.header.top, closeTo(compact.header.top, 1));
+      expect(expanded.header.top, lessThan(expanded.power.top));
+      expect(expanded.status.top, closeTo(compact.status.top, 1));
+      expect(expanded.power.left, greaterThan(0));
+      expect(expanded.power.width, closeTo(196, 1));
+      expect(expanded.power.height, closeTo(196, 1));
+      expect(expanded.status.center.dx, closeTo(expanded.power.center.dx, 1));
+      expect(expanded.status.top, greaterThan(expanded.power.bottom));
+    } finally {
+      compactController.dispose();
+      expandedController.dispose();
+    }
+  });
 
   testWidgets('subscription card shows traffic usage when available', (
     WidgetTester tester,

@@ -116,45 +116,22 @@ class ConnectPageBodyState extends State<ConnectPageBody> {
   }
 }
 
-class _SplitConnectLayout extends StatefulWidget {
+class _SplitConnectLayout extends StatelessWidget {
   const _SplitConnectLayout({required this.controller, required this.strings});
+
+  static const Key _firstSourceTileKey = GlobalObjectKey(
+    'split-first-source-card',
+  );
+  static const Key _powerButtonKey = GlobalObjectKey('split-power-button');
 
   final VpnController controller;
   final AppStrings strings;
 
   @override
-  State<_SplitConnectLayout> createState() => _SplitConnectLayoutState();
-}
-
-class _SplitConnectLayoutState extends State<_SplitConnectLayout> {
-  final GlobalKey _firstSourceTileKey = const GlobalObjectKey(
-    'split-first-source-card',
-  );
-  final GlobalKey _powerButtonKey = const GlobalObjectKey('split-power-button');
-  double? _firstSourceTileHeight;
-  double _powerButtonVerticalCorrection = 0;
-  bool _sourceAnchorLocked = false;
-
-  @override
-  void didUpdateWidget(covariant _SplitConnectLayout oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller.sources.length !=
-        widget.controller.sources.length) {
-      _firstSourceTileHeight = null;
-      _powerButtonVerticalCorrection = 0;
-      _sourceAnchorLocked = false;
-      _scheduleSplitMeasurement();
-    }
-  }
-
-  @override
   Widget build(BuildContext context) {
-    _scheduleSplitMeasurement();
-    final sourceAnchorHeight =
-        _firstSourceTileHeight ?? _SplitHeroStatusAnchor.fallbackAnchorHeight;
+    const sourceAnchorHeight = _SplitHeroStatusAnchor.fixedAnchorHeight;
     final splitTopInset = _SplitHeroStatusAnchor.topInsetFor(
       anchorHeight: sourceAnchorHeight,
-      verticalCorrection: _powerButtonVerticalCorrection,
     );
 
     return Row(
@@ -163,8 +140,8 @@ class _SplitConnectLayoutState extends State<_SplitConnectLayout> {
         Expanded(
           flex: 6,
           child: Padding(
-            padding: const EdgeInsets.only(
-              top: _splitConnectTopOffset,
+            padding: EdgeInsets.only(
+              top: splitTopInset + _splitConnectTopOffset,
               right: 14,
             ),
             child: Align(
@@ -172,9 +149,8 @@ class _SplitConnectLayoutState extends State<_SplitConnectLayout> {
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 560),
                 child: _SplitHeroStatusAnchor(
-                  controller: widget.controller,
+                  controller: controller,
                   anchorHeight: sourceAnchorHeight,
-                  verticalCorrection: _powerButtonVerticalCorrection,
                   powerButtonKey: _powerButtonKey,
                 ),
               ),
@@ -184,66 +160,16 @@ class _SplitConnectLayoutState extends State<_SplitConnectLayout> {
         Expanded(
           flex: 7,
           child: Padding(
-            padding: EdgeInsets.only(
-              left: 14,
-              top: splitTopInset + _splitConnectTopOffset,
-            ),
+            padding: EdgeInsets.only(left: 14, top: _splitConnectTopOffset),
             child: QuickSwitchPanel(
-              controller: widget.controller,
-              strings: widget.strings,
+              controller: controller,
+              strings: strings,
               firstTileCardKey: _firstSourceTileKey,
             ),
           ),
         ),
       ],
     );
-  }
-
-  void _scheduleSplitMeasurement() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      if (_sourceAnchorLocked) {
-        return;
-      }
-      final cardBox =
-          _firstSourceTileKey.currentContext?.findRenderObject() as RenderBox?;
-      final buttonBox =
-          _powerButtonKey.currentContext?.findRenderObject() as RenderBox?;
-      final height = cardBox?.size.height;
-      if (cardBox == null || height == null || height <= 0) {
-        return;
-      }
-      final nextHeight = height;
-      var nextCorrection = _powerButtonVerticalCorrection;
-
-      if (buttonBox != null && buttonBox.hasSize && buttonBox.size.height > 0) {
-        final cardTop = cardBox.localToGlobal(Offset.zero).dy;
-        final cardBottom = cardTop + cardBox.size.height;
-        final buttonTop = buttonBox.localToGlobal(Offset.zero).dy;
-        final buttonBottom = buttonTop + buttonBox.size.height;
-        final topGap = cardTop - buttonTop;
-        final bottomGap = buttonBottom - cardBottom;
-        nextCorrection += (topGap - bottomGap) / 2;
-      }
-
-      final heightChanged =
-          _firstSourceTileHeight == null ||
-          (nextHeight - _firstSourceTileHeight!).abs() >= 0.5;
-      final correctionChanged =
-          (nextCorrection - _powerButtonVerticalCorrection).abs() >= 0.5;
-
-      if (!heightChanged && !correctionChanged) {
-        _sourceAnchorLocked = true;
-        return;
-      }
-
-      setState(() {
-        _firstSourceTileHeight = nextHeight;
-        _powerButtonVerticalCorrection = nextCorrection;
-      });
-    });
   }
 }
 
@@ -303,24 +229,18 @@ class _SplitHeroStatusAnchor extends StatelessWidget {
   const _SplitHeroStatusAnchor({
     required this.controller,
     required this.anchorHeight,
-    required this.verticalCorrection,
     required this.powerButtonKey,
   });
 
-  static const double fallbackAnchorHeight = 112;
+  static const double fixedAnchorHeight = 112;
   static const double _statusReserveHeight = 58;
 
   final VpnController controller;
   final double anchorHeight;
-  final double verticalCorrection;
   final Key powerButtonKey;
 
-  static double topInsetFor({
-    required double anchorHeight,
-    required double verticalCorrection,
-  }) {
-    final buttonTop =
-        (anchorHeight - splitPowerButtonDiameter) / 2 + verticalCorrection;
+  static double topInsetFor({required double anchorHeight}) {
+    final buttonTop = (anchorHeight - splitPowerButtonDiameter) / 2;
     return math.max(0, -buttonTop);
   }
 
@@ -329,12 +249,8 @@ class _SplitHeroStatusAnchor extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, _) {
         final buttonSize = splitPowerButtonDiameter;
-        final rawButtonTop =
-            (anchorHeight - buttonSize) / 2 + verticalCorrection;
-        final topInset = topInsetFor(
-          anchorHeight: anchorHeight,
-          verticalCorrection: verticalCorrection,
-        );
+        final rawButtonTop = (anchorHeight - buttonSize) / 2;
+        final topInset = topInsetFor(anchorHeight: anchorHeight);
         final buttonTop = rawButtonTop + topInset;
         final height = math.max(
           topInset + anchorHeight,
