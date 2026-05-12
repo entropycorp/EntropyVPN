@@ -305,9 +305,9 @@ class _SettingsSectionHeader extends StatelessWidget {
     return Padding(
       padding: EdgeInsets.fromLTRB(
         horizontalPadding + 4,
-        verticalPadding + 4,
+        verticalPadding + 2,
         horizontalPadding + 4,
-        verticalPadding,
+        verticalPadding + 2,
       ),
       child: Row(
         children: <Widget>[

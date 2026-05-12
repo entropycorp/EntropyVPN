@@ -10,6 +10,7 @@ import 'main_constants.dart';
 import 'main_shell.dart';
 import 'models/vpn_profile.dart';
 import 'services/vpn_controller.dart';
+import 'services/windows_tray_menu_service.dart';
 
 export 'main_shell.dart' show VpnHomePage;
 
@@ -39,6 +40,7 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
   );
 
   late final VpnController _controller;
+  WindowsTrayMenuService? _windowsTrayMenuService;
 
   @override
   void initState() {
@@ -46,12 +48,14 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
     _controller = VpnController();
     if (Platform.isWindows) {
       _windowsLifecycleChannel.setMethodCallHandler(_handleWindowsLifecycle);
+      _windowsTrayMenuService = WindowsTrayMenuService(_controller)..start();
     }
   }
 
   @override
   void dispose() {
     if (Platform.isWindows) {
+      _windowsTrayMenuService?.dispose();
       _windowsLifecycleChannel.setMethodCallHandler(null);
     }
     _controller.dispose();

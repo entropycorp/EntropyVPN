@@ -35,6 +35,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "gdiplus.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "iphlpapi.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "ws2_32.lib")
