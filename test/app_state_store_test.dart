@@ -56,6 +56,7 @@ void main() {
       lastShownAndroidAppUpdateTag: 'v1.3.3',
       showInAppUpdateNotifications: false,
       showAndroidUpdateNotifications: false,
+      subscriptionDeviceId: 'entropyvpn-test-device',
       sources: <ConfigSource>[
         ConfigSource(
           id: 'source-1',
@@ -112,6 +113,7 @@ void main() {
     expect(restored.lastShownAndroidAppUpdateTag, 'v1.3.3');
     expect(restored.showInAppUpdateNotifications, isFalse);
     expect(restored.showAndroidUpdateNotifications, isFalse);
+    expect(restored.subscriptionDeviceId, 'entropyvpn-test-device');
     expect(restored.sources, hasLength(2));
     expect(restored.sources.first.rawInput, 'vless://demo');
     expect(restored.sources.first.selectedProfile?.server, 'example.com');

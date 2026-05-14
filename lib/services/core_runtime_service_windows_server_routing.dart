@@ -34,6 +34,16 @@ extension CoreRuntimeServiceWindowsServerRouting on CoreRuntimeService {
       'Resolved VPN server $host for host-route bypass: ${uniqueAddresses.map((address) => address.address).join(', ')}.',
     );
 
+    if (_windowsTunServiceReady) {
+      final serviceRouting = await _prepareServiceDomainTunServerRouting(
+        host,
+        uniqueAddresses,
+      );
+      if (serviceRouting != null) {
+        return serviceRouting;
+      }
+    }
+
     const script = r'''
 param([string]$RoutesBase64)
 try {
@@ -198,13 +208,64 @@ try {
     }
   }
 
+  Future<TunRoutingPreparation?> _prepareServiceDomainTunServerRouting(
+    String host,
+    List<InternetAddress> addresses,
+  ) async {
+    final ipv4Addresses = addresses
+        .where((address) => address.type == InternetAddressType.IPv4)
+        .toList(growable: false);
+    if (ipv4Addresses.isEmpty) {
+      return null;
+    }
+
+    final routes = <WindowsHostRoute>[];
+    String? outboundBindInterface;
+    for (final address in ipv4Addresses) {
+      final routing = await _prepareIpTunServerRouting(address);
+      if (routing == null) {
+        continue;
+      }
+      outboundBindInterface ??= routing.outboundBindInterface;
+      routes.addAll(routing.hostRoutes);
+    }
+
+    if (outboundBindInterface == null) {
+      _rememberAppLog(
+        'Service-assisted domain host-route bypass could not select a hardware default interface for $host.',
+      );
+      return null;
+    }
+
+    _rememberAppLog(
+      'VPN server is a domain name; service-assisted host-route bypass will connect to ${ipv4Addresses.first.address}.',
+    );
+    return TunRoutingPreparation(
+      outboundBindInterface: outboundBindInterface,
+      serverAddressOverride: ipv4Addresses.first.address,
+      hasHostRoute: routes.isNotEmpty,
+      hostRoutes: routes,
+    );
+  }
+
   Future<TunRoutingPreparation?> _prepareIpTunServerRouting(
     InternetAddress serverIp,
   ) async {
     if (serverIp.type == InternetAddressType.IPv4) {
-      final nativeRouting = await _prepareNativeIpv4TunServerRouting(serverIp);
-      if (nativeRouting != null) {
-        return nativeRouting;
+      if (_windowsTunServiceReady) {
+        final serviceRouting = await _prepareServiceIpv4TunServerRouting(
+          serverIp,
+        );
+        if (serviceRouting != null) {
+          return serviceRouting;
+        }
+      } else {
+        final nativeRouting = await _prepareNativeIpv4TunServerRouting(
+          serverIp,
+        );
+        if (nativeRouting != null) {
+          return nativeRouting;
+        }
       }
       final fastRouting = await _prepareFastIpv4TunServerRouting(serverIp);
       if (fastRouting != null) {
@@ -434,6 +495,85 @@ try {
       );
       return null;
     }
+  }
+
+  Future<TunRoutingPreparation?> _prepareServiceIpv4TunServerRouting(
+    InternetAddress serverIp,
+  ) async {
+    Map<String, String> response;
+    try {
+      response = await _runWindowsServiceHelper(
+        <String>[
+          'prepare-ipv4-server-route',
+          '--remote-address',
+          serverIp.address,
+        ],
+        timeout: const Duration(seconds: 5),
+        timingLabel: 'ipv4_server_route',
+      );
+    } catch (error) {
+      _rememberAppLog(
+        'Service IPv4 server route path unavailable: ${_describeError(error)}',
+      );
+      return null;
+    }
+
+    final elapsedMs = response['elapsedMs'];
+    if (response['resultOk'] != '1') {
+      final failedStep = response['failedStep'] ?? 'unknown';
+      final error = _decodeWindowsServiceText(response, 'errorB64').trim();
+      final elapsed = elapsedMs == null ? '' : ' after ${elapsedMs}ms';
+      _rememberAppLog(
+        'Service IPv4 server route path unavailable: $failedStep failed$elapsed: ${error.isEmpty ? 'unknown error' : error}',
+      );
+      return null;
+    }
+
+    final interfaceAlias = _decodeWindowsServiceText(
+      response,
+      'interfaceAliasB64',
+    ).trim();
+    final sourceAddress = response['sourceAddress']?.trim();
+    final nextHop = response['nextHop']?.trim();
+    final destinationPrefix = response['destinationPrefix']?.trim();
+    final interfaceIndex = int.tryParse(response['interfaceIndex'] ?? '');
+    if (interfaceAlias.isEmpty ||
+        nextHop == null ||
+        nextHop.isEmpty ||
+        destinationPrefix == null ||
+        destinationPrefix.isEmpty ||
+        interfaceIndex == null) {
+      _rememberAppLog(
+        'Service IPv4 server route path unavailable: helper returned incomplete route details.',
+      );
+      return null;
+    }
+
+    final createdRoute = response['routeStatus'] == 'created';
+    final route = WindowsHostRoute(
+      destinationPrefix: destinationPrefix,
+      interfaceAlias: interfaceAlias,
+      interfaceIndex: interfaceIndex,
+      nextHop: nextHop,
+      removalTool: WindowsRouteRemovalTool.routeExe,
+      removeWhenUnused: createdRoute,
+    );
+    _trackTemporaryServerRoutes(<WindowsHostRoute>[route]);
+    _rememberAppLog(
+      'Service IPv4 server route setup${elapsedMs == null ? '' : ' elapsed=${elapsedMs}ms'}.',
+    );
+    _rememberAppLog(
+      'Windows route to ${serverIp.address}: interface=$interfaceAlias, source=${_orDash(sourceAddress)}, nextHop=$nextHop, hardware=${response['hardwareInterface'] == '1'}, virtual=${response['virtual'] == '1'}.',
+    );
+    _rememberAppLog(
+      'Service IPv4 host route ${route.destinationPrefix} via ${route.interfaceAlias} (${route.nextHop}) ${createdRoute ? 'created' : 'already existed'}.',
+    );
+    return TunRoutingPreparation(
+      outboundBindInterface: interfaceAlias,
+      serverAddressOverride: null,
+      hasHostRoute: true,
+      hostRoutes: <WindowsHostRoute>[route],
+    );
   }
 
   Future<TunRoutingPreparation?> _prepareNativeIpv4TunServerRouting(

@@ -24,6 +24,7 @@ class PersistedAppState {
     this.lastShownAndroidAppUpdateTag,
     this.showInAppUpdateNotifications = true,
     this.showAndroidUpdateNotifications = true,
+    this.subscriptionDeviceId,
   });
 
   final AppLanguage language;
@@ -39,14 +40,16 @@ class PersistedAppState {
   final String? lastShownAndroidAppUpdateTag;
   final bool showInAppUpdateNotifications;
   final bool showAndroidUpdateNotifications;
+  final String? subscriptionDeviceId;
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
-      'version': 8,
+      'version': 9,
       'language': language.name,
       'trafficMode': trafficMode.name,
       'tunIpMode': tunIpMode.name,
       'selectedSourceId': selectedSourceId,
+      'subscription': <String, Object?>{'deviceId': subscriptionDeviceId},
       'dns': dnsSettings.normalized.toJson(),
       'splitTunnel': splitTunnelSettings.normalized.toJson(),
       'domainSplitTunnel': domainSplitTunnelSettings.normalized.toJson(),
@@ -85,6 +88,7 @@ class PersistedAppState {
     );
     final shouldMigrateAndroidTunIpMode = Platform.isAndroid && version < 4;
     final appUpdate = _stringKeyedMap(json['appUpdate']);
+    final subscription = _stringKeyedMap(json['subscription']);
 
     return PersistedAppState(
       language: _appLanguageByName(json['language'] as String?),
@@ -117,6 +121,9 @@ class PersistedAppState {
       showAndroidUpdateNotifications: _parseBool(
         appUpdate?['androidNotificationsEnabled'],
         fallback: true,
+      ),
+      subscriptionDeviceId: _parseOptionalString(
+        subscription?['deviceId'] ?? json['subscriptionDeviceId'],
       ),
     );
   }

@@ -501,6 +501,23 @@ void main() {
     );
   });
 
+  test('generates a stable subscription device id for imports', () async {
+    final store = _MemoryAppStateStore();
+    final catalogService = _FakeProfileCatalogService();
+    final controller = VpnController(
+      appStateStore: store,
+      profileCatalogService: catalogService,
+    );
+    addTearDown(controller.dispose);
+
+    controller.setRawInput('https://device.example/subscription');
+    expect(await controller.addSource(), isTrue);
+
+    final deviceId = catalogService.subscriptionDeviceId;
+    expect(deviceId, startsWith('entropyvpn-'));
+    expect(store.state?.subscriptionDeviceId, deviceId);
+  });
+
   test('pastes invalid clipboard text without showing an add error', () async {
     final controller = VpnController(appStateStore: _MemoryAppStateStore());
     addTearDown(controller.dispose);

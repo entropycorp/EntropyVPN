@@ -149,6 +149,12 @@ const int windowsInvalidHandleValue = -1;
 const int windowsProcessQueryLimitedInformation = 0x1000;
 const int windowsProcessTerminate = 0x0001;
 const int windowsSynchronize = 0x00100000;
+const int windowsGenericRead = 0x80000000;
+const int windowsGenericWrite = 0x40000000;
+const int windowsOpenExisting = 3;
+const int windowsFileAttributeNormal = 0x00000080;
+const int windowsPipeReadmodeMessage = 0x00000002;
+const int windowsErrorMoreData = 234;
 const int maxWindowsPathBufferChars = 32768;
 
 final class ProcessEntry32W extends Struct {
@@ -210,6 +216,87 @@ typedef GetTokenInformationDart =
 
 typedef CloseHandleNative = Int32 Function(IntPtr handle);
 typedef CloseHandleDart = int Function(int handle);
+
+typedef WaitNamedPipeWNative =
+    Int32 Function(Pointer<Uint16> pipeName, Uint32 timeoutMs);
+typedef WaitNamedPipeWDart =
+    int Function(Pointer<Uint16> pipeName, int timeoutMs);
+
+typedef CreateFileWNative =
+    IntPtr Function(
+      Pointer<Uint16> fileName,
+      Uint32 desiredAccess,
+      Uint32 shareMode,
+      Pointer<Void> securityAttributes,
+      Uint32 creationDisposition,
+      Uint32 flagsAndAttributes,
+      IntPtr templateFile,
+    );
+typedef CreateFileWDart =
+    int Function(
+      Pointer<Uint16> fileName,
+      int desiredAccess,
+      int shareMode,
+      Pointer<Void> securityAttributes,
+      int creationDisposition,
+      int flagsAndAttributes,
+      int templateFile,
+    );
+
+typedef SetNamedPipeHandleStateNative =
+    Int32 Function(
+      IntPtr pipe,
+      Pointer<Uint32> mode,
+      Pointer<Uint32> maxCollectionCount,
+      Pointer<Uint32> collectDataTimeout,
+    );
+typedef SetNamedPipeHandleStateDart =
+    int Function(
+      int pipe,
+      Pointer<Uint32> mode,
+      Pointer<Uint32> maxCollectionCount,
+      Pointer<Uint32> collectDataTimeout,
+    );
+
+typedef WriteFileNative =
+    Int32 Function(
+      IntPtr file,
+      Pointer<Void> buffer,
+      Uint32 bytesToWrite,
+      Pointer<Uint32> bytesWritten,
+      Pointer<Void> overlapped,
+    );
+typedef WriteFileDart =
+    int Function(
+      int file,
+      Pointer<Void> buffer,
+      int bytesToWrite,
+      Pointer<Uint32> bytesWritten,
+      Pointer<Void> overlapped,
+    );
+
+typedef ReadFileNative =
+    Int32 Function(
+      IntPtr file,
+      Pointer<Void> buffer,
+      Uint32 bytesToRead,
+      Pointer<Uint32> bytesRead,
+      Pointer<Void> overlapped,
+    );
+typedef ReadFileDart =
+    int Function(
+      int file,
+      Pointer<Void> buffer,
+      int bytesToRead,
+      Pointer<Uint32> bytesRead,
+      Pointer<Void> overlapped,
+    );
+
+typedef FlushFileBuffersNative = Int32 Function(IntPtr file);
+typedef FlushFileBuffersDart = int Function(int file);
+
+typedef GetLastErrorNative = Uint32 Function();
+typedef GetLastErrorDart = int Function();
 
 typedef CreateToolhelp32SnapshotNative =
     IntPtr Function(Uint32 flags, Uint32 processId);

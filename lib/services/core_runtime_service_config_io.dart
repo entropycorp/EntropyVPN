@@ -58,6 +58,17 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
     _rememberAppLog(
       'Starting core process: ${_formatCommand(binaryPath, args)}',
     );
+    if (_windowsTunServiceReady && Platform.isWindows) {
+      await _startWindowsServiceCore(
+        core: core,
+        binaryPath: binaryPath,
+        args: args,
+        workingDirectory: workingDirectory,
+        runtimeDirectory: runtimeDirectory,
+      );
+      return;
+    }
+
     final process = await _startTimedProcess(
       '${core.name}_core_start',
       binaryPath,

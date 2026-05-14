@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +26,7 @@ part 'core_runtime_service_process.dart';
 part 'core_runtime_service_diagnostics.dart';
 part 'core_runtime_service_windows.dart';
 part 'core_runtime_service_windows_process.dart';
+part 'core_runtime_service_windows_service.dart';
 part 'core_runtime_service_windows_server_routing.dart';
 part 'core_runtime_service_windows_temporary_routes.dart';
 part 'core_runtime_service_windows_xray_tun.dart';
@@ -54,11 +56,16 @@ class CoreRuntimeService {
       : null;
 
   Process? _process;
+  WindowsServiceCoreProcess? _windowsServiceProcess;
   Directory? _runtimeDirectory;
   StreamSubscription<String>? _stdoutSubscription;
   StreamSubscription<String>? _stderrSubscription;
+  Timer? _windowsServicePollTimer;
+  bool _windowsServicePollInFlight = false;
+  bool _windowsServiceStartupSetupInProgress = false;
   SystemProxySnapshot? _savedProxySnapshot;
   bool? _cachedWindowsElevation;
+  bool _windowsTunServiceReady = false;
   _SplitTunnelExpansionCacheEntry? _splitTunnelExpansionCache;
   WindowsProcessSnapshotCacheEntry? _windowsProcessSnapshotCache;
   Future<void>? _pendingStopCleanup;
@@ -72,7 +79,7 @@ class CoreRuntimeService {
 
   bool get isRunning => Platform.isAndroid
       ? (_androidBridge?.isRunning ?? false)
-      : _process != null;
+      : (_process != null || _windowsServiceProcess != null);
   String? get androidPhase => Platform.isAndroid ? _androidBridge?.phase : null;
   String? get lastLogLine => Platform.isAndroid
       ? _androidBridge?.lastLogLine

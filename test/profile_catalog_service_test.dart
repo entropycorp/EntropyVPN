@@ -385,6 +385,37 @@ void main() {
       expect(catalog.trafficUsage?.expiresAt, isNull);
     });
 
+    test('announces EntropyVPN subscription device identity', () async {
+      final service = ProfileCatalogService()
+        ..subscriptionDeviceId = 'entropyvpn-test-device';
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+
+      String? userAgent;
+      String? hwid;
+      String? deviceOs;
+
+      server.listen((request) async {
+        userAgent = request.headers.value(HttpHeaders.userAgentHeader);
+        hwid = request.headers.value('x-hwid');
+        deviceOs = request.headers.value('x-device-os');
+        request.response.headers.contentType = ContentType.text;
+        request.response.write(
+          'vless://11111111-1111-1111-1111-111111111111@example.com:443?encryption=none#Demo',
+        );
+        await request.response.close();
+      });
+
+      final catalog = await service.resolve(
+        'http://${server.address.address}:${server.port}/subscription',
+      );
+
+      expect(catalog.profiles, hasLength(1));
+      expect(userAgent, 'EntropyVPN/1.5.0');
+      expect(hwid, 'entropyvpn-test-device');
+      expect(deviceOs, isNotEmpty);
+    });
+
     test('fetches and resolves remote base64 subscriptions', () async {
       final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
       addTearDown(server.close);

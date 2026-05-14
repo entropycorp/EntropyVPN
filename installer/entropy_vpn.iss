@@ -24,7 +24,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={localappdata}\Programs\{#MyAppName}
+DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir={#MyOutputDir}
@@ -37,8 +37,8 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-PrivilegesRequired=lowest
-UsePreviousAppDir=yes
+PrivilegesRequired=admin
+UsePreviousAppDir=no
 UsePreviousGroup=yes
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Installer
@@ -60,4 +60,13 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+Filename: "{sys}\sc.exe"; Parameters: "stop EntropyVPNService"; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "delete EntropyVPNService"; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "create EntropyVPNService binPath= ""{app}\entropy_vpn_service.exe service"" start= demand DisplayName= ""EntropyVPN Service"""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "description EntropyVPNService ""Provides privileged Windows TUN mode support for EntropyVPN."""; Flags: runhidden waituntilterminated
+Filename: "{sys}\sc.exe"; Parameters: "sdset EntropyVPNService D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWRPWPDTLOCRRC;;;AU)"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\sc.exe"; Parameters: "stop EntropyVPNService"; Flags: runhidden waituntilterminated; RunOnceId: "EntropyVPNServiceStop"
+Filename: "{sys}\sc.exe"; Parameters: "delete EntropyVPNService"; Flags: runhidden waituntilterminated; RunOnceId: "EntropyVPNServiceDelete"

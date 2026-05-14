@@ -50,9 +50,13 @@ extension CoreRuntimeServiceDiagnostics on CoreRuntimeService {
       _rememberAppLog(
         'TUN diagnostics: elevated=${_describeNullableBool(elevated)}.',
       );
-      if (elevated == false) {
+      if (elevated == false && !_windowsTunServiceReady) {
         _rememberAppLog(
           'TUN prerequisite warning: Windows TUN mode usually requires Administrator rights.',
+        );
+      } else if (elevated == false && _windowsTunServiceReady) {
+        _rememberAppLog(
+          'TUN diagnostics: UI is not elevated; privileged work is delegated to EntropyVPN Service.',
         );
       }
     }

@@ -14,6 +14,8 @@ part 'profile_catalog_native_config.dart';
 part 'profile_catalog_payload_resolver.dart';
 part 'profile_catalog_subscription_headers.dart';
 
+const String _subscriptionUserAgent = 'EntropyVPN/1.5.0';
+
 class ResolvedProfileCatalog {
   ResolvedProfileCatalog({
     required List<ParsedVpnProfile> profiles,
@@ -36,6 +38,8 @@ class ProfileCatalogService {
     HttpClient Function()? httpClientFactory,
   }) : _parser = parser ?? ShareLinkParser(),
        _httpClientFactory = httpClientFactory ?? HttpClient.new;
+
+  String? subscriptionDeviceId;
 
   final ShareLinkParser _parser;
   final HttpClient Function() _httpClientFactory;
@@ -103,14 +107,16 @@ class ProfileCatalogService {
   }) async {
     final client = _httpClientFactory();
     client.connectionTimeout = const Duration(seconds: 15);
-    client.userAgent = 'EntropyVPN/1.5.0';
+    client.userAgent = _subscriptionUserAgent;
 
     try {
       final request = await client.getUrl(Uri.parse(url));
+      request.headers.set(HttpHeaders.userAgentHeader, _subscriptionUserAgent);
       request.headers.set(
         HttpHeaders.acceptHeader,
         'text/plain, application/octet-stream, */*',
       );
+      _setSubscriptionDeviceHeaders(request.headers);
 
       final response = await request.close().timeout(
         const Duration(seconds: 20),
@@ -160,5 +166,43 @@ class ProfileCatalogService {
     } finally {
       client.close(force: true);
     }
+  }
+
+  void _setSubscriptionDeviceHeaders(HttpHeaders headers) {
+    final deviceId = _nonEmpty(subscriptionDeviceId);
+    if (deviceId == null) {
+      return;
+    }
+
+    headers
+      ..set('x-hwid', _headerSafeValue(deviceId))
+      ..set('x-device-os', _subscriptionDeviceOs())
+      ..set('x-ver-os', _headerSafeValue(Platform.operatingSystemVersion))
+      ..set('x-device-model', _subscriptionDeviceModel());
+  }
+
+  String _subscriptionDeviceOs() {
+    return switch (Platform.operatingSystem.toLowerCase()) {
+      'windows' => 'Windows',
+      'android' => 'Android',
+      'ios' => 'iOS',
+      'macos' => 'macOS',
+      'linux' => 'Linux',
+      _ => Platform.operatingSystem,
+    };
+  }
+
+  String _subscriptionDeviceModel() {
+    if (Platform.isWindows) {
+      return 'Desktop';
+    }
+    if (Platform.isAndroid) {
+      return 'Android Device';
+    }
+    return _headerSafeValue(Platform.operatingSystem);
+  }
+
+  String _headerSafeValue(String value) {
+    return value.replaceAll(RegExp(r'[\r\n]+'), ' ').trim();
   }
 }

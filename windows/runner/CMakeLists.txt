@@ -17,9 +17,18 @@ add_executable(${BINARY_NAME} WIN32
   "runner.exe.manifest"
 )
 
+add_executable(entropy_vpn_service
+  "entropy_vpn_service.cpp"
+  "entropy_vpn_service_commands.cpp"
+  "entropy_vpn_service_common.cpp"
+  "entropy_vpn_service_pipe.cpp"
+  "entropy_vpn_service_tun.cpp"
+)
+
 
 
 apply_standard_settings(${BINARY_NAME})
+apply_standard_settings(entropy_vpn_service)
 
 
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
@@ -30,6 +39,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_BUILD=${FLUTT
 
 
 target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
+target_compile_definitions(entropy_vpn_service PRIVATE "NOMINMAX")
 
 
 
@@ -41,5 +51,9 @@ target_link_libraries(${BINARY_NAME} PRIVATE "shell32.lib")
 target_link_libraries(${BINARY_NAME} PRIVATE "ws2_32.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
+target_link_libraries(entropy_vpn_service PRIVATE "advapi32.lib")
+target_link_libraries(entropy_vpn_service PRIVATE "iphlpapi.lib")
+target_link_libraries(entropy_vpn_service PRIVATE "shell32.lib")
+target_link_libraries(entropy_vpn_service PRIVATE "ws2_32.lib")
 
 add_dependencies(${BINARY_NAME} flutter_assemble)

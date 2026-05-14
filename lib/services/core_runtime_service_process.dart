@@ -186,6 +186,16 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
     String? workingDirectory,
     Duration? timeout,
   }) async {
+    if (_shouldRunWithWindowsServiceHelper(executable)) {
+      return _runWindowsServiceTimedProcess(
+        label,
+        executable,
+        args,
+        workingDirectory: workingDirectory,
+        timeout: timeout,
+      );
+    }
+
     final stopwatch = Stopwatch()..start();
     try {
       final run = Process.run(

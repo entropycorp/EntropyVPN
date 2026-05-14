@@ -46,10 +46,12 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
       final requiresTunPrerequisites =
           (!profile.isNativeConfig && trafficMode == TrafficMode.tun) ||
           _profileConfigHasTunInbound(profile);
+      _windowsTunServiceReady = false;
       if (Platform.isWindows && requiresTunPrerequisites) {
         await startupTiming.time(
           'windows_tun_prerequisites',
-          () => _ensureWindowsTunPrerequisites(binaryPath),
+          () =>
+              _ensureWindowsTunPrerequisites(binaryPath, tunIpMode: tunIpMode),
         );
       }
 
@@ -118,35 +120,117 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
       final currentRuntimeDirectory = runtimeDirectory!;
 
       _rememberAppLog('Runtime directory: ${currentRuntimeDirectory.path}');
-      await startupTiming.time(
-        'core_process_start',
-        () => _startSingleCore(
-          core: core,
-          binaryPath: binaryPath,
-          profile: profile,
-          trafficMode: trafficMode,
-          tunIpMode: tunIpMode,
-          dnsSettings: dnsSettings,
-          splitTunnelSettings: effectiveSplitTunnelSettings,
-          domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
-          tunInterfaceName: tunInterfaceName,
-          runtimeDirectory: currentRuntimeDirectory,
-          outboundBindInterface: outboundBindInterface,
-          xrayServerAddressOverride: xrayServerAddressOverride,
-        ),
-      );
-
-      if (core == CoreFlavor.xray &&
+      final deferWindowsServicePolling =
+          _windowsTunServiceReady &&
+          Platform.isWindows &&
+          core == CoreFlavor.xray &&
           trafficMode == TrafficMode.tun &&
-          tunInterfaceName != null) {
-        await startupTiming.time(
-          'xray_tun_adapter_routes',
-          () => _installTemporaryXrayTunRoutes(
-            interfaceAlias: tunInterfaceName,
-            tunIpMode: tunIpMode,
-            dnsSettings: dnsSettings,
-          ),
-        );
+          tunInterfaceName != null;
+      _windowsServiceStartupSetupInProgress = deferWindowsServicePolling;
+      try {
+        final needsXrayTunRoutes =
+            core == CoreFlavor.xray &&
+            trafficMode == TrafficMode.tun &&
+            tunInterfaceName != null;
+
+        // When the service handles both core start and TUN setup, overlap them:
+        // the pipe server supports unlimited instances, so both service requests
+        // execute concurrently. The TUN setup polls for the adapter which appears
+        // once xray.exe creates it, so firing both together saves the sequential gap.
+        if (needsXrayTunRoutes && _windowsTunServiceReady) {
+          Object? tunRoutesError;
+          StackTrace? tunRoutesStackTrace;
+          final tunRoutesFuture = startupTiming
+              .time(
+                'xray_tun_adapter_routes',
+                () => _installTemporaryXrayTunRoutes(
+                  interfaceAlias: tunInterfaceName,
+                  tunIpMode: tunIpMode,
+                  dnsSettings: dnsSettings,
+                ),
+              )
+              .catchError((Object error, StackTrace stackTrace) {
+                tunRoutesError = error;
+                tunRoutesStackTrace = stackTrace;
+              });
+
+          void throwTunRoutesErrorIfNeeded() {
+            final error = tunRoutesError;
+            if (error == null) {
+              return;
+            }
+            Error.throwWithStackTrace(
+              error,
+              tunRoutesStackTrace ?? StackTrace.current,
+            );
+          }
+
+          Future<void> awaitTunRoutes({required bool ignoreError}) async {
+            await tunRoutesFuture;
+            if (!ignoreError) {
+              throwTunRoutesErrorIfNeeded();
+            }
+          }
+
+          try {
+            await startupTiming.time(
+              'core_process_start',
+              () => _startSingleCore(
+                core: core,
+                binaryPath: binaryPath,
+                profile: profile,
+                trafficMode: trafficMode,
+                tunIpMode: tunIpMode,
+                dnsSettings: dnsSettings,
+                splitTunnelSettings: effectiveSplitTunnelSettings,
+                domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
+                tunInterfaceName: tunInterfaceName,
+                runtimeDirectory: currentRuntimeDirectory,
+                outboundBindInterface: outboundBindInterface,
+                xrayServerAddressOverride: xrayServerAddressOverride,
+              ),
+            );
+          } catch (_) {
+            // Core start failed; wait for the TUN setup to settle before rethrowing.
+            await awaitTunRoutes(ignoreError: true);
+            rethrow;
+          }
+
+          await awaitTunRoutes(ignoreError: false);
+        } else {
+          await startupTiming.time(
+            'core_process_start',
+            () => _startSingleCore(
+              core: core,
+              binaryPath: binaryPath,
+              profile: profile,
+              trafficMode: trafficMode,
+              tunIpMode: tunIpMode,
+              dnsSettings: dnsSettings,
+              splitTunnelSettings: effectiveSplitTunnelSettings,
+              domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
+              tunInterfaceName: tunInterfaceName,
+              runtimeDirectory: currentRuntimeDirectory,
+              outboundBindInterface: outboundBindInterface,
+              xrayServerAddressOverride: xrayServerAddressOverride,
+            ),
+          );
+
+          if (needsXrayTunRoutes) {
+            await startupTiming.time(
+              'xray_tun_adapter_routes',
+              () => _installTemporaryXrayTunRoutes(
+                interfaceAlias: tunInterfaceName,
+                tunIpMode: tunIpMode,
+                dnsSettings: dnsSettings,
+              ),
+            );
+          }
+        }
+      } finally {
+        if (deferWindowsServicePolling) {
+          _windowsServiceStartupSetupInProgress = false;
+        }
       }
 
       if (trafficMode == TrafficMode.systemProxy &&
@@ -190,11 +274,17 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
     } catch (error) {
       _rememberAppLog('Start failed: ${_describeError(error)}');
       final process = _process;
+      final serviceProcess = _windowsServiceProcess;
       _process = null;
+      _windowsServiceProcess = null;
       if (process != null) {
         await _cleanupSubscriptions();
         await _terminateProcess(process);
       }
+      if (serviceProcess != null) {
+        await _stopWindowsServiceCore(serviceProcess);
+      }
+      _cleanupWindowsServicePolling();
       await _removeTemporaryTunRoutes();
       await _removeTemporaryServerRoute();
       await _restoreProxyIfNeeded();
@@ -214,12 +304,14 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
     }
 
     final process = _process;
+    final serviceProcess = _windowsServiceProcess;
     final runtimeDirectory = _runtimeDirectory;
     final tunRoutes = _temporaryTunRoutes;
     final serverRoutes = _temporaryServerRoutes;
     final proxySnapshot = _savedProxySnapshot;
 
     _process = null;
+    _windowsServiceProcess = null;
     _runtimeDirectory = null;
     _temporaryTunRoutes = const <WindowsTunRoute>[];
     _temporaryServerRoutes = const <WindowsHostRoute>[];
@@ -235,10 +327,17 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
         });
       }
 
+      if (serviceProcess != null) {
+        await stopTiming.time('core_service_stop', () async {
+          await _stopWindowsServiceCore(serviceProcess);
+        });
+      }
+
       await stopTiming.time(
         'cleanup_subscriptions',
         () => _cleanupSubscriptions(),
       );
+      _cleanupWindowsServicePolling();
 
       final cleanup = _scheduleStopCleanup(
         tunRoutes: tunRoutes,

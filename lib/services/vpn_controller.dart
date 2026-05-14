@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -103,6 +104,7 @@ class VpnController extends ChangeNotifier {
   DateTime? _appUpdateLastCheckedAt;
   String? _lastShownAppUpdateTag;
   String? _lastShownAndroidAppUpdateTag;
+  String? _subscriptionDeviceId;
   bool _showInAppUpdateNotifications = true;
   bool _showAndroidUpdateNotifications = true;
   bool _isCheckingAppUpdate = false;
@@ -1315,6 +1317,7 @@ class VpnController extends ChangeNotifier {
   Future<void> _restoreState() async {
     try {
       final state = await _appStateStore.load();
+      _setSubscriptionDeviceId(state?.subscriptionDeviceId);
       if (state == null) {
         return;
       }
@@ -1350,7 +1353,9 @@ class VpnController extends ChangeNotifier {
           : (state.sources.isEmpty ? null : state.sources.first.id);
 
       notifyListeners();
-    } catch (_) {}
+    } catch (_) {
+      _setSubscriptionDeviceId(null);
+    }
   }
 
   void _queuePersistState() {
@@ -1374,9 +1379,29 @@ class VpnController extends ChangeNotifier {
         lastShownAndroidAppUpdateTag: _lastShownAndroidAppUpdateTag,
         showInAppUpdateNotifications: _showInAppUpdateNotifications,
         showAndroidUpdateNotifications: _showAndroidUpdateNotifications,
+        subscriptionDeviceId: _ensureSubscriptionDeviceId(),
       ),
     );
     await _saveAndroidStartPayload();
+  }
+
+  void _setSubscriptionDeviceId(String? value) {
+    final normalized = _normalizeSubscriptionDeviceId(value);
+    _subscriptionDeviceId = normalized ?? _generateSubscriptionDeviceId();
+    _profileCatalogService.subscriptionDeviceId = _subscriptionDeviceId;
+  }
+
+  String _ensureSubscriptionDeviceId() {
+    final normalized = _normalizeSubscriptionDeviceId(_subscriptionDeviceId);
+    if (normalized != null) {
+      _profileCatalogService.subscriptionDeviceId = normalized;
+      return normalized;
+    }
+
+    final generated = _generateSubscriptionDeviceId();
+    _subscriptionDeviceId = generated;
+    _profileCatalogService.subscriptionDeviceId = generated;
+    return generated;
   }
 
   Future<void> _applyTunSensitiveSettingsChange({
@@ -1536,6 +1561,25 @@ class VpnController extends ChangeNotifier {
     final text = error.toString().trim();
     return text.startsWith('StateError: ') ? text.substring(12) : text;
   }
+}
+
+String _generateSubscriptionDeviceId() {
+  final random = Random.secure();
+  final buffer = StringBuffer('entropyvpn-');
+  for (var i = 0; i < 16; i += 1) {
+    buffer.write(random.nextInt(256).toRadixString(16).padLeft(2, '0'));
+  }
+  return buffer.toString();
+}
+
+String? _normalizeSubscriptionDeviceId(String? value) {
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) {
+    return null;
+  }
+
+  final normalized = trimmed.replaceAll(RegExp(r'[^A-Za-z0-9._:-]'), '');
+  return normalized.isEmpty ? null : normalized;
 }
 
 class _TunSensitiveSettingsSnapshot {

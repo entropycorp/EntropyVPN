@@ -315,7 +315,34 @@ try {
           ),
         )
         .toList(growable: false);
-    if (routesForFallback.isEmpty) {
+    final routeExeRoutes = routesForFallback
+        .where(
+          (route) =>
+              routeExeIpv4DestinationParts(route.destinationPrefix) != null,
+        )
+        .toList(growable: false);
+    if (routeExeRoutes.isNotEmpty) {
+      await _removeRouteExeTunRoutes(routeExeRoutes);
+    }
+
+    final powerShellRoutes = routesForFallback
+        .where(
+          (route) => !routeExeRoutes.any(
+            (routeExeRoute) =>
+                windowsRouteRemovalKey(
+                  destinationPrefix: routeExeRoute.destinationPrefix,
+                  interfaceIndex: routeExeRoute.interfaceIndex,
+                  nextHop: routeExeRoute.nextHop,
+                ) ==
+                windowsRouteRemovalKey(
+                  destinationPrefix: route.destinationPrefix,
+                  interfaceIndex: route.interfaceIndex,
+                  nextHop: route.nextHop,
+                ),
+          ),
+        )
+        .toList(growable: false);
+    if (powerShellRoutes.isEmpty) {
       return;
     }
 
@@ -352,17 +379,44 @@ try {
         label: 'remove_xray_tun_routes',
         namedArgs: <String, String>{
           'RoutesBase64': base64Encode(
-            utf8.encode(windowsTunRoutesJson(routesForFallback)),
+            utf8.encode(windowsTunRoutesJson(powerShellRoutes)),
           ),
         },
       );
-      for (final route in routesForFallback) {
+      for (final route in powerShellRoutes) {
         _rememberAppLog('Xray TUN route ${route.destinationPrefix} removed.');
       }
     } catch (error) {
       _rememberAppLog(
         'Failed to remove Xray TUN routes: ${_describeError(error)}',
       );
+    }
+  }
+
+  Future<void> _removeRouteExeTunRoutes(List<WindowsTunRoute> routes) async {
+    for (final route in routes.reversed) {
+      final parts = routeExeIpv4DestinationParts(route.destinationPrefix);
+      if (parts == null) {
+        continue;
+      }
+      try {
+        final result = await _runTimedProcess(
+          'route_delete_xray_tun',
+          'route.exe',
+          <String>['DELETE', parts.address, 'MASK', parts.mask, route.nextHop],
+        );
+        if (result.exitCode != 0) {
+          _rememberAppLog(
+            'Failed to remove Xray TUN route ${route.destinationPrefix}: ${_describeError(result.stderr)}',
+          );
+          continue;
+        }
+        _rememberAppLog('Xray TUN route ${route.destinationPrefix} removed.');
+      } catch (error) {
+        _rememberAppLog(
+          'Failed to remove Xray TUN route ${route.destinationPrefix}: ${_describeError(error)}',
+        );
+      }
     }
   }
 }

@@ -100,12 +100,22 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
     if (tunIpMode != TunIpMode.ipv4) {
       return null;
     }
-    final nativeSetup = await _prepareWindowsXrayTunIpv4RoutesWithNativeApi(
-      interfaceAlias: interfaceAlias,
-      dnsSettings: dnsSettings,
-    );
-    if (nativeSetup != null) {
-      return nativeSetup;
+    if (_windowsTunServiceReady) {
+      final serviceSetup = await _prepareWindowsXrayTunIpv4RoutesWithService(
+        interfaceAlias: interfaceAlias,
+        dnsSettings: dnsSettings,
+      );
+      if (serviceSetup != null) {
+        return serviceSetup;
+      }
+    } else {
+      final nativeSetup = await _prepareWindowsXrayTunIpv4RoutesWithNativeApi(
+        interfaceAlias: interfaceAlias,
+        dnsSettings: dnsSettings,
+      );
+      if (nativeSetup != null) {
+        return nativeSetup;
+      }
     }
 
     final adapter = await _waitForNetshIpv4Interface(
@@ -197,6 +207,160 @@ extension CoreRuntimeServiceWindowsXrayTun on CoreRuntimeService {
       networkChanged: false,
       fastConfigureMethod: configureMethod,
     );
+  }
+
+  Future<WindowsTunSetup?> _prepareWindowsXrayTunIpv4RoutesWithService({
+    required String interfaceAlias,
+    required DnsSettings dnsSettings,
+  }) async {
+    Map<String, String> response;
+    try {
+      response = await _runWindowsServiceHelper(
+        <String>[
+          'prepare-xray-tun-ipv4-routes',
+          '--interface-alias',
+          interfaceAlias,
+          '--timeout-ms',
+          '2500',
+          '--address',
+          '172.19.0.1',
+          '--prefix-length',
+          '30',
+          '--metric',
+          '1',
+          '--dns-servers',
+          _xrayTunDnsServersText(dnsSettings, TunIpMode.ipv4),
+        ],
+        timeout: const Duration(seconds: 8),
+        timingLabel: 'xray_tun_ipv4',
+      );
+    } catch (error) {
+      _rememberAppLog(
+        'Service Xray TUN IPv4 route setup unavailable: ${_describeError(error)}',
+      );
+      return null;
+    }
+
+    final elapsedMs = response['elapsedMs'];
+    if (response['resultOk'] != '1') {
+      final failedStep = response['failedStep'] ?? 'unknown';
+      final routePrefix = response['routePrefix'];
+      final error = _decodeWindowsServiceText(response, 'errorB64').trim();
+      final elapsed = elapsedMs == null ? '' : ' after ${elapsedMs}ms';
+      final target = routePrefix == null
+          ? failedStep
+          : '$failedStep $routePrefix';
+      _rememberAppLog(
+        'Service Xray TUN IPv4 route setup unavailable: $target failed$elapsed: ${error.isEmpty ? 'unknown error' : error}',
+      );
+      return null;
+    }
+
+    final alias = _decodeWindowsServiceText(
+      response,
+      'interfaceAliasB64',
+    ).trim();
+    final index = int.tryParse(response['interfaceIndex'] ?? '');
+    if (alias.isEmpty || index == null || index <= 0) {
+      _rememberAppLog(
+        'Service Xray TUN IPv4 route setup unavailable: helper returned incomplete adapter details.',
+      );
+      return null;
+    }
+
+    final routeCount = int.tryParse(response['routeCount'] ?? '') ?? 0;
+    final routes = <WindowsTunRoute>[];
+    for (var routeIndex = 0; routeIndex < routeCount; routeIndex += 1) {
+      final destinationPrefix = response['route.$routeIndex.destinationPrefix']
+          ?.trim();
+      final nextHop = response['route.$routeIndex.nextHop']?.trim();
+      if (destinationPrefix == null ||
+          destinationPrefix.isEmpty ||
+          nextHop == null ||
+          nextHop.isEmpty) {
+        continue;
+      }
+      final route = WindowsTunRoute(
+        destinationPrefix: destinationPrefix,
+        interfaceAlias: alias,
+        interfaceIndex: index,
+        nextHop: nextHop,
+      );
+      routes.add(route);
+      final status = response['route.$routeIndex.status'];
+      _rememberAppLog(
+        'Xray TUN route ${route.destinationPrefix} via ${route.interfaceAlias} ${status == 'created' ? 'created' : 'already existed'}.',
+      );
+    }
+    if (routes.isEmpty) {
+      _rememberAppLog(
+        'Service Xray TUN IPv4 route setup unavailable: helper returned no routes.',
+      );
+      return null;
+    }
+
+    _rememberAppLog(
+      'Xray TUN adapter ready: interface=$alias, ifIndex=$index, status=${response['status']}.',
+    );
+    final retryDiagnostics = _windowsServiceXrayTunRetryDiagnostics(response);
+    _rememberAppLog(
+      'Xray TUN adapter setup timing: service_prepare=${_orDash(elapsedMs)}ms, wait_adapter=${_orDash(response['waitMs'])}ms, native_configure=${_orDash(response['configureMs'])}ms, native_routes=${_orDash(response['routeMs'])}ms$retryDiagnostics.',
+    );
+    _rememberAppLog(
+      'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30 (${response['addressStatus']}), ipv4-metric=1 (${response['metricStatus']}), dns=${_xrayTunDnsServersText(dnsSettings, TunIpMode.ipv4)} (${response['dnsStatus']}).',
+    );
+
+    return WindowsTunSetup(
+      routes: routes,
+      networkChanged: false,
+      fastConfigureMethod: WindowsTunFastConfigureMethod.nativeApi,
+    );
+  }
+
+  String _windowsServiceXrayTunRetryDiagnostics(Map<String, String> response) {
+    final attempts = response['attempts'];
+    final retrySleepMs = response['retrySleepMs'];
+    final configureTotalMs = response['configureTotalMs'];
+    final routeTotalMs = response['routeTotalMs'];
+    final interfaceChangeWaits = response['interfaceChangeWaits'];
+    final highResWaits = response['highResWaits'];
+    final fallbackSleepWaits = response['fallbackSleepWaits'];
+    final yieldWaits = response['yieldWaits'];
+    if (attempts == null &&
+        retrySleepMs == null &&
+        configureTotalMs == null &&
+        routeTotalMs == null &&
+        interfaceChangeWaits == null &&
+        highResWaits == null &&
+        fallbackSleepWaits == null &&
+        yieldWaits == null) {
+      return '';
+    }
+
+    final parts = <String>[
+      'attempts=${_orDash(attempts)}',
+      'retry_sleep=${_orDash(retrySleepMs)}ms',
+      'interface_change_waits=${_orDash(interfaceChangeWaits)}',
+      'high_res_waits=${_orDash(highResWaits)}',
+      'fallback_sleep_waits=${_orDash(fallbackSleepWaits)}',
+      'yield_waits=${_orDash(yieldWaits)}',
+      'configure_total=${_orDash(configureTotalMs)}ms',
+      'route_total=${_orDash(routeTotalMs)}ms',
+    ];
+    final lastRetryStep = response['lastRetryStep']?.trim();
+    if (lastRetryStep != null && lastRetryStep.isNotEmpty) {
+      final lastRetryCode = response['lastRetryErrorCode'];
+      parts.add('last_retry=$lastRetryStep/${_orDash(lastRetryCode)}');
+      final lastRetryWait = response['lastRetryWait']?.trim();
+      if (lastRetryWait != null && lastRetryWait.isNotEmpty) {
+        parts.add('last_retry_wait=$lastRetryWait');
+      }
+      final lastRetryRoutePrefix = response['lastRetryRoutePrefix']?.trim();
+      if (lastRetryRoutePrefix != null && lastRetryRoutePrefix.isNotEmpty) {
+        parts.add('last_retry_route=$lastRetryRoutePrefix');
+      }
+    }
+    return ', ${parts.join(', ')}';
   }
 
   Future<WindowsTunSetup?> _prepareWindowsXrayTunIpv4RoutesWithNativeApi({

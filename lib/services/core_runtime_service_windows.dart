@@ -9,7 +9,10 @@ class WindowsTunPrivilegeDeniedException implements Exception {
 }
 
 extension CoreRuntimeServiceWindows on CoreRuntimeService {
-  Future<void> _ensureWindowsTunPrerequisites(String binaryPath) async {
+  Future<void> _ensureWindowsTunPrerequisites(
+    String binaryPath, {
+    required TunIpMode tunIpMode,
+  }) async {
     if (!Platform.isWindows) {
       return;
     }
@@ -22,18 +25,22 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
       );
     }
 
-    if (!await ensureWindowsTunPrivileges()) {
+    if (!await ensureWindowsTunPrivileges(tunIpMode: tunIpMode)) {
       throw const WindowsTunPrivilegeDeniedException();
     }
   }
 
-  Future<bool> ensureWindowsTunPrivileges() async {
+  Future<bool> ensureWindowsTunPrivileges({TunIpMode? tunIpMode}) async {
     if (!Platform.isWindows) {
       return true;
     }
 
     final elevated = await _isRunningAsAdministrator();
     if (elevated == false) {
+      if (tunIpMode != null &&
+          await _ensureWindowsTunServiceReady(tunIpMode: tunIpMode)) {
+        return true;
+      }
       _rememberAppLog(
         'Windows TUN mode requires Administrator privileges; relaunching EntropyVPN elevated...',
       );
