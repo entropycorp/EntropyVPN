@@ -1,9 +1,13 @@
 #include "entropy_vpn_service_common.h"
 
+#include <tlhelp32.h>
+
 #include <algorithm>
 #include <cwctype>
 #include <cstdint>
+#include <deque>
 #include <sstream>
+#include <unordered_set>
 
 namespace entropy_vpn_service {
 
@@ -26,6 +30,13 @@ std::string Utf8FromWide(const std::wstring& value) {
                       static_cast<int>(value.size()), result.data(), required,
                       nullptr, nullptr);
   return result;
+}
+
+std::string Utf8FromWide(const wchar_t* value) {
+  if (value == nullptr || value[0] == L'\0') {
+    return std::string();
+  }
+  return Utf8FromWide(std::wstring(value));
 }
 
 std::wstring WideFromUtf8(const std::string& value) {
@@ -79,6 +90,57 @@ std::string ToLowerAscii(std::string value) {
                        (c >= 'A' && c <= 'Z') ? (c + 32) : c);
                  });
   return value;
+}
+
+std::string TrimAscii(std::string value) {
+  while (!value.empty() &&
+         (value.back() == '\r' || value.back() == '\n' ||
+          value.back() == ' ' || value.back() == '\t')) {
+    value.pop_back();
+  }
+  size_t start = 0;
+  while (start < value.size() &&
+         (value[start] == '\r' || value[start] == '\n' ||
+          value[start] == ' ' || value[start] == '\t')) {
+    ++start;
+  }
+  return start == 0 ? value : value.substr(start);
+}
+
+std::vector<std::string> SplitCommaList(const std::string& value) {
+  std::vector<std::string> items;
+  size_t start = 0;
+  while (start <= value.size()) {
+    const size_t next = value.find(',', start);
+    std::string item = value.substr(
+        start, next == std::string::npos ? std::string::npos : next - start);
+    item = TrimAscii(std::move(item));
+    if (!item.empty()) {
+      items.push_back(item);
+    }
+    if (next == std::string::npos) {
+      break;
+    }
+    start = next + 1;
+  }
+  return items;
+}
+
+bool ContainsToken(const std::string& value, const std::string& token) {
+  return value.find(token) != std::string::npos;
+}
+
+bool LooksVirtualInterfaceAlias(const std::string& alias) {
+  const std::string lower = ToLowerAscii(alias);
+  return ContainsToken(lower, "vpn") || ContainsToken(lower, "tun") ||
+         ContainsToken(lower, "tap") || ContainsToken(lower, "wintun") ||
+         ContainsToken(lower, "wireguard") ||
+         ContainsToken(lower, "loopback") || ContainsToken(lower, "virtual");
+}
+
+bool IsRetryableNetworkSetupError(DWORD error) {
+  return error == ERROR_NOT_FOUND || error == ERROR_NOT_READY ||
+         error == ERROR_NOT_CONNECTED;
 }
 
 std::wstring Basename(const std::wstring& path) {
@@ -400,11 +462,226 @@ std::wstring BuildCommandLine(const std::wstring& executable,
   return command_line;
 }
 
+ScopedHandle::ScopedHandle(HANDLE handle) : handle_(handle) {}
+
+ScopedHandle::~ScopedHandle() {
+  reset();
+}
+
+HANDLE ScopedHandle::get() const {
+  return handle_;
+}
+
+void ScopedHandle::reset(HANDLE handle) {
+  if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
+    CloseHandle(handle_);
+  }
+  handle_ = handle;
+}
+
+HANDLE ScopedHandle::release() {
+  HANDLE handle = handle_;
+  handle_ = nullptr;
+  return handle;
+}
+
 void CloseHandleIfValid(HANDLE* handle) {
   if (handle != nullptr && *handle != nullptr && *handle != INVALID_HANDLE_VALUE) {
     CloseHandle(*handle);
     *handle = nullptr;
   }
+}
+
+void ReadPipeToString(HANDLE pipe, std::string* output) {
+  char buffer[4096];
+  while (true) {
+    DWORD read = 0;
+    const BOOL ok = ReadFile(pipe, buffer, static_cast<DWORD>(sizeof(buffer)),
+                             &read, nullptr);
+    if (ok == 0 || read == 0) {
+      break;
+    }
+    output->append(buffer, buffer + read);
+  }
+}
+
+std::wstring NormalizePathKey(std::wstring path) {
+  if (path.empty()) {
+    return std::wstring();
+  }
+  std::replace(path.begin(), path.end(), L'/', L'\\');
+
+  DWORD required = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+  if (required > 0) {
+    std::wstring full_path;
+    full_path.resize(required);
+    const DWORD written =
+        GetFullPathNameW(path.c_str(), required, full_path.data(), nullptr);
+    if (written > 0 && written < required) {
+      full_path.resize(written);
+      path = std::move(full_path);
+    }
+  }
+
+  while (!path.empty() &&
+         (path.back() == L'\0' || path.back() == L' ' ||
+          path.back() == L'\t' || path.back() == L'\r' ||
+          path.back() == L'\n')) {
+    path.pop_back();
+  }
+  return LowerWide(std::move(path));
+}
+
+std::string BasenameWithoutExtension(const std::string& path) {
+  const size_t separator = path.find_last_of("\\/");
+  const size_t start = separator == std::string::npos ? 0 : separator + 1;
+  const size_t dot = path.find_last_of('.');
+  const size_t end =
+      dot == std::string::npos || dot < start ? path.size() : dot;
+  return path.substr(start, end - start);
+}
+
+std::string LowerPathNameKey(const std::string& path) {
+  return ToLowerAscii(BasenameWithoutExtension(path));
+}
+
+std::string QueryProcessImagePath(DWORD pid) {
+  if (pid == 0) {
+    return std::string();
+  }
+
+  ScopedHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                   pid));
+  if (process.get() == nullptr) {
+    return std::string();
+  }
+
+  std::vector<wchar_t> buffer(32768);
+  DWORD length = static_cast<DWORD>(buffer.size());
+  if (QueryFullProcessImageNameW(process.get(), 0, buffer.data(), &length) ==
+          0 ||
+      length == 0) {
+    return std::string();
+  }
+  if (length < buffer.size()) {
+    buffer[length] = L'\0';
+  } else {
+    buffer.back() = L'\0';
+  }
+  return Utf8FromWide(buffer.data());
+}
+
+DWORD SnapshotProcesses(std::vector<ProcessSnapshotEntry>* processes) {
+  processes->clear();
+  ScopedHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+  if (snapshot.get() == INVALID_HANDLE_VALUE) {
+    return GetLastError();
+  }
+
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (Process32FirstW(snapshot.get(), &entry) == 0) {
+    const DWORD error = GetLastError();
+    return error == ERROR_NO_MORE_FILES ? NO_ERROR : error;
+  }
+
+  do {
+    ProcessSnapshotEntry process;
+    process.pid = entry.th32ProcessID;
+    process.parent_pid = entry.th32ParentProcessID;
+    process.path = QueryProcessImagePath(process.pid);
+    if (!process.path.empty()) {
+      process.path_key = NormalizePathKey(WideFromUtf8(process.path));
+    }
+    processes->push_back(std::move(process));
+  } while (Process32NextW(snapshot.get(), &entry) != 0);
+
+  const DWORD error = GetLastError();
+  return error == ERROR_NO_MORE_FILES ? NO_ERROR : error;
+}
+
+std::unordered_map<DWORD, std::vector<size_t>> BuildChildrenByParent(
+    const std::vector<ProcessSnapshotEntry>& processes) {
+  std::unordered_map<DWORD, std::vector<size_t>> children_by_parent;
+  children_by_parent.reserve(processes.size());
+  for (size_t i = 0; i < processes.size(); ++i) {
+    children_by_parent[processes[i].parent_pid].push_back(i);
+  }
+  return children_by_parent;
+}
+
+std::vector<DWORD> CollectProcessTreePids(
+    DWORD root_pid,
+    const std::vector<ProcessSnapshotEntry>& processes) {
+  std::vector<DWORD> ordered;
+  if (root_pid == 0) {
+    return ordered;
+  }
+
+  const auto children_by_parent = BuildChildrenByParent(processes);
+  std::unordered_set<DWORD> visited;
+  std::deque<DWORD> queue;
+  queue.push_back(root_pid);
+  visited.insert(root_pid);
+
+  while (!queue.empty()) {
+    const DWORD current = queue.front();
+    queue.pop_front();
+    ordered.push_back(current);
+
+    const auto children = children_by_parent.find(current);
+    if (children == children_by_parent.end()) {
+      continue;
+    }
+    for (size_t child_index : children->second) {
+      const DWORD child_pid = processes[child_index].pid;
+      if (child_pid != 0 && visited.insert(child_pid).second) {
+        queue.push_back(child_pid);
+      }
+    }
+  }
+
+  std::reverse(ordered.begin(), ordered.end());
+  return ordered;
+}
+
+ProcessTerminationResult TerminateSingleProcess(DWORD pid, DWORD wait_ms) {
+  ProcessTerminationResult result;
+  result.pid = pid;
+  if (pid == 0 || pid == GetCurrentProcessId()) {
+    result.error = ERROR_ACCESS_DENIED;
+    return result;
+  }
+
+  ScopedHandle process(OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE,
+                                   pid));
+  if (process.get() == nullptr) {
+    result.error = GetLastError();
+    if (result.error == ERROR_INVALID_PARAMETER ||
+        result.error == ERROR_NOT_FOUND) {
+      result.success = true;
+      result.already_exited = true;
+      result.error = NO_ERROR;
+    }
+    return result;
+  }
+
+  if (TerminateProcess(process.get(), 1) == 0) {
+    result.error = GetLastError();
+    return result;
+  }
+
+  result.terminate_requested = true;
+  if (wait_ms > 0) {
+    const DWORD wait_result = WaitForSingleObject(process.get(), wait_ms);
+    if (wait_result == WAIT_FAILED) {
+      result.error = GetLastError();
+      return result;
+    }
+    result.wait_timed_out = wait_result == WAIT_TIMEOUT;
+  }
+  result.success = true;
+  return result;
 }
 
 }  // namespace entropy_vpn_service

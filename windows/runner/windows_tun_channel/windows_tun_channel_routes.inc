@@ -1,3 +1,5 @@
+#ifndef ENTROPY_VPN_NATIVE_TUN_FLUTTER_ONLY
+#ifndef ENTROPY_VPN_NATIVE_TUN_HEADER_TYPES
 struct Ipv4InterfaceInfo {
   std::string alias;
   ULONG interface_metric = std::numeric_limits<ULONG>::max();
@@ -24,6 +26,9 @@ struct DefaultRouteCandidate {
   ADDRESS_FAMILY family = AF_UNSPEC;
   uint64_t effective_metric = std::numeric_limits<uint64_t>::max();
 };
+#endif  // ENTROPY_VPN_NATIVE_TUN_HEADER_TYPES
+
+constexpr DWORD kTunInterfacePollSleepMs = 1;
 
 bool IsDefaultIpv4Route(const MIB_IPFORWARD_ROW2& route) {
   return route.DestinationPrefix.Prefix.Ipv4.sin_family == AF_INET &&
@@ -831,7 +836,7 @@ DWORD WaitForInterfaceAlias(const std::wstring& alias,
       *wait_ms = elapsed.count();
       return last_error == NO_ERROR ? ERROR_TIMEOUT : last_error;
     }
-    Sleep(10);
+    Sleep(kTunInterfacePollSleepMs);
   }
 }
 
@@ -929,7 +934,9 @@ DWORD ConfigureDns(NET_IFINDEX interface_index, const std::wstring& servers,
   }
   return result;
 }
+#endif  // ENTROPY_VPN_NATIVE_TUN_FLUTTER_ONLY
 
+#ifndef ENTROPY_VPN_NATIVE_TUN_ONLY
 void AddStringList(EncodableMap* map, const char* key,
                    const std::vector<std::string>& values) {
   EncodableList list;
@@ -978,7 +985,9 @@ void AddSetupFailure(EncodableMap* response, const std::string& step,
   response->insert_or_assign(EncodableValue("elapsedMs"),
                              EncodableValue(elapsed_ms));
 }
+#endif  // ENTROPY_VPN_NATIVE_TUN_ONLY
 
+#ifndef ENTROPY_VPN_NATIVE_TUN_FLUTTER_ONLY
 std::vector<std::pair<std::string, std::string>> RouteSpecsForTunMode(
     const std::string& tun_ip_mode) {
   std::vector<std::pair<std::string, std::string>> specs;
@@ -1062,7 +1071,9 @@ bool UsesIpv4(const std::string& tun_ip_mode) {
 bool UsesIpv6(const std::string& tun_ip_mode) {
   return tun_ip_mode == "ipv6" || tun_ip_mode == "dualStack";
 }
+#endif  // ENTROPY_VPN_NATIVE_TUN_FLUTTER_ONLY
 
+#ifndef ENTROPY_VPN_NATIVE_TUN_ONLY
 EncodableValue PrepareXrayTunNativeSetup(const EncodableMap& arguments,
                                          bool configure_adapter) {
   EncodableMap response;
@@ -1100,10 +1111,9 @@ EncodableValue PrepareXrayTunNativeSetup(const EncodableMap& arguments,
   std::string resolved_alias;
   std::string adapter_status;
   int64_t wait_ms = 0;
-  DWORD result = WaitForInterfaceAlias(WideFromUtf8(interface_alias),
-                                       timeout_ms, &interface_index,
-                                       &resolved_alias, &adapter_status,
-                                       &wait_ms);
+  DWORD result = WaitForInterfaceAlias(
+      WideFromUtf8(interface_alias), timeout_ms, &interface_index,
+      &resolved_alias, &adapter_status, &wait_ms);
   if (result != NO_ERROR) {
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start);
@@ -1173,20 +1183,11 @@ EncodableValue PrepareXrayTunNativeSetup(const EncodableMap& arguments,
     }
 
     if (network_changed) {
-      using DnsFlushResolverCacheFn = BOOL(WINAPI*)();
-      HMODULE dnsapi = LoadLibraryW(L"dnsapi.dll");
-      auto flush_resolver_cache =
-          dnsapi == nullptr
-              ? nullptr
-              : reinterpret_cast<DnsFlushResolverCacheFn>(
-                    GetProcAddress(dnsapi, "DnsFlushResolverCache"));
-      if (flush_resolver_cache != nullptr && flush_resolver_cache()) {
+      DWORD flush_error = NO_ERROR;
+      if (FlushDnsResolverCache(&flush_error)) {
         changes.push_back("dns-cache=cleared");
       } else {
-        warnings.push_back("DNS cache: " + ErrorMessage(GetLastError()));
-      }
-      if (dnsapi != nullptr) {
-        FreeLibrary(dnsapi);
+        warnings.push_back("DNS cache: " + ErrorMessage(flush_error));
       }
     }
     configure_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1394,7 +1395,9 @@ EncodableValue PrepareServerRoutes(const EncodableMap& arguments) {
   }
   return PrepareServerRoutesForAddresses(addresses);
 }
+#endif  // ENTROPY_VPN_NATIVE_TUN_ONLY
 
+#ifndef ENTROPY_VPN_NATIVE_TUN_FLUTTER_ONLY
 std::vector<std::string> ResolveServerRoutingAddresses(
     const std::string& server,
     const std::string& tun_ip_mode,
@@ -1476,4 +1479,4 @@ std::vector<std::string> ResolveServerRoutingAddresses(
   }
   return addresses;
 }
-
+#endif  // ENTROPY_VPN_NATIVE_TUN_FLUTTER_ONLY

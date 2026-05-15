@@ -2,6 +2,7 @@
 #define RUNNER_FLUTTER_WINDOW_H_
 
 #include <flutter/dart_project.h>
+#include <flutter/event_channel.h>
 #include <flutter/flutter_view_controller.h>
 #include <flutter/method_channel.h>
 #include <flutter/encodable_value.h>
@@ -90,6 +91,10 @@ class FlutterWindow : public Win32Window {
       windows_app_catalog_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       windows_tun_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      windows_runtime_channel_;
+  std::unique_ptr<flutter::EventChannel<flutter::EncodableValue>>
+      windows_runtime_events_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       tray_channel_;
   std::vector<TrayMenuItem> tray_switch_items_;

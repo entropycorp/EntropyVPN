@@ -185,6 +185,8 @@ EncodableValue PrepareIpv4ServerRoute(const EncodableMap& arguments) {
   response.insert_or_assign(
       EncodableValue("virtual"),
       EncodableValue(candidate.interface_info.virtual_like));
+  response.insert_or_assign(EncodableValue("remoteAddress"),
+                            EncodableValue(remote_address));
   response.insert_or_assign(EncodableValue("destinationPrefix"),
                             EncodableValue(remote_address + "/32"));
   response.insert_or_assign(EncodableValue("routeStatus"),

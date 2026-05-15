@@ -192,18 +192,55 @@ void main() {
   test(
     'Windows Xray TUN route setup replaces stale interface routes',
     () async {
-      final serviceTunSource = await File(
-        'windows/runner/entropy_vpn_service_tun.cpp',
+      final nativeTunSource = await File(
+        'windows/runner/windows_tun_channel/windows_tun_channel_routes.inc',
       ).readAsString();
-      final runnerTunSource = await File(
-        'windows/runner/windows_tun_channel.cpp',
+      final nativeTunWrapper = await File(
+        'windows/runner/entropy_vpn_native_tun.cpp',
       ).readAsString();
 
-      for (final source in <String>[serviceTunSource, runnerTunSource]) {
-        expect(source, contains('RemoveConflictingIpv4Routes'));
-        expect(source, contains('route.InterfaceIndex != interface_index'));
-        expect(source, contains('"replaced"'));
-      }
+      expect(nativeTunWrapper, contains('ENTROPY_VPN_NATIVE_TUN_ONLY'));
+      expect(nativeTunSource, contains('RemoveConflictingIpv4Routes'));
+      expect(
+        nativeTunSource,
+        contains('route.InterfaceIndex != interface_index'),
+      );
+      expect(nativeTunSource, contains('"replaced"'));
+    },
+  );
+
+  test(
+    'Windows runner and service share native protocol and route helpers',
+    () async {
+      final cmake = await File('windows/runner/CMakeLists.txt').readAsString();
+      final runnerSource = await File(
+        'windows/runner/windows_tun_channel.cpp',
+      ).readAsString();
+      final serviceSource = await File(
+        'windows/runner/entropy_vpn_service.cpp',
+      ).readAsString();
+      final servicePipeSource = await File(
+        'windows/runner/windows_tun_channel/windows_tun_channel_service.inc',
+      ).readAsString();
+
+      expect(cmake, contains('add_library(entropy_vpn_windows_native STATIC'));
+      expect(
+        cmake,
+        contains(
+          'target_link_libraries(\${BINARY_NAME} PRIVATE entropy_vpn_windows_native)',
+        ),
+      );
+      expect(
+        cmake,
+        contains(
+          'target_link_libraries(entropy_vpn_service PRIVATE entropy_vpn_windows_native)',
+        ),
+      );
+      expect(runnerSource, contains('entropy_vpn_service_protocol.h'));
+      expect(serviceSource, contains('entropy_vpn_service_protocol.h'));
+      expect(servicePipeSource, isNot(contains('ServiceBase64Encode')));
+      expect(servicePipeSource, isNot(contains('ParseServiceFields')));
+      expect(servicePipeSource, isNot(contains('QuoteWindowsCommandArgument')));
     },
   );
 
@@ -251,10 +288,39 @@ void main() {
     expect(source, contains('_forgetTemporaryServerRoutes(scopedPingRoutes)'));
   });
 
+  test('Windows runtime start has no Dart desktop fallback', () async {
+    final runtime = await File(
+      'lib/services/core_runtime_service.dart',
+    ).readAsString();
+
+    final windowsBranch = runtime.substring(
+      runtime.indexOf('if (Platform.isWindows)'),
+    );
+    expect(windowsBranch, contains('_startOnWindowsNativeRuntime'));
+    expect(
+      windowsBranch,
+      isNot(
+        contains(
+          'Native Windows runtime channel is unavailable; falling back to Dart desktop runtime.',
+        ),
+      ),
+    );
+    expect(
+      windowsBranch,
+      isNot(contains('_isWindowsNativeRuntimeUnavailable')),
+    );
+  });
+
   test('prints Xray process startup timing smoke test', () async {
     if (!Platform.isWindows) {
       print(
         'Xray process startup timing: skipped because this is not Windows.',
+      );
+      return;
+    }
+    if (Platform.environment['ENTROPYVPN_RUN_WINDOWS_RUNTIME_SMOKE'] != '1') {
+      print(
+        'Xray process startup timing: skipped because native Windows runtime smoke test is opt-in.',
       );
       return;
     }

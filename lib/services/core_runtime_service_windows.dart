@@ -9,6 +9,253 @@ class WindowsTunPrivilegeDeniedException implements Exception {
 }
 
 extension CoreRuntimeServiceWindows on CoreRuntimeService {
+  Future<void> _startOnWindowsNativeRuntime({
+    required CoreFlavor core,
+    required ParsedVpnProfile profile,
+    required TrafficMode trafficMode,
+    required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
+    required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
+  }) async {
+    if (!Platform.isWindows) {
+      return;
+    }
+
+    await _ensureWindowsNativeRuntimeEvents();
+    await _stopWindowsNativeRuntime(waitForCleanup: true);
+    await _waitForPendingStopCleanup(reason: 'before native Windows start');
+    _recentLogs.clear();
+
+    final startupTiming = _StartupTiming()..start();
+    try {
+      _rememberAppLog(
+        'Starting native Windows runtime: core=${core.name}, traffic=${trafficMode.name}, endpoint=${profile.server}:${profile.port}.',
+      );
+
+      final effectiveSplitTunnelSettings = trafficMode == TrafficMode.tun
+          ? await startupTiming.time(
+              'split_tunnel',
+              () => _expandSplitTunnelSettings(splitTunnelSettings),
+            )
+          : splitTunnelSettings.normalized;
+      final effectiveDomainSplitTunnelSettings = trafficMode == TrafficMode.tun
+          ? domainSplitTunnelSettings.normalized
+          : const DomainSplitTunnelSettings();
+
+      final binaryPath = await startupTiming.time(
+        'resolve_binary',
+        () => _resolveBinary(core),
+      );
+      final requiresTunPrerequisites =
+          (!profile.isNativeConfig && trafficMode == TrafficMode.tun) ||
+          _profileConfigHasTunInbound(profile);
+      final tunInterfaceName = requiresTunPrerequisites
+          ? _buildWindowsTunInterfaceName()
+          : null;
+      final nativePayload = profile.isNativeConfig
+          ? _buildRuntimeConfigPayload(
+              core: core,
+              profile: profile,
+              trafficMode: trafficMode,
+              tunIpMode: tunIpMode,
+              dnsSettings: dnsSettings,
+              splitTunnelSettings: effectiveSplitTunnelSettings,
+              domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
+              tunInterfaceName: tunInterfaceName,
+            )
+          : null;
+
+      final rawResult = await startupTiming.time(
+        'native_runtime_start',
+        () => CoreRuntimeService._windowsRuntimeChannel
+            .invokeMethod<Object?>('start', <String, Object?>{
+              'core': core.name,
+              'binaryPath': binaryPath,
+              'trafficMode': trafficMode.name,
+              'tunIpMode': tunIpMode.name,
+              'profileServer': profile.server,
+              'profilePort': profile.port,
+              'profileJson': jsonEncode(profile.toJson()),
+              'optionsJson': _buildWindowsNativeRuntimeOptionsJson(
+                core: core,
+                trafficMode: trafficMode,
+                tunIpMode: tunIpMode,
+                dnsSettings: dnsSettings.normalized,
+                splitTunnelSettings: effectiveSplitTunnelSettings,
+                domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
+              ),
+              'nativeConfigJson': nativePayload?.json,
+              'workingDirectory': _resolveConfigWorkingDirectory(profile),
+              'dnsServers': dnsSettings.normalized.serversFor(tunIpMode),
+              'profileIsNativeConfig': profile.isNativeConfig,
+              'requiresTunPrerequisites': requiresTunPrerequisites,
+              'skipValidation':
+                  nativePayload?.skipValidation ??
+                  (core == CoreFlavor.xray && trafficMode == TrafficMode.tun),
+            }),
+      );
+      if (rawResult is! Map) {
+        throw StateError('Native Windows runtime returned an invalid result.');
+      }
+      final result = rawResult.cast<Object?, Object?>();
+      if (result['exitRequested'] == true) {
+        _rememberAppLog(
+          'Elevated instance was launched. Exiting unelevated instance.',
+        );
+        exit(0);
+      }
+      if (result['ok'] != true) {
+        final failedStep = result['failedStep']?.toString() ?? 'native-start';
+        final error = result['error']?.toString() ?? 'unknown error';
+        throw StateError('$failedStep failed: $error');
+      }
+
+      _windowsNativeRuntimeRunning = true;
+      _windowsNativeRuntimePid = (result['pid'] as num?)?.toInt() ?? 0;
+      _windowsTunServiceReady = result['useService'] == true;
+      final runtimeDirectory = result['runtimeDirectory']?.toString();
+      _rememberAppLog(
+        'Native Windows runtime started${_windowsNativeRuntimePid > 0 ? ' with PID $_windowsNativeRuntimePid' : ''}${runtimeDirectory == null ? '' : ' in $runtimeDirectory'}.',
+      );
+    } catch (error) {
+      _windowsNativeRuntimeRunning = false;
+      _windowsNativeRuntimePid = 0;
+      _windowsTunServiceReady = false;
+      _rememberAppLog('Native Windows start failed: ${_describeError(error)}');
+      rethrow;
+    } finally {
+      startupTiming.stop();
+      _rememberAppLog(
+        'Native Windows startup timing: ${startupTiming.summary()}.',
+      );
+    }
+  }
+
+  Future<void> _stopWindowsNativeRuntime({required bool waitForCleanup}) async {
+    if (!Platform.isWindows) {
+      return;
+    }
+
+    final stopTiming = _StartupTiming()..start();
+    try {
+      await _ensureWindowsNativeRuntimeEvents();
+      final rawResult = await stopTiming.time(
+        'native_runtime_stop',
+        () => CoreRuntimeService._windowsRuntimeChannel.invokeMethod<Object?>(
+          'stop',
+          <String, Object?>{'waitForCleanup': waitForCleanup},
+        ),
+      );
+      if (rawResult is Map) {
+        final result = rawResult.cast<Object?, Object?>();
+        if (result['ok'] != true) {
+          final failedStep = result['failedStep']?.toString() ?? 'native-stop';
+          final error = result['error']?.toString() ?? 'unknown error';
+          _rememberAppLog('Native Windows stop failed: $failedStep: $error');
+        }
+      }
+    } on MissingPluginException {
+      _rememberAppLog(
+        'Native Windows runtime stop skipped: runner channel is not registered.',
+      );
+    } catch (error) {
+      _rememberAppLog('Native Windows stop failed: ${_describeError(error)}');
+    } finally {
+      _windowsNativeRuntimeRunning = false;
+      _windowsNativeRuntimePid = 0;
+      _windowsTunServiceReady = false;
+      stopTiming.stop();
+      _rememberAppLog('Native Windows stop timing: ${stopTiming.summary()}.');
+    }
+  }
+
+  Future<void> _ensureWindowsNativeRuntimeEvents() async {
+    if (!Platform.isWindows ||
+        _windowsNativeRuntimeEventsSubscription != null) {
+      return;
+    }
+
+    try {
+      ServicesBinding.instance.defaultBinaryMessenger;
+    } catch (error) {
+      throw MissingPluginException(error.toString());
+    }
+
+    _windowsNativeRuntimeEventsSubscription = CoreRuntimeService
+        ._windowsRuntimeEventsChannel
+        .receiveBroadcastStream()
+        .listen(
+          _handleWindowsNativeRuntimeEvent,
+          onError: (Object error) {
+            _rememberAppLog(
+              'Native Windows runtime event stream failed: ${_describeError(error)}',
+            );
+          },
+        );
+  }
+
+  void _handleWindowsNativeRuntimeEvent(dynamic event) {
+    if (event is! Map) {
+      return;
+    }
+    final decoded = event.cast<Object?, Object?>();
+    final type = decoded['type']?.toString();
+    switch (type) {
+      case 'log':
+        final line = decoded['line']?.toString().trim();
+        if (line != null && line.isNotEmpty) {
+          _rememberLog(line);
+        }
+        break;
+      case 'state':
+        _windowsNativeRuntimeRunning = decoded['running'] == true;
+        _windowsNativeRuntimePid = (decoded['pid'] as num?)?.toInt() ?? 0;
+        _windowsTunServiceReady = decoded['useService'] == true;
+        onLogUpdated?.call();
+        break;
+      case 'exit':
+        _windowsNativeRuntimeRunning = false;
+        _windowsNativeRuntimePid = 0;
+        _windowsTunServiceReady = false;
+        final message = decoded['error']?.toString().trim();
+        onProcessExit?.call(
+          message == null || message.isEmpty ? null : message,
+        );
+        break;
+    }
+  }
+
+  String _buildWindowsNativeRuntimeOptionsJson({
+    required CoreFlavor core,
+    required TrafficMode trafficMode,
+    required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
+    required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
+  }) {
+    final splitTunnel = splitTunnelSettings.normalized;
+    final domainSplitTunnel = domainSplitTunnelSettings.normalized;
+    return jsonEncode(<String, Object?>{
+      'core': core.name,
+      'trafficMode': trafficMode.name,
+      'tunIpMode': tunIpMode.name,
+      'isAndroid': false,
+      'dnsServers': dnsSettings.normalized.serversFor(tunIpMode),
+      'splitTunnelMode': splitTunnel.mode.name,
+      'splitTunnelAppNames': splitTunnel.apps
+          .map((app) => app.name)
+          .toList(growable: false),
+      'splitTunnelAppPaths': splitTunnel.apps
+          .map((app) => app.path)
+          .toList(growable: false),
+      'domainSplitTunnelMode': domainSplitTunnel.mode.name,
+      'domainSplitTunnelDomains': domainSplitTunnel.domains
+          .map((domain) => domain.matchSuffix)
+          .toList(growable: false),
+    });
+  }
+
   Future<void> _ensureWindowsTunPrerequisites(
     String binaryPath, {
     required TunIpMode tunIpMode,

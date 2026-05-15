@@ -201,19 +201,6 @@ std::string StartCore(const std::map<std::string, std::string>& fields) {
   return BuildResponse(response);
 }
 
-void ReadPipeToString(HANDLE pipe, std::string* output) {
-  char buffer[4096];
-  while (true) {
-    DWORD read = 0;
-    const BOOL ok = ReadFile(pipe, buffer, static_cast<DWORD>(sizeof(buffer)),
-                             &read, nullptr);
-    if (ok == 0 || read == 0) {
-      break;
-    }
-    output->append(buffer, buffer + read);
-  }
-}
-
 std::string RunAllowedProcess(
     const std::map<std::string, std::string>& fields) {
   const std::wstring executable = ReadDecodedWide(fields, "executable");

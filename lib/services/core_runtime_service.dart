@@ -42,6 +42,12 @@ class CoreRuntimeService {
   static const MethodChannel _windowsTunChannel = MethodChannel(
     'entropy_vpn/windows_tun',
   );
+  static const MethodChannel _windowsRuntimeChannel = MethodChannel(
+    'entropy_vpn/windows_runtime',
+  );
+  static const EventChannel _windowsRuntimeEventsChannel = EventChannel(
+    'entropy_vpn/windows_runtime_events',
+  );
 
   final CoreConfigBuilder _configBuilder;
   final GeoIpService _geoIpService;
@@ -57,8 +63,11 @@ class CoreRuntimeService {
   StreamSubscription<String>? _stdoutSubscription;
   StreamSubscription<String>? _stderrSubscription;
   Timer? _windowsServicePollTimer;
+  StreamSubscription<dynamic>? _windowsNativeRuntimeEventsSubscription;
   bool _windowsServicePollInFlight = false;
   bool _windowsServiceStartupSetupInProgress = false;
+  bool _windowsNativeRuntimeRunning = false;
+  int _windowsNativeRuntimePid = 0;
   SystemProxySnapshot? _savedProxySnapshot;
   bool? _cachedWindowsElevation;
   bool _windowsTunServiceReady = false;
@@ -74,7 +83,9 @@ class CoreRuntimeService {
 
   bool get isRunning => Platform.isAndroid
       ? (_androidBridge?.isRunning ?? false)
-      : (_process != null || _windowsServiceProcess != null);
+      : (_process != null ||
+            _windowsServiceProcess != null ||
+            _windowsNativeRuntimeRunning);
   String? get androidPhase => Platform.isAndroid ? _androidBridge?.phase : null;
   String? get lastLogLine => Platform.isAndroid
       ? _androidBridge?.lastLogLine
@@ -93,9 +104,7 @@ class CoreRuntimeService {
     required TunIpMode tunIpMode,
     required Future<T> Function() action,
   }) async {
-    if (!Platform.isWindows ||
-        trafficMode != TrafficMode.tun ||
-        _process == null) {
+    if (!Platform.isWindows || trafficMode != TrafficMode.tun || !isRunning) {
       return action();
     }
 
@@ -203,6 +212,19 @@ class CoreRuntimeService {
       return;
     }
 
+    if (Platform.isWindows) {
+      await _startOnWindowsNativeRuntime(
+        core: core,
+        profile: profile,
+        trafficMode: trafficMode,
+        tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
+        splitTunnelSettings: splitTunnelSettings,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
+      );
+      return;
+    }
+
     await _startOnDesktop(
       core: core,
       profile: profile,
@@ -217,6 +239,10 @@ class CoreRuntimeService {
   Future<void> stop({bool waitForCleanup = false}) async {
     if (Platform.isAndroid) {
       await _stopOnAndroid();
+      return;
+    }
+    if (Platform.isWindows) {
+      await _stopWindowsNativeRuntime(waitForCleanup: waitForCleanup);
       return;
     }
     await _stopOnDesktop(waitForCleanup: waitForCleanup);

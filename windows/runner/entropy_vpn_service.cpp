@@ -4,6 +4,7 @@
 #include "entropy_vpn_service_commands.h"
 #include "entropy_vpn_service_common.h"
 #include "entropy_vpn_service_pipe.h"
+#include "entropy_vpn_service_protocol.h"
 
 #include <atomic>
 #include <string>
@@ -82,15 +83,6 @@ void WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
   SetServiceState(SERVICE_STOPPED);
 }
 
-std::string FieldLine(const std::string& key, const std::string& value) {
-  return key + "=" + value + "\n";
-}
-
-void AddEncodedRequestField(std::string* request, const std::string& key,
-                            const std::wstring& value) {
-  request->append(FieldLine(key, Base64Encode(Utf8FromWide(value))));
-}
-
 bool ResponseIsOk(const std::string& response) {
   const auto fields = ParseFields(response);
   const auto ok = fields.find("ok");
@@ -128,109 +120,22 @@ std::vector<std::wstring> CommandLineArguments() {
   return args;
 }
 
-std::wstring OptionValue(const std::vector<std::wstring>& args,
-                         const std::wstring& name) {
-  for (size_t i = 0; i + 1 < args.size(); ++i) {
-    if (args[i] == name) {
-      return args[i + 1];
-    }
-  }
-  return std::wstring();
-}
-
-std::vector<std::wstring> RepeatedOptionValues(
-    const std::vector<std::wstring>& args, const std::wstring& name) {
-  std::vector<std::wstring> values;
-  for (size_t i = 0; i + 1 < args.size(); ++i) {
-    if (args[i] == name) {
-      values.push_back(args[i + 1]);
-      ++i;
-    }
-  }
-  return values;
-}
-
 int ClientMain(const std::vector<std::wstring>& args) {
   if (args.size() < 2) {
     WriteStderr("Usage: entropy_vpn_service.exe service|ping|start-core|stop-core|status-core|run-process|prepare-ipv4-server-route|prepare-domain-server-route|prepare-xray-tun-ipv4-routes\n");
     return 64;
   }
 
-  const std::wstring command = args[1];
+  std::vector<std::string> request_args;
+  request_args.reserve(args.size() - 1);
+  for (size_t i = 1; i < args.size(); ++i) {
+    request_args.push_back(Utf8FromWide(args[i]));
+  }
+
   std::string request;
-  if (command == L"ping") {
-    request = FieldLine("command", "ping");
-  } else if (command == L"start-core") {
-    request = FieldLine("command", "start_core");
-    AddEncodedRequestField(&request, "runId", OptionValue(args, L"--run-id"));
-    AddEncodedRequestField(&request, "executable",
-                           OptionValue(args, L"--executable"));
-    AddEncodedRequestField(&request, "workingDirectory",
-                           OptionValue(args, L"--working-directory"));
-    AddEncodedRequestField(&request, "stdoutPath",
-                           OptionValue(args, L"--stdout-path"));
-    AddEncodedRequestField(&request, "stderrPath",
-                           OptionValue(args, L"--stderr-path"));
-    const auto process_args = RepeatedOptionValues(args, L"--arg");
-    request.append(FieldLine("argCount", std::to_string(process_args.size())));
-    for (size_t i = 0; i < process_args.size(); ++i) {
-      AddEncodedRequestField(&request, "arg" + std::to_string(i),
-                             process_args[i]);
-    }
-  } else if (command == L"stop-core") {
-    request = FieldLine("command", "stop_core");
-    AddEncodedRequestField(&request, "runId", OptionValue(args, L"--run-id"));
-  } else if (command == L"status-core") {
-    request = FieldLine("command", "status_core");
-    AddEncodedRequestField(&request, "runId", OptionValue(args, L"--run-id"));
-  } else if (command == L"run-process") {
-    request = FieldLine("command", "run_process");
-    AddEncodedRequestField(&request, "executable",
-                           OptionValue(args, L"--executable"));
-    AddEncodedRequestField(&request, "workingDirectory",
-                           OptionValue(args, L"--working-directory"));
-    const std::wstring timeout = OptionValue(args, L"--timeout-ms");
-    request.append(FieldLine("timeoutMs",
-                             timeout.empty() ? "30000" : Utf8FromWide(timeout)));
-    const auto process_args = RepeatedOptionValues(args, L"--arg");
-    request.append(FieldLine("argCount", std::to_string(process_args.size())));
-    for (size_t i = 0; i < process_args.size(); ++i) {
-      AddEncodedRequestField(&request, "arg" + std::to_string(i),
-                             process_args[i]);
-    }
-  } else if (command == L"prepare-ipv4-server-route") {
-    request = FieldLine("command", "prepare_ipv4_server_route");
-    AddEncodedRequestField(&request, "remoteAddress",
-                           OptionValue(args, L"--remote-address"));
-  } else if (command == L"prepare-domain-server-route") {
-    request = FieldLine("command", "prepare_domain_server_route");
-    AddEncodedRequestField(&request, "host", OptionValue(args, L"--host"));
-    const std::wstring tun_ip_mode = OptionValue(args, L"--tun-ip-mode");
-    request.append(FieldLine("tunIpMode",
-                             tun_ip_mode.empty()
-                                 ? "ipv4"
-                                 : Utf8FromWide(tun_ip_mode)));
-  } else if (command == L"prepare-xray-tun-ipv4-routes") {
-    request = FieldLine("command", "prepare_xray_tun_ipv4_routes");
-    AddEncodedRequestField(&request, "interfaceAlias",
-                           OptionValue(args, L"--interface-alias"));
-    AddEncodedRequestField(&request, "address", OptionValue(args, L"--address"));
-    AddEncodedRequestField(&request, "dnsServers",
-                           OptionValue(args, L"--dns-servers"));
-    const std::wstring timeout = OptionValue(args, L"--timeout-ms");
-    const std::wstring prefix_length =
-        OptionValue(args, L"--prefix-length");
-    const std::wstring metric = OptionValue(args, L"--metric");
-    request.append(FieldLine("timeoutMs",
-                             timeout.empty() ? "2500" : Utf8FromWide(timeout)));
-    request.append(FieldLine("prefixLength",
-                             prefix_length.empty()
-                                 ? "30"
-                                 : Utf8FromWide(prefix_length)));
-    request.append(FieldLine("metric",
-                             metric.empty() ? "1" : Utf8FromWide(metric)));
-  } else {
-    WriteStderr("Unknown EntropyVPN service client command.\n");
+  std::string build_error;
+  if (!BuildWindowsServiceRequest(request_args, &request, &build_error)) {
+    WriteStderr(build_error + "\n");
     return 64;
   }
 
