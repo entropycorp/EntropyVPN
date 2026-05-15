@@ -87,6 +87,8 @@ class FlutterWindow : public Win32Window {
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       lifecycle_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
+      windows_app_catalog_channel_;
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       windows_tun_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       tray_channel_;

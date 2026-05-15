@@ -328,6 +328,9 @@ std::string HandleRequest(const std::string& request_text) {
   if (command->second == "prepare_ipv4_server_route") {
     return PrepareIpv4ServerRouteNative(fields);
   }
+  if (command->second == "prepare_domain_server_route") {
+    return PrepareDomainServerRouteNative(fields);
+  }
   if (command->second == "prepare_xray_tun_ipv4_routes") {
     return PrepareXrayTunIpv4RoutesNative(fields);
   }

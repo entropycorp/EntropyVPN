@@ -3,7 +3,6 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
-import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
@@ -27,9 +26,7 @@ part 'core_runtime_service_diagnostics.dart';
 part 'core_runtime_service_windows.dart';
 part 'core_runtime_service_windows_process.dart';
 part 'core_runtime_service_windows_service.dart';
-part 'core_runtime_service_windows_server_routing.dart';
 part 'core_runtime_service_windows_temporary_routes.dart';
-part 'core_runtime_service_windows_xray_tun.dart';
 
 class CoreRuntimeService {
   CoreRuntimeService({
@@ -42,7 +39,6 @@ class CoreRuntimeService {
 
   static const int _maxRecentLogs = 400;
   static const Duration _splitTunnelExpansionCacheTtl = Duration(seconds: 30);
-  static const Duration _windowsProcessSnapshotCacheTtl = Duration(seconds: 2);
   static const MethodChannel _windowsTunChannel = MethodChannel(
     'entropy_vpn/windows_tun',
   );
@@ -67,7 +63,6 @@ class CoreRuntimeService {
   bool? _cachedWindowsElevation;
   bool _windowsTunServiceReady = false;
   _SplitTunnelExpansionCacheEntry? _splitTunnelExpansionCache;
-  WindowsProcessSnapshotCacheEntry? _windowsProcessSnapshotCache;
   Future<void>? _pendingStopCleanup;
   final Set<String> _sweptWindowsTunCorePaths = <String>{};
   final Set<String> _preparedXrayTunAdapterKeys = <String>{};

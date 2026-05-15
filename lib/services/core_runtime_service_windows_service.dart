@@ -1,12 +1,7 @@
 part of 'core_runtime_service.dart';
 
 const String _windowsTunServiceName = 'EntropyVPNService';
-const String _windowsTunServicePipePath = r'\\.\pipe\EntropyVPNService';
-const Set<String> _windowsTunServiceToolAllowlist = <String>{
-  'route.exe',
-  'netsh.exe',
-  'fltmc.exe',
-};
+const Set<String> _windowsTunServiceToolAllowlist = <String>{'fltmc.exe'};
 
 class WindowsServiceCoreProcess {
   WindowsServiceCoreProcess({
@@ -67,18 +62,53 @@ extension CoreRuntimeServiceWindowsService on CoreRuntimeService {
 
   Future<void> _startWindowsTunService() async {
     try {
-      final result = await Process.run('sc.exe', <String>[
-        'start',
-        _windowsTunServiceName,
-      ]);
-      if (result.exitCode != 0 &&
-          !'${result.stdout}\n${result.stderr}'.toLowerCase().contains(
-            'already',
-          )) {
+      final rawResult = await CoreRuntimeService._windowsTunChannel
+          .invokeMethod<Object?>('startWindowsService', <String, Object?>{
+            'serviceName': _windowsTunServiceName,
+            'timeoutMs': 1500,
+          });
+      if (rawResult is! Map) {
         _rememberAppLog(
-          'Could not start $_windowsTunServiceName: ${_describeError(result.stderr)}',
+          'Could not start $_windowsTunServiceName: native runner returned unexpected result.',
         );
+        return;
       }
+      final result = rawResult.cast<Object?, Object?>();
+      final elapsedMs = result['elapsedMs']?.toString();
+      final state = result['state']?.toString() ?? 'unknown';
+      final elapsed = elapsedMs == null ? '' : ' elapsed=${elapsedMs}ms';
+      if (result['ok'] != true) {
+        final failedStep = result['failedStep']?.toString() ?? 'unknown';
+        final error = result['error']?.toString() ?? 'unknown error';
+        _rememberAppLog(
+          'Could not start $_windowsTunServiceName: $failedStep failed$elapsed: $error',
+        );
+        return;
+      }
+
+      if (result['running'] == true) {
+        final action = result['alreadyRunning'] == true
+            ? 'already running'
+            : result['startRequested'] == true
+            ? 'started'
+            : 'running';
+        _rememberAppLog(
+          '$_windowsTunServiceName $action via native service control$elapsed.',
+        );
+        return;
+      }
+
+      _rememberAppLog(
+        '$_windowsTunServiceName native start requested but service is $state$elapsed.',
+      );
+    } on MissingPluginException {
+      _rememberAppLog(
+        'Could not start $_windowsTunServiceName: Windows runner channel is not registered.',
+      );
+    } on PlatformException catch (error) {
+      _rememberAppLog(
+        'Could not start $_windowsTunServiceName: ${error.message ?? error.code}',
+      );
     } catch (error) {
       _rememberAppLog(
         'Could not start $_windowsTunServiceName: ${_describeError(error)}',
@@ -338,32 +368,36 @@ extension CoreRuntimeServiceWindowsService on CoreRuntimeService {
     String? timingLabel,
   }) async {
     final stopwatch = Stopwatch()..start();
-    var transport = 'direct_pipe';
+    var transport = 'native_pipe';
     try {
-      final request = _buildWindowsServiceRequest(args);
-      final directResult = await Isolate.run(
-        () => _trySendWindowsServicePipeRequest(
-          request,
-          timeoutMs: timeout.inMilliseconds,
-        ),
-      ).timeout(timeout + const Duration(seconds: 1));
-      final directError = directResult.transportError;
-      if (directError != null) {
-        transport = 'helper_process';
-        final response = await _runWindowsServiceHelperProcess(
-          args,
-          timeout: timeout,
-          directError: directError,
+      final rawResult = await CoreRuntimeService._windowsTunChannel
+          .invokeMethod<Object?>('runWindowsServiceHelper', <String, Object?>{
+            'args': args,
+            'timeoutMs': timeout.inMilliseconds,
+          })
+          .timeout(timeout + const Duration(seconds: 1));
+      if (rawResult is! Map) {
+        throw StateError(
+          'EntropyVPN service helper native runner returned unexpected result.',
         );
-        stopwatch.stop();
-        _logWindowsServiceRequestTiming(
-          timingLabel,
-          transport: transport,
-          elapsedMs: stopwatch.elapsedMilliseconds,
-        );
-        return response;
       }
-      final response = _parseWindowsServiceResponse(directResult.response);
+      final result = rawResult.cast<Object?, Object?>();
+      transport = result['transport']?.toString() ?? transport;
+      if (result['ok'] != true) {
+        throw StateError(
+          result['error']?.toString() ??
+              'EntropyVPN Service request failed in native runner.',
+        );
+      }
+      final fields = result['fields'];
+      if (fields is! Map) {
+        throw StateError(
+          'EntropyVPN service helper native runner returned no response fields.',
+        );
+      }
+      final response = fields.map<String, String>(
+        (key, value) => MapEntry(key.toString(), value?.toString() ?? ''),
+      );
       stopwatch.stop();
       _logWindowsServiceRequestTiming(
         timingLabel,
@@ -397,259 +431,6 @@ extension CoreRuntimeServiceWindowsService on CoreRuntimeService {
     );
   }
 
-  Future<Map<String, String>> _runWindowsServiceHelperProcess(
-    List<String> args, {
-    required Duration timeout,
-    required String directError,
-  }) async {
-    final helperPath = _resolveWindowsServiceHelperPath();
-    if (helperPath == null) {
-      throw StateError(
-        'EntropyVPN service pipe request failed and entropy_vpn_service.exe was not found for fallback: $directError',
-      );
-    }
-    final run = Process.run(helperPath, args);
-    final result = await run.timeout(timeout);
-    final stdout = result.stdout.toString();
-    return _parseWindowsServiceResponse(
-      stdout,
-      stderr: result.stderr.toString(),
-      exitCode: result.exitCode,
-    );
-  }
-
-  Map<String, String> _parseWindowsServiceResponse(
-    String stdout, {
-    String stderr = '',
-    int exitCode = 0,
-  }) {
-    final fields = _parseWindowsServiceFields(stdout);
-    if (fields['ok'] == '1') {
-      return fields;
-    }
-
-    final message =
-        _decodeWindowsServiceText(fields, 'errorB64').trim().isNotEmpty
-        ? _decodeWindowsServiceText(fields, 'errorB64').trim()
-        : stderr.trim().isNotEmpty
-        ? stderr.trim()
-        : stdout.trim().isNotEmpty
-        ? stdout.trim()
-        : 'EntropyVPN Service request failed with exit $exitCode.';
-    throw StateError(message);
-  }
-
-  String _buildWindowsServiceRequest(List<String> args) {
-    if (args.isEmpty) {
-      throw StateError('Missing EntropyVPN service command.');
-    }
-
-    final command = args.first;
-    final request = StringBuffer();
-    if (command == 'ping') {
-      _writeWindowsServiceField(request, 'command', 'ping');
-    } else if (command == 'start-core') {
-      _writeWindowsServiceField(request, 'command', 'start_core');
-      _writeWindowsServiceEncodedField(
-        request,
-        'runId',
-        _windowsServiceOptionValue(args, '--run-id'),
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'executable',
-        _windowsServiceOptionValue(args, '--executable'),
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'workingDirectory',
-        _windowsServiceOptionValue(args, '--working-directory'),
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'stdoutPath',
-        _windowsServiceOptionValue(args, '--stdout-path'),
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'stderrPath',
-        _windowsServiceOptionValue(args, '--stderr-path'),
-      );
-      _writeWindowsServiceArgumentFields(
-        request,
-        _windowsServiceRepeatedOptionValues(args, '--arg'),
-      );
-    } else if (command == 'stop-core') {
-      _writeWindowsServiceField(request, 'command', 'stop_core');
-      _writeWindowsServiceEncodedField(
-        request,
-        'runId',
-        _windowsServiceOptionValue(args, '--run-id'),
-      );
-    } else if (command == 'status-core') {
-      _writeWindowsServiceField(request, 'command', 'status_core');
-      _writeWindowsServiceEncodedField(
-        request,
-        'runId',
-        _windowsServiceOptionValue(args, '--run-id'),
-      );
-    } else if (command == 'run-process') {
-      _writeWindowsServiceField(request, 'command', 'run_process');
-      _writeWindowsServiceEncodedField(
-        request,
-        'executable',
-        _windowsServiceOptionValue(args, '--executable'),
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'workingDirectory',
-        _windowsServiceOptionValue(args, '--working-directory'),
-      );
-      _writeWindowsServiceField(
-        request,
-        'timeoutMs',
-        _windowsServiceOptionValue(args, '--timeout-ms', fallback: '30000'),
-      );
-      _writeWindowsServiceArgumentFields(
-        request,
-        _windowsServiceRepeatedOptionValues(args, '--arg'),
-      );
-    } else if (command == 'prepare-ipv4-server-route') {
-      _writeWindowsServiceField(
-        request,
-        'command',
-        'prepare_ipv4_server_route',
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'remoteAddress',
-        _windowsServiceOptionValue(args, '--remote-address'),
-      );
-    } else if (command == 'prepare-xray-tun-ipv4-routes') {
-      _writeWindowsServiceField(
-        request,
-        'command',
-        'prepare_xray_tun_ipv4_routes',
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'interfaceAlias',
-        _windowsServiceOptionValue(args, '--interface-alias'),
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'address',
-        _windowsServiceOptionValue(args, '--address'),
-      );
-      _writeWindowsServiceEncodedField(
-        request,
-        'dnsServers',
-        _windowsServiceOptionValue(args, '--dns-servers'),
-      );
-      _writeWindowsServiceField(
-        request,
-        'timeoutMs',
-        _windowsServiceOptionValue(args, '--timeout-ms', fallback: '2500'),
-      );
-      _writeWindowsServiceField(
-        request,
-        'prefixLength',
-        _windowsServiceOptionValue(args, '--prefix-length', fallback: '30'),
-      );
-      _writeWindowsServiceField(
-        request,
-        'metric',
-        _windowsServiceOptionValue(args, '--metric', fallback: '1'),
-      );
-    } else {
-      throw StateError('Unknown EntropyVPN service command: $command');
-    }
-
-    return request.toString();
-  }
-
-  void _writeWindowsServiceArgumentFields(
-    StringBuffer request,
-    List<String> args,
-  ) {
-    _writeWindowsServiceField(request, 'argCount', args.length.toString());
-    for (var index = 0; index < args.length; index += 1) {
-      _writeWindowsServiceEncodedField(request, 'arg$index', args[index]);
-    }
-  }
-
-  void _writeWindowsServiceField(
-    StringBuffer request,
-    String key,
-    String value,
-  ) {
-    request
-      ..write(key)
-      ..write('=')
-      ..write(value)
-      ..write('\n');
-  }
-
-  void _writeWindowsServiceEncodedField(
-    StringBuffer request,
-    String key,
-    String value,
-  ) {
-    _writeWindowsServiceField(request, key, base64Encode(utf8.encode(value)));
-  }
-
-  String _windowsServiceOptionValue(
-    List<String> args,
-    String name, {
-    String fallback = '',
-  }) {
-    for (var index = 0; index + 1 < args.length; index += 1) {
-      if (args[index] == name) {
-        return args[index + 1];
-      }
-    }
-    return fallback;
-  }
-
-  List<String> _windowsServiceRepeatedOptionValues(
-    List<String> args,
-    String name,
-  ) {
-    final values = <String>[];
-    for (var index = 0; index + 1 < args.length; index += 1) {
-      if (args[index] == name) {
-        values.add(args[index + 1]);
-        index += 1;
-      }
-    }
-    return values;
-  }
-
-  String? _resolveWindowsServiceHelperPath() {
-    if (!Platform.isWindows) {
-      return null;
-    }
-    for (final root in _candidateRoots()) {
-      final candidate = p.join(root, 'entropy_vpn_service.exe');
-      if (File(candidate).existsSync()) {
-        return candidate;
-      }
-    }
-    return null;
-  }
-
-  Map<String, String> _parseWindowsServiceFields(String output) {
-    final fields = <String, String>{};
-    for (final line in const LineSplitter().convert(output)) {
-      final separator = line.indexOf('=');
-      if (separator <= 0) {
-        continue;
-      }
-      fields[line.substring(0, separator)] = line.substring(separator + 1);
-    }
-    return fields;
-  }
-
   String _decodeWindowsServiceText(Map<String, String> fields, String key) {
     final encoded = fields[key];
     if (encoded == null || encoded.isEmpty) {
@@ -661,172 +442,4 @@ extension CoreRuntimeServiceWindowsService on CoreRuntimeService {
       return '';
     }
   }
-}
-
-({String response, String? transportError}) _trySendWindowsServicePipeRequest(
-  String request, {
-  required int timeoutMs,
-}) {
-  try {
-    final response = _sendWindowsServicePipeRequest(
-      request,
-      timeoutMs: timeoutMs,
-    );
-    if (response.isEmpty) {
-      return (
-        response: '',
-        transportError: 'EntropyVPN service pipe returned no response.',
-      );
-    }
-    return (response: response, transportError: null);
-  } catch (error) {
-    return (response: '', transportError: error.toString());
-  }
-}
-
-String _sendWindowsServicePipeRequest(
-  String request, {
-  required int timeoutMs,
-}) {
-  final kernel32 = DynamicLibrary.open('kernel32.dll');
-  final waitNamedPipe = kernel32
-      .lookupFunction<WaitNamedPipeWNative, WaitNamedPipeWDart>(
-        'WaitNamedPipeW',
-      );
-  final createFile = kernel32
-      .lookupFunction<CreateFileWNative, CreateFileWDart>('CreateFileW');
-  final setNamedPipeHandleState = kernel32
-      .lookupFunction<
-        SetNamedPipeHandleStateNative,
-        SetNamedPipeHandleStateDart
-      >('SetNamedPipeHandleState');
-  final writeFile = kernel32.lookupFunction<WriteFileNative, WriteFileDart>(
-    'WriteFile',
-  );
-  final readFile = kernel32.lookupFunction<ReadFileNative, ReadFileDart>(
-    'ReadFile',
-  );
-  final flushFileBuffers = kernel32
-      .lookupFunction<FlushFileBuffersNative, FlushFileBuffersDart>(
-        'FlushFileBuffers',
-      );
-  final closeHandle = kernel32
-      .lookupFunction<CloseHandleNative, CloseHandleDart>('CloseHandle');
-  final getLastError = kernel32
-      .lookupFunction<GetLastErrorNative, GetLastErrorDart>('GetLastError');
-
-  final pipeName = _nativeUtf16(_windowsTunServicePipePath);
-  var pipe = windowsInvalidHandleValue;
-  try {
-    final waitMs = timeoutMs <= 0
-        ? 1
-        : timeoutMs > 3000
-        ? 3000
-        : timeoutMs;
-    if (waitNamedPipe(pipeName, waitMs) == 0) {
-      throw StateError(
-        'EntropyVPN service pipe is not available: Windows error ${getLastError()}.',
-      );
-    }
-
-    pipe = createFile(
-      pipeName,
-      windowsGenericRead | windowsGenericWrite,
-      0,
-      nullptr,
-      windowsOpenExisting,
-      windowsFileAttributeNormal,
-      0,
-    );
-    if (pipe == windowsInvalidHandleValue) {
-      throw StateError(
-        'Could not open EntropyVPN service pipe: Windows error ${getLastError()}.',
-      );
-    }
-
-    final mode = calloc<Uint32>();
-    try {
-      mode.value = windowsPipeReadmodeMessage;
-      setNamedPipeHandleState(pipe, mode, nullptr, nullptr);
-    } finally {
-      calloc.free(mode);
-    }
-
-    final requestBytes = utf8.encode(request);
-    final requestBuffer = calloc<Uint8>(requestBytes.length);
-    final bytesWritten = calloc<Uint32>();
-    try {
-      requestBuffer.asTypedList(requestBytes.length).setAll(0, requestBytes);
-      if (writeFile(
-            pipe,
-            requestBuffer.cast<Void>(),
-            requestBytes.length,
-            bytesWritten,
-            nullptr,
-          ) ==
-          0) {
-        throw StateError(
-          'Could not write to EntropyVPN service pipe: Windows error ${getLastError()}.',
-        );
-      }
-      if (bytesWritten.value != requestBytes.length) {
-        throw StateError(
-          'Could not write complete EntropyVPN service request: wrote ${bytesWritten.value} of ${requestBytes.length} bytes.',
-        );
-      }
-      flushFileBuffers(pipe);
-    } finally {
-      calloc.free(bytesWritten);
-      calloc.free(requestBuffer);
-    }
-
-    final responseBytes = <int>[];
-    const bufferSize = 8192;
-    final readBuffer = calloc<Uint8>(bufferSize);
-    final bytesRead = calloc<Uint32>();
-    try {
-      while (true) {
-        bytesRead.value = 0;
-        final readOk = readFile(
-          pipe,
-          readBuffer.cast<Void>(),
-          bufferSize,
-          bytesRead,
-          nullptr,
-        );
-        final count = bytesRead.value;
-        if (readOk != 0 && count > 0) {
-          responseBytes.addAll(readBuffer.asTypedList(count));
-          break;
-        }
-        final readError = getLastError();
-        if (readError == windowsErrorMoreData) {
-          if (count > 0) {
-            responseBytes.addAll(readBuffer.asTypedList(count));
-          }
-          continue;
-        }
-        break;
-      }
-    } finally {
-      calloc.free(bytesRead);
-      calloc.free(readBuffer);
-    }
-
-    return utf8.decode(responseBytes, allowMalformed: true);
-  } finally {
-    if (pipe != windowsInvalidHandleValue) {
-      closeHandle(pipe);
-    }
-    calloc.free(pipeName);
-  }
-}
-
-Pointer<Uint16> _nativeUtf16(String value) {
-  final units = value.codeUnits;
-  final pointer = calloc<Uint16>(units.length + 1);
-  pointer.asTypedList(units.length + 1)
-    ..setAll(0, units)
-    ..[units.length] = 0;
-  return pointer;
 }

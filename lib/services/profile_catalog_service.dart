@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:ffi/ffi.dart';
 import 'package:path/path.dart' as p;
 
 import '../models/config_source.dart';
@@ -14,7 +16,7 @@ part 'profile_catalog_native_config.dart';
 part 'profile_catalog_payload_resolver.dart';
 part 'profile_catalog_subscription_headers.dart';
 
-const String _subscriptionUserAgent = 'EntropyVPN/1.5.0';
+const String _subscriptionUserAgent = 'EntropyVPN/1.6.0';
 
 class ResolvedProfileCatalog {
   ResolvedProfileCatalog({
@@ -205,4 +207,12 @@ class ProfileCatalogService {
   String _headerSafeValue(String value) {
     return value.replaceAll(RegExp(r'[\r\n]+'), ' ').trim();
   }
+}
+
+String? _nonEmpty(String? value) {
+  if (value == null) {
+    return null;
+  }
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }

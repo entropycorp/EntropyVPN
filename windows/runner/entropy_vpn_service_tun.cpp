@@ -264,6 +264,68 @@ std::string FindSourceIpv4Address(NET_IFINDEX interface_index) {
   return address;
 }
 
+std::vector<std::string> ResolveHostIpv4Addresses(const std::string& host,
+                                                  DWORD* error) {
+  std::vector<std::string> addresses;
+  if (error != nullptr) {
+    *error = NO_ERROR;
+  }
+
+  const std::wstring wide_host = WideFromUtf8(host);
+  if (wide_host.empty()) {
+    if (error != nullptr) {
+      *error = ERROR_INVALID_PARAMETER;
+    }
+    return addresses;
+  }
+
+  WSADATA data{};
+  const int startup = WSAStartup(MAKEWORD(2, 2), &data);
+  if (startup != 0) {
+    if (error != nullptr) {
+      *error = static_cast<DWORD>(startup);
+    }
+    return addresses;
+  }
+
+  ADDRINFOW hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+
+  ADDRINFOW* results = nullptr;
+  const int result = GetAddrInfoW(wide_host.c_str(), nullptr, &hints, &results);
+  if (result != 0) {
+    if (error != nullptr) {
+      *error = static_cast<DWORD>(result);
+    }
+    WSACleanup();
+    return addresses;
+  }
+
+  for (ADDRINFOW* entry = results; entry != nullptr; entry = entry->ai_next) {
+    if (entry->ai_family != AF_INET || entry->ai_addr == nullptr ||
+        entry->ai_addrlen < sizeof(sockaddr_in)) {
+      continue;
+    }
+    const auto* address =
+        reinterpret_cast<const sockaddr_in*>(entry->ai_addr);
+    const std::string text = Ipv4ToString(address->sin_addr);
+    if (!text.empty() &&
+        std::find(addresses.begin(), addresses.end(), text) ==
+            addresses.end()) {
+      addresses.push_back(text);
+    }
+  }
+
+  FreeAddrInfoW(results);
+  WSACleanup();
+  if (addresses.empty() && error != nullptr && *error == NO_ERROR) {
+    *error = ERROR_NOT_FOUND;
+  }
+  return addresses;
+}
+
 bool Ipv4RouteExists(const IN_ADDR& destination,
                      UINT8 prefix_length,
                      NET_IFINDEX interface_index,
@@ -290,6 +352,42 @@ bool Ipv4RouteExists(const IN_ADDR& destination,
 
   FreeMibTable(table);
   return exists;
+}
+
+DWORD RemoveConflictingIpv4Routes(const IN_ADDR& destination,
+                                  UINT8 prefix_length,
+                                  NET_IFINDEX interface_index,
+                                  const IN_ADDR& next_hop,
+                                  bool* removed) {
+  PMIB_IPFORWARD_TABLE2 table = nullptr;
+  const DWORD table_result = GetIpForwardTable2(AF_INET, &table);
+  if (table_result != NO_ERROR) {
+    return table_result;
+  }
+
+  std::vector<MIB_IPFORWARD_ROW2> routes_to_delete;
+  for (ULONG i = 0; i < table->NumEntries; ++i) {
+    const MIB_IPFORWARD_ROW2& route = table->Table[i];
+    if (route.InterfaceIndex != interface_index &&
+        route.DestinationPrefix.Prefix.Ipv4.sin_family == AF_INET &&
+        route.DestinationPrefix.PrefixLength == prefix_length &&
+        SameIpv4(route.DestinationPrefix.Prefix.Ipv4.sin_addr, destination) &&
+        route.NextHop.Ipv4.sin_family == AF_INET &&
+        SameIpv4(route.NextHop.Ipv4.sin_addr, next_hop)) {
+      routes_to_delete.push_back(route);
+    }
+  }
+  FreeMibTable(table);
+
+  for (const auto& route : routes_to_delete) {
+    const DWORD delete_result = DeleteIpForwardEntry2(
+        const_cast<MIB_IPFORWARD_ROW2*>(&route));
+    if (delete_result != NO_ERROR && delete_result != ERROR_NOT_FOUND) {
+      return delete_result;
+    }
+    *removed = true;
+  }
+  return NO_ERROR;
 }
 
 DWORD EnsureIpv4Route(const IN_ADDR& destination,
@@ -321,8 +419,27 @@ DWORD EnsureIpv4Route(const IN_ADDR& destination,
     return NO_ERROR;
   }
   if (result == ERROR_OBJECT_ALREADY_EXISTS) {
-    *status = "exists";
-    return NO_ERROR;
+    bool removed_conflict = false;
+    const DWORD remove_result = RemoveConflictingIpv4Routes(
+        destination, prefix_length, interface_index, next_hop,
+        &removed_conflict);
+    if (remove_result != NO_ERROR) {
+      return remove_result;
+    }
+    if (removed_conflict) {
+      const DWORD retry_result = CreateIpForwardEntry2(&route);
+      if (retry_result == NO_ERROR ||
+          retry_result == ERROR_OBJECT_ALREADY_EXISTS) {
+        *status = retry_result == NO_ERROR ? "replaced" : "exists";
+        return NO_ERROR;
+      }
+      return retry_result;
+    }
+    if (Ipv4RouteExists(destination, prefix_length, interface_index,
+                        next_hop)) {
+      *status = "exists";
+      return NO_ERROR;
+    }
   }
   return result;
 }
@@ -661,6 +778,106 @@ std::string PrepareIpv4ServerRouteNative(
   AddBoolField(&response, "virtual", candidate.interface_info.virtual_like);
   AddField(&response, "destinationPrefix", remote_address + "/32");
   AddField(&response, "routeStatus", route_status);
+  return BuildResponse(response);
+}
+
+std::string PrepareDomainServerRouteNative(
+    const std::map<std::string, std::string>& fields) {
+  std::string host;
+  if (!ReadDecodedField(fields, "host", &host) || host.empty()) {
+    return BuildFailure("arguments", ERROR_INVALID_PARAMETER);
+  }
+
+  std::string tun_ip_mode = "ipv4";
+  const auto mode_field = fields.find("tunIpMode");
+  if (mode_field != fields.end()) {
+    tun_ip_mode = ToLowerAscii(mode_field->second);
+  }
+  if (tun_ip_mode != "ipv4" && tun_ip_mode != "dualstack") {
+    return BuildFailure("tun-ip-mode", ERROR_NOT_SUPPORTED);
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+  DWORD resolve_error = NO_ERROR;
+  const std::vector<std::string> addresses =
+      ResolveHostIpv4Addresses(host, &resolve_error);
+  if (addresses.empty()) {
+    return BuildFailure("resolve", resolve_error);
+  }
+
+  Ipv4DefaultRouteCandidate candidate;
+  DWORD result = FindHardwareIpv4DefaultRoute(&candidate);
+  if (result != NO_ERROR) {
+    return BuildFailure("default-route", result);
+  }
+
+  const IN_ADDR next_hop = candidate.route.NextHop.Ipv4.sin_addr;
+  const std::string next_hop_text = Ipv4ToString(next_hop);
+  if (next_hop_text.empty()) {
+    return BuildFailure("next-hop", ERROR_INVALID_PARAMETER);
+  }
+
+  std::vector<std::tuple<std::string, std::string, std::string>> routes;
+  std::string selected_address;
+  DWORD last_route_error = NO_ERROR;
+  for (const std::string& address : addresses) {
+    IN_ADDR destination{};
+    const std::string destination_prefix = address + "/32";
+    if (InetPtonA(AF_INET, address.c_str(), &destination) != 1) {
+      routes.emplace_back(destination_prefix, next_hop_text, "failed");
+      last_route_error = ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    std::string route_status;
+    result = EnsureIpv4Route(destination, 32, candidate.route.InterfaceIndex,
+                             next_hop, &route_status);
+    if (result != NO_ERROR) {
+      routes.emplace_back(destination_prefix, next_hop_text, "failed");
+      last_route_error = result;
+      continue;
+    }
+
+    routes.emplace_back(destination_prefix, next_hop_text, route_status);
+    if (selected_address.empty()) {
+      selected_address = address;
+    }
+  }
+
+  if (selected_address.empty()) {
+    return BuildFailure("host-route",
+                        last_route_error == NO_ERROR ? ERROR_NOT_FOUND
+                                                     : last_route_error);
+  }
+
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start);
+  std::vector<std::pair<std::string, std::string>> response;
+  AddResultSuccess(&response);
+  AddIntField(&response, "elapsedMs", elapsed.count());
+  AddTextField(&response, "hostB64", host);
+  AddIntField(&response, "resolvedAddressCount",
+              static_cast<int64_t>(addresses.size()));
+  for (size_t i = 0; i < addresses.size(); ++i) {
+    AddField(&response, "resolvedAddress." + std::to_string(i),
+             addresses[i]);
+  }
+  AddField(&response, "remoteAddress", selected_address);
+  AddTextField(&response, "interfaceAliasB64",
+               candidate.interface_info.alias);
+  AddIntField(&response, "interfaceIndex",
+              static_cast<int64_t>(candidate.route.InterfaceIndex));
+  AddField(&response, "sourceAddress",
+           FindSourceIpv4Address(candidate.route.InterfaceIndex));
+  AddField(&response, "nextHop", next_hop_text);
+  AddBoolField(&response, "hardwareInterface",
+               candidate.interface_info.hardware);
+  AddBoolField(&response, "virtual", candidate.interface_info.virtual_like);
+  AddIntField(&response, "routeCount", static_cast<int64_t>(routes.size()));
+  for (size_t i = 0; i < routes.size(); ++i) {
+    AddRouteFields(&response, static_cast<int>(i), std::get<0>(routes[i]),
+                   std::get<1>(routes[i]), std::get<2>(routes[i]));
+  }
   return BuildResponse(response);
 }
 

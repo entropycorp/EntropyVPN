@@ -152,7 +152,7 @@ std::vector<std::wstring> RepeatedOptionValues(
 
 int ClientMain(const std::vector<std::wstring>& args) {
   if (args.size() < 2) {
-    WriteStderr("Usage: entropy_vpn_service.exe service|ping|start-core|stop-core|status-core|run-process|prepare-ipv4-server-route|prepare-xray-tun-ipv4-routes\n");
+    WriteStderr("Usage: entropy_vpn_service.exe service|ping|start-core|stop-core|status-core|run-process|prepare-ipv4-server-route|prepare-domain-server-route|prepare-xray-tun-ipv4-routes\n");
     return 64;
   }
 
@@ -202,6 +202,14 @@ int ClientMain(const std::vector<std::wstring>& args) {
     request = FieldLine("command", "prepare_ipv4_server_route");
     AddEncodedRequestField(&request, "remoteAddress",
                            OptionValue(args, L"--remote-address"));
+  } else if (command == L"prepare-domain-server-route") {
+    request = FieldLine("command", "prepare_domain_server_route");
+    AddEncodedRequestField(&request, "host", OptionValue(args, L"--host"));
+    const std::wstring tun_ip_mode = OptionValue(args, L"--tun-ip-mode");
+    request.append(FieldLine("tunIpMode",
+                             tun_ip_mode.empty()
+                                 ? "ipv4"
+                                 : Utf8FromWide(tun_ip_mode)));
   } else if (command == L"prepare-xray-tun-ipv4-routes") {
     request = FieldLine("command", "prepare_xray_tun_ipv4_routes");
     AddEncodedRequestField(&request, "interfaceAlias",

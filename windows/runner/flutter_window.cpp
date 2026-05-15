@@ -15,6 +15,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "resource.h"
+#include "windows_app_catalog_channel.h"
 #include "windows_tun_channel.h"
 
 namespace {
@@ -203,6 +204,8 @@ bool FlutterWindow::OnCreate() {
           kWindowsLifecycleChannelName,
           &flutter::StandardMethodCodec::GetInstance());
   ConfigureTrayChannel();
+  windows_app_catalog_channel_ =
+      CreateWindowsAppCatalogChannel(flutter_controller_->engine()->messenger());
   windows_tun_channel_ =
       CreateWindowsTunChannel(flutter_controller_->engine()->messenger());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
@@ -223,6 +226,7 @@ bool FlutterWindow::OnCreate() {
 void FlutterWindow::OnDestroy() {
   RemoveTrayIcon();
   ReleaseTrayMenuResources();
+  windows_app_catalog_channel_ = nullptr;
   windows_tun_channel_ = nullptr;
   tray_channel_ = nullptr;
   lifecycle_channel_ = nullptr;

@@ -16,7 +16,7 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
     String? xrayServerAddressOverride,
   }) async {
     final configFile = File(p.join(runtimeDirectory.path, 'config.json'));
-    final config = _buildRuntimeConfig(
+    final config = _buildRuntimeConfigPayload(
       core: core,
       profile: profile,
       trafficMode: trafficMode,
@@ -28,18 +28,17 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
       outboundBindInterface: outboundBindInterface,
       xrayServerAddressOverride: xrayServerAddressOverride,
     );
-    final configJson = const JsonEncoder.withIndent('  ').convert(config);
+    final configJson = config.json;
     final workingDirectory =
         _resolveConfigWorkingDirectory(profile) ?? runtimeDirectory.path;
     _rememberAppLog('Runtime config path: ${configFile.path}');
     _rememberAppLog('Core working directory: $workingDirectory');
-    _rememberAppLog('Runtime config summary: ${_describeConfig(config)}');
+    _rememberAppLog('Runtime config summary: ${config.summary}');
     _rememberAppLog(
       'Writing runtime config (${utf8.encode(configJson).length} bytes)...',
     );
     await configFile.writeAsString(configJson);
-    final shouldSkipValidation = _shouldSkipRuntimeValidation(core, config);
-    if (shouldSkipValidation) {
+    if (config.skipValidation) {
       _rememberAppLog(
         'Skipping runtime config validation because xray run -test initializes the Windows TUN driver.',
       );
@@ -83,7 +82,7 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
     _rememberAppLog('Core process started with PID ${process.pid}.');
   }
 
-  Map<String, dynamic> _buildRuntimeConfig({
+  _RuntimeConfigPayload _buildRuntimeConfigPayload({
     required CoreFlavor core,
     required ParsedVpnProfile profile,
     required TrafficMode trafficMode,
@@ -110,7 +109,11 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
           'Native sing-box JSON profile is used as-is; split tunneling is only injected into generated TUN configs.',
         );
       }
-      return decoded;
+      return _RuntimeConfigPayload(
+        json: const JsonEncoder.withIndent('  ').convert(decoded),
+        summary: _describeConfig(decoded),
+        skipValidation: _shouldSkipRuntimeValidation(core, decoded),
+      );
     }
     if (profile.isXrayConfig) {
       if (core != CoreFlavor.xray) {
@@ -123,10 +126,14 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
           'Native Xray JSON profile is used as-is; split tunneling is only injected into generated TUN configs.',
         );
       }
-      return decoded;
+      return _RuntimeConfigPayload(
+        json: profile.xrayConfigJson!,
+        summary: _describeConfig(decoded),
+        skipValidation: _shouldSkipRuntimeValidation(core, decoded),
+      );
     }
 
-    return _configBuilder.buildFor(
+    final configJson = _configBuilder.buildJsonFor(
       core,
       profile,
       trafficMode: trafficMode,
@@ -145,6 +152,75 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
           : null,
       xrayServerAddressOverride: xrayServerAddressOverride,
     );
+    return _RuntimeConfigPayload(
+      json: configJson,
+      summary: _describeGeneratedRuntimeConfig(
+        core: core,
+        profile: profile,
+        trafficMode: trafficMode,
+        tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
+        splitTunnelSettings: splitTunnelSettings,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
+        tunInterfaceName: tunInterfaceName,
+        outboundBindInterface: outboundBindInterface,
+        routeDefaultInterface:
+            core == CoreFlavor.singBox && trafficMode == TrafficMode.tun
+            ? outboundBindInterface
+            : null,
+        xrayServerAddressOverride: xrayServerAddressOverride,
+      ),
+      skipValidation:
+          Platform.isWindows &&
+          core == CoreFlavor.xray &&
+          trafficMode == TrafficMode.tun,
+    );
+  }
+
+  String _describeGeneratedRuntimeConfig({
+    required CoreFlavor core,
+    required ParsedVpnProfile profile,
+    required TrafficMode trafficMode,
+    required TunIpMode tunIpMode,
+    required DnsSettings dnsSettings,
+    required SplitTunnelSettings splitTunnelSettings,
+    required DomainSplitTunnelSettings domainSplitTunnelSettings,
+    String? tunInterfaceName,
+    String? outboundBindInterface,
+    String? routeDefaultInterface,
+    String? xrayServerAddressOverride,
+  }) {
+    final splitTunnel = splitTunnelSettings.normalized;
+    final domainSplitTunnel = domainSplitTunnelSettings.normalized;
+    final fields = <String>[
+      'source=generated-native-json',
+      'core=${core.name}',
+      'traffic=${trafficMode.name}',
+      'tun_ip=${tunIpMode.name}',
+      'profile=${_describeProfile(profile)}',
+      'dns=${dnsSettings.normalized.serversFor(tunIpMode).join('|')}',
+    ];
+    if (tunInterfaceName?.trim().isNotEmpty == true) {
+      fields.add('interface=${tunInterfaceName!.trim()}');
+    }
+    if (outboundBindInterface?.trim().isNotEmpty == true) {
+      fields.add('bind_interface=${outboundBindInterface!.trim()}');
+    }
+    if (routeDefaultInterface?.trim().isNotEmpty == true) {
+      fields.add('route_default_interface=${routeDefaultInterface!.trim()}');
+    }
+    if (xrayServerAddressOverride?.trim().isNotEmpty == true) {
+      fields.add('xray_server_override=${xrayServerAddressOverride!.trim()}');
+    }
+    if (splitTunnel.isEnabled) {
+      fields.add('split=${splitTunnel.mode.name}:${splitTunnel.apps.length}');
+    }
+    if (domainSplitTunnel.isEnabled) {
+      fields.add(
+        'domain_split=${domainSplitTunnel.mode.name}:${domainSplitTunnel.domains.length}',
+      );
+    }
+    return fields.join(', ');
   }
 
   Map<String, dynamic> _buildNativeSingBoxRuntimeConfig({
@@ -279,4 +355,16 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
       );
     }
   }
+}
+
+class _RuntimeConfigPayload {
+  const _RuntimeConfigPayload({
+    required this.json,
+    required this.summary,
+    required this.skipValidation,
+  });
+
+  final String json;
+  final String summary;
+  final bool skipValidation;
 }

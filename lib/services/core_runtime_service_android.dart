@@ -138,7 +138,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     final effectiveTrafficMode = core == CoreFlavor.singBox
         ? TrafficMode.tun
         : TrafficMode.systemProxy;
-    final config = _configBuilder.buildFor(
+    final configJson = _configBuilder.buildJsonFor(
       core,
       profile,
       trafficMode: effectiveTrafficMode,
@@ -148,7 +148,7 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     );
     return _AndroidStartPayload(
       core: core.name,
-      configJson: const JsonEncoder.withIndent('  ').convert(config),
+      configJson: configJson,
       profileName: profile.remark ?? profile.endpointLabel,
       serverAddress: profile.server,
       serverCountryCode: serverCountryCode,

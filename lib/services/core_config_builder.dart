@@ -1,15 +1,13 @@
+import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
 
-import 'package:path/path.dart' as p;
+import 'package:ffi/ffi.dart';
 
 import '../models/dns_settings.dart';
 import '../models/split_tunnel.dart';
 import '../models/vpn_profile.dart';
 import 'core_config_native_tun.dart';
-
-part 'sing_box_config_builder.dart';
-part 'xray_config_builder.dart';
-part 'core_config_tun_routing.dart';
 
 class CoreConfigBuilder {
   static const int singBoxMixedPort = 2080;
@@ -33,18 +31,9 @@ class CoreConfigBuilder {
     String? routeDefaultInterface,
     String? xrayServerAddressOverride,
   }) {
-    return switch (core) {
-      CoreFlavor.xray => buildXray(
-        profile,
-        trafficMode: trafficMode,
-        tunIpMode: tunIpMode,
-        dnsSettings: dnsSettings,
-        domainSplitTunnelSettings: domainSplitTunnelSettings,
-        tunInterfaceName: tunInterfaceName,
-        outboundBindInterface: outboundBindInterface,
-        serverAddressOverride: xrayServerAddressOverride,
-      ),
-      CoreFlavor.singBox => buildSingBox(
+    final decoded = jsonDecode(
+      buildJsonFor(
+        core,
         profile,
         trafficMode: trafficMode,
         tunIpMode: tunIpMode,
@@ -54,8 +43,44 @@ class CoreConfigBuilder {
         tunInterfaceName: tunInterfaceName,
         outboundBindInterface: outboundBindInterface,
         routeDefaultInterface: routeDefaultInterface,
+        xrayServerAddressOverride: xrayServerAddressOverride,
       ),
-    };
+    );
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException(
+        'Native config builder returned invalid JSON.',
+      );
+    }
+    return decoded;
+  }
+
+  String buildJsonFor(
+    CoreFlavor core,
+    ParsedVpnProfile profile, {
+    TrafficMode trafficMode = TrafficMode.systemProxy,
+    TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
+    SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
+    String? tunInterfaceName,
+    String? outboundBindInterface,
+    String? routeDefaultInterface,
+    String? xrayServerAddressOverride,
+  }) {
+    return _NativeCoreConfigBuilder.instance.buildJson(
+      core: core,
+      profile,
+      trafficMode: trafficMode,
+      tunIpMode: tunIpMode,
+      dnsSettings: dnsSettings,
+      splitTunnelSettings: splitTunnelSettings,
+      domainSplitTunnelSettings: domainSplitTunnelSettings,
+      tunInterfaceName: tunInterfaceName,
+      outboundBindInterface: outboundBindInterface,
+      routeDefaultInterface: routeDefaultInterface,
+      serverAddressOverride: xrayServerAddressOverride,
+    );
   }
 
   Map<String, dynamic> buildSingBox(
@@ -70,7 +95,8 @@ class CoreConfigBuilder {
     String? outboundBindInterface,
     String? routeDefaultInterface,
   }) {
-    return _buildSingBoxConfig(
+    return _NativeCoreConfigBuilder.instance.build(
+      core: CoreFlavor.singBox,
       profile,
       trafficMode: trafficMode,
       tunIpMode: tunIpMode,
@@ -94,7 +120,8 @@ class CoreConfigBuilder {
     String? outboundBindInterface,
     String? serverAddressOverride,
   }) {
-    return _buildXrayConfig(
+    return _NativeCoreConfigBuilder.instance.build(
+      core: CoreFlavor.xray,
       profile,
       trafficMode: trafficMode,
       tunIpMode: tunIpMode,
@@ -113,19 +140,163 @@ class CoreConfigBuilder {
     int? mtu,
     bool androidCompatibility = false,
   }) {
-    return _applyNativeSingBoxTunSettings(
+    return applyNativeSingBoxTunSettingsToConfig(
       config,
       tunIpMode: tunIpMode,
       tunInterfaceName: tunInterfaceName,
       mtu: mtu,
       androidCompatibility: androidCompatibility,
+      androidTunStack: androidTunStack,
     );
   }
 }
 
-String _require(String? value, String name) {
-  if (value == null || value.trim().isEmpty) {
-    throw StateError('$name is missing in the provided link.');
+typedef _NativeBuildCoreConfig =
+    ffi.Pointer<Utf8> Function(
+      ffi.Pointer<Utf8> profileJson,
+      ffi.Pointer<Utf8> optionsJson,
+      ffi.Pointer<ffi.Pointer<Utf8>> errorMessage,
+    );
+typedef _NativeBuildCoreConfigDart =
+    ffi.Pointer<Utf8> Function(
+      ffi.Pointer<Utf8> profileJson,
+      ffi.Pointer<Utf8> optionsJson,
+      ffi.Pointer<ffi.Pointer<Utf8>> errorMessage,
+    );
+typedef _NativeFreeString = ffi.Void Function(ffi.Pointer<Utf8> value);
+typedef _NativeFreeStringDart = void Function(ffi.Pointer<Utf8> value);
+
+class _NativeCoreConfigBuilder {
+  _NativeCoreConfigBuilder._(this._buildCoreConfig, this._freeString);
+
+  static final _NativeCoreConfigBuilder instance = _NativeCoreConfigBuilder._(
+    _openLibrary()
+        .lookupFunction<_NativeBuildCoreConfig, _NativeBuildCoreConfigDart>(
+          'entropy_build_core_config',
+        ),
+    _openLibrary().lookupFunction<_NativeFreeString, _NativeFreeStringDart>(
+      'entropy_free_string',
+    ),
+  );
+
+  final _NativeBuildCoreConfigDart _buildCoreConfig;
+  final _NativeFreeStringDart _freeString;
+
+  static ffi.DynamicLibrary _openLibrary() {
+    if (Platform.isAndroid) {
+      return ffi.DynamicLibrary.open('libentropy_vpn_native.so');
+    }
+    if (Platform.isWindows) {
+      return ffi.DynamicLibrary.open('entropy_vpn_native.dll');
+    }
+    if (Platform.isLinux) {
+      return ffi.DynamicLibrary.open('libentropy_vpn_native.so');
+    }
+    if (Platform.isMacOS) {
+      return ffi.DynamicLibrary.open('libentropy_vpn_native.dylib');
+    }
+    throw UnsupportedError('Native core config builder is unavailable.');
   }
-  return value;
+
+  Map<String, dynamic> build(
+    ParsedVpnProfile profile, {
+    required CoreFlavor core,
+    TrafficMode trafficMode = TrafficMode.systemProxy,
+    TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
+    SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
+    String? tunInterfaceName,
+    String? outboundBindInterface,
+    String? routeDefaultInterface,
+    String? serverAddressOverride,
+  }) {
+    final decoded = jsonDecode(
+      buildJson(
+        profile,
+        core: core,
+        trafficMode: trafficMode,
+        tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
+        splitTunnelSettings: splitTunnelSettings,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
+        tunInterfaceName: tunInterfaceName,
+        outboundBindInterface: outboundBindInterface,
+        routeDefaultInterface: routeDefaultInterface,
+        serverAddressOverride: serverAddressOverride,
+      ),
+    );
+    if (decoded is! Map<String, dynamic>) {
+      throw const FormatException(
+        'Native config builder returned invalid JSON.',
+      );
+    }
+    return decoded;
+  }
+
+  String buildJson(
+    ParsedVpnProfile profile, {
+    required CoreFlavor core,
+    TrafficMode trafficMode = TrafficMode.systemProxy,
+    TunIpMode tunIpMode = TunIpMode.ipv4,
+    DnsSettings dnsSettings = const DnsSettings(),
+    SplitTunnelSettings splitTunnelSettings = const SplitTunnelSettings(),
+    DomainSplitTunnelSettings domainSplitTunnelSettings =
+        const DomainSplitTunnelSettings(),
+    String? tunInterfaceName,
+    String? outboundBindInterface,
+    String? routeDefaultInterface,
+    String? serverAddressOverride,
+  }) {
+    final splitTunnel = splitTunnelSettings.normalized;
+    final domainSplitTunnel = domainSplitTunnelSettings.normalized;
+    final profileJson = jsonEncode(profile.toJson()).toNativeUtf8();
+    final optionsJson = jsonEncode(<String, Object?>{
+      'core': core.name,
+      'trafficMode': trafficMode.name,
+      'tunIpMode': tunIpMode.name,
+      'isAndroid': Platform.isAndroid,
+      'dnsServers': dnsSettings.normalized.serversFor(tunIpMode),
+      'splitTunnelMode': splitTunnel.mode.name,
+      'splitTunnelAppNames': splitTunnel.apps
+          .map((app) => app.name)
+          .toList(growable: false),
+      'splitTunnelAppPaths': splitTunnel.apps
+          .map((app) => app.path)
+          .toList(growable: false),
+      'domainSplitTunnelMode': domainSplitTunnel.mode.name,
+      'domainSplitTunnelDomains': domainSplitTunnel.domains
+          .map((domain) => domain.matchSuffix)
+          .toList(growable: false),
+      'tunInterfaceName': tunInterfaceName,
+      'outboundBindInterface': outboundBindInterface,
+      'routeDefaultInterface': routeDefaultInterface,
+      'xrayServerAddressOverride': serverAddressOverride,
+    }).toNativeUtf8();
+    final errorPointer = calloc<ffi.Pointer<Utf8>>();
+    ffi.Pointer<Utf8> resultPointer = ffi.nullptr;
+    try {
+      resultPointer = _buildCoreConfig(profileJson, optionsJson, errorPointer);
+      if (resultPointer == ffi.nullptr) {
+        final messagePointer = errorPointer.value;
+        final message = messagePointer == ffi.nullptr
+            ? 'Failed to build core config.'
+            : messagePointer.toDartString();
+        if (messagePointer != ffi.nullptr) {
+          _freeString(messagePointer);
+        }
+        throw StateError(message);
+      }
+
+      return resultPointer.toDartString();
+    } finally {
+      calloc.free(profileJson);
+      calloc.free(optionsJson);
+      calloc.free(errorPointer);
+      if (resultPointer != ffi.nullptr) {
+        _freeString(resultPointer);
+      }
+    }
+  }
 }

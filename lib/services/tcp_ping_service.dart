@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
-import 'dart:math' as math;
+import 'dart:isolate';
+
+import 'package:ffi/ffi.dart';
 
 import '../models/config_source.dart';
 import '../models/vpn_profile.dart';
@@ -70,67 +74,143 @@ Future<List<TcpPingMeasurement>> measureTcpPingTargets(
   int maxConcurrent = tcpPingMaxConcurrent,
   Duration timeout = tcpPingTimeout,
 }) async {
-  final measurements = <TcpPingMeasurement>[];
-  final errors = <Object>[];
-  var nextTarget = 0;
-
-  Future<void> runWorker() async {
-    while (true) {
-      final targetIndex = nextTarget;
-      nextTarget += 1;
-      if (targetIndex >= targets.length) {
-        return;
-      }
-
-      final target = targets[targetIndex];
-      try {
-        final latencyMs = await measureTcpPing(
-          target.profile,
-          timeout: timeout,
-        );
-        measurements.add(
-          TcpPingMeasurement(
-            profileIndex: target.profileIndex,
-            profileKey: target.profileKey,
-            latencyMs: latencyMs,
-          ),
-        );
-      } catch (error) {
-        errors.add(error);
-      }
-    }
+  if (targets.isEmpty) {
+    return const <TcpPingMeasurement>[];
+  }
+  if (!Platform.isWindows) {
+    throw UnsupportedError('Native TCP ping is only available on Windows.');
   }
 
-  final workerCount = math.min(maxConcurrent, targets.length);
-  await Future.wait(<Future<void>>[
-    for (var i = 0; i < workerCount; i += 1) runWorker(),
-  ]);
-
-  if (measurements.isEmpty && errors.isNotEmpty) {
-    Error.throwWithStackTrace(errors.first, StackTrace.current);
-  }
-
-  measurements.sort(
-    (left, right) => left.profileIndex.compareTo(right.profileIndex),
+  final nativeTargets = targets
+      .map(
+        (target) => <String, Object?>{
+          'profileIndex': target.profileIndex,
+          'profileKey': target.profileKey,
+          'host': target.profile.server.trim(),
+          'port': target.profile.port,
+        },
+      )
+      .toList(growable: false);
+  final nativeResults = await Isolate.run(
+    () => _NativeTcpPingBatch.instance.measure(
+      nativeTargets,
+      timeoutMs: timeout.inMilliseconds,
+      maxConcurrent: maxConcurrent,
+    ),
   );
-  return measurements;
+  if (nativeResults.isEmpty) {
+    throw const SocketException('TCP ping failed for all targets.');
+  }
+  return nativeResults;
 }
 
-Future<int> measureTcpPing(
-  ParsedVpnProfile profile, {
-  Duration timeout = tcpPingTimeout,
-}) async {
-  final host = profile.server.trim();
-  final port = profile.port;
-  final stopwatch = Stopwatch()..start();
-  Socket? socket;
-  try {
-    socket = await Socket.connect(host, port, timeout: timeout);
-    stopwatch.stop();
-    final elapsedMs = stopwatch.elapsedMilliseconds;
-    return elapsedMs <= 0 ? 1 : elapsedMs;
-  } finally {
-    socket?.destroy();
+typedef _NativeMeasureTcpPings =
+    ffi.Pointer<Utf8> Function(
+      ffi.Pointer<Utf8> targetsJson,
+      ffi.Int32 timeoutMs,
+      ffi.Int32 maxConcurrent,
+      ffi.Pointer<ffi.Pointer<Utf8>> errorMessage,
+    );
+typedef _NativeMeasureTcpPingsDart =
+    ffi.Pointer<Utf8> Function(
+      ffi.Pointer<Utf8> targetsJson,
+      int timeoutMs,
+      int maxConcurrent,
+      ffi.Pointer<ffi.Pointer<Utf8>> errorMessage,
+    );
+typedef _NativeFreeString = ffi.Void Function(ffi.Pointer<Utf8> value);
+typedef _NativeFreeStringDart = void Function(ffi.Pointer<Utf8> value);
+
+class _NativeTcpPingBatch {
+  _NativeTcpPingBatch._(this._measureTcpPings, this._freeString);
+
+  static final _NativeTcpPingBatch instance = _create();
+
+  final _NativeMeasureTcpPingsDart _measureTcpPings;
+  final _NativeFreeStringDart _freeString;
+
+  static _NativeTcpPingBatch _create() {
+    final library = _openLibrary();
+    return _NativeTcpPingBatch._(
+      library
+          .lookupFunction<_NativeMeasureTcpPings, _NativeMeasureTcpPingsDart>(
+            'entropy_measure_tcp_pings',
+          ),
+      library.lookupFunction<_NativeFreeString, _NativeFreeStringDart>(
+        'entropy_free_string',
+      ),
+    );
+  }
+
+  static ffi.DynamicLibrary _openLibrary() {
+    if (Platform.isWindows) {
+      return ffi.DynamicLibrary.open('entropy_vpn_native.dll');
+    }
+    throw UnsupportedError('Native TCP ping is unavailable.');
+  }
+
+  List<TcpPingMeasurement> measure(
+    List<Map<String, Object?>> targets, {
+    required int timeoutMs,
+    required int maxConcurrent,
+  }) {
+    final input = jsonEncode(targets).toNativeUtf8();
+    final errorPointer = calloc<ffi.Pointer<Utf8>>();
+    ffi.Pointer<Utf8> resultPointer = ffi.nullptr;
+    try {
+      resultPointer = _measureTcpPings(
+        input,
+        timeoutMs,
+        maxConcurrent,
+        errorPointer,
+      );
+      if (resultPointer == ffi.nullptr) {
+        final messagePointer = errorPointer.value;
+        final message = messagePointer == ffi.nullptr
+            ? 'Native TCP ping failed.'
+            : messagePointer.toDartString();
+        if (messagePointer != ffi.nullptr) {
+          _freeString(messagePointer);
+        }
+        throw StateError(message);
+      }
+
+      final decoded = jsonDecode(resultPointer.toDartString());
+      if (decoded is! List) {
+        throw const FormatException('Native TCP ping returned invalid JSON.');
+      }
+      final measurements =
+          decoded
+              .whereType<Map>()
+              .map((item) {
+                final profileIndex = (item['profileIndex'] as num?)?.toInt();
+                final latencyMs = (item['latencyMs'] as num?)?.toInt();
+                final profileKey = item['profileKey']?.toString();
+                if (profileIndex == null ||
+                    latencyMs == null ||
+                    latencyMs <= 0 ||
+                    profileKey == null) {
+                  return null;
+                }
+                return TcpPingMeasurement(
+                  profileIndex: profileIndex,
+                  profileKey: profileKey,
+                  latencyMs: latencyMs,
+                );
+              })
+              .whereType<TcpPingMeasurement>()
+              .toList(growable: false)
+            ..sort(
+              (left, right) => left.profileIndex.compareTo(right.profileIndex),
+            );
+      return measurements;
+    } finally {
+      calloc.free(input);
+      calloc.free(errorPointer);
+      if (resultPointer != ffi.nullptr) {
+        _freeString(resultPointer);
+      }
+    }
   }
 }
 

@@ -124,105 +124,15 @@ class _SubscriptionPayloadResolver {
   }
 
   List<ParsedVpnProfile> _parseProfilesFromText(String text) {
-    final profiles = <ParsedVpnProfile>[];
-    final seen = <String>{};
-
-    for (final link in _extractShareLinks(text)) {
-      if (!seen.add(link)) {
-        continue;
-      }
-
-      final parsed = _parser.tryParse(link);
-      if (parsed != null) {
-        profiles.add(parsed);
-      }
+    try {
+      return _parser.parseAll(text);
+    } on FormatException {
+      return const <ParsedVpnProfile>[];
     }
-
-    return profiles;
   }
 
-  List<String> _extractShareLinks(String text) {
-    final normalized = text.replaceAll('\uFEFF', '');
-    final matches =
-        RegExp(
-              r'(hysteria2|hysteria|vless|vmess|trojan|hy2|ss)://',
-              caseSensitive: false,
-            )
-            .allMatches(normalized)
-            .where((match) {
-              return _isLikelyShareLinkBoundary(normalized, match.start);
-            })
-            .toList(growable: false);
-
-    if (matches.isEmpty) {
-      return const <String>[];
-    }
-
-    final links = <String>[];
-    for (var i = 0; i < matches.length; i += 1) {
-      final start = matches[i].start;
-      final end = i + 1 < matches.length
-          ? matches[i + 1].start
-          : normalized.length;
-      final candidate = _trimShareLink(normalized.substring(start, end));
-      if (candidate.isNotEmpty) {
-        links.add(candidate);
-      }
-    }
-
-    return links;
-  }
-
-  bool _isLikelyShareLinkBoundary(String text, int start) {
-    if (start == 0) {
-      return true;
-    }
-
-    final previous = text.codeUnitAt(start - 1);
-    if (previous <= 32) {
-      return true;
-    }
-
-    return previous == 0x22 ||
-        previous == 0x27 ||
-        previous == 0x28 ||
-        previous == 0x2c ||
-        previous == 0x3b ||
-        previous == 0x3c ||
-        previous == 0x3e ||
-        previous == 0x5b ||
-        previous == 0x60 ||
-        previous == 0x7b ||
-        previous == 0x7c;
-  }
-
-  String _trimShareLink(String value) {
-    var link = value.trim();
-    final lineBreak = RegExp(r'[\r\n]').firstMatch(link);
-    if (lineBreak != null) {
-      link = link.substring(0, lineBreak.start).trim();
-    }
-
-    while (link.isNotEmpty &&
-        _isTrailingShareLinkSeparator(link.codeUnitAt(link.length - 1))) {
-      link = link.substring(0, link.length - 1).trimRight();
-    }
-
-    return link;
-  }
-
-  bool _isTrailingShareLinkSeparator(int codeUnit) {
-    return codeUnit == 0x22 ||
-        codeUnit == 0x27 ||
-        codeUnit == 0x29 ||
-        codeUnit == 0x2c ||
-        codeUnit == 0x2e ||
-        codeUnit == 0x3b ||
-        codeUnit == 0x3e ||
-        codeUnit == 0x5d ||
-        codeUnit == 0x60 ||
-        codeUnit == 0x7c ||
-        codeUnit == 0x7d;
+  String? _tryDecodeBase64Text(String rawValue) {
+    return _parser.tryDecodeSubscriptionBase64(rawValue);
   }
 }
 
@@ -339,30 +249,6 @@ String _primaryLine(String rawInput) {
 
 String _decodeResponseBody(List<int> bytes) {
   return utf8.decode(bytes, allowMalformed: true).trim();
-}
-
-String? _tryDecodeBase64Text(String rawValue) {
-  final normalized = rawValue
-      .replaceAll('\uFEFF', '')
-      .replaceAll(RegExp(r'\s+'), '');
-  if (normalized.isEmpty || normalized.contains('://')) {
-    return null;
-  }
-
-  final remainder = normalized.length % 4;
-  final padded = remainder == 0
-      ? normalized
-      : normalized.padRight(normalized.length + (4 - remainder), '=');
-
-  try {
-    return utf8.decode(base64.decode(padded), allowMalformed: true).trim();
-  } on FormatException {
-    try {
-      return utf8.decode(base64Url.decode(padded), allowMalformed: true).trim();
-    } on FormatException {
-      return null;
-    }
-  }
 }
 
 class _SingBoxRemoteProfile {

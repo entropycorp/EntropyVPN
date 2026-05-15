@@ -85,59 +85,22 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
   }
 
   Future<void> _terminateWindowsProcess(Process process) async {
-    var usedTaskkillFallback = false;
-    try {
-      final terminatedNatively = _terminateWindowsProcessByPid(
-        process.pid,
-        timingLabel: 'native_terminate:${process.pid}',
-      );
-      if (!terminatedNatively && !await _hasProcessExited(process)) {
-        _rememberAppLog(
-          'Native termination failed for PID ${process.pid}; falling back to taskkill.',
-        );
-        usedTaskkillFallback = true;
-        await _terminateWindowsProcessWithTaskkill(process);
-      }
-    } catch (error) {
+    final terminatedNatively = await _terminateWindowsProcessTreeByPid(
+      process.pid,
+      timingLabel: 'native_terminate_tree:${process.pid}',
+    );
+    if (!terminatedNatively && !await _hasProcessExited(process)) {
       _rememberAppLog(
-        'Native termination failed for PID ${process.pid}: ${_describeError(error)}',
+        'Native process-tree termination failed for PID ${process.pid}; falling back to Dart process kill.',
       );
-      if (!await _hasProcessExited(process)) {
-        usedTaskkillFallback = true;
-        await _terminateWindowsProcessWithTaskkill(process);
-      }
-    }
-
-    if (!await _hasProcessExited(process)) {
       process.kill(ProcessSignal.sigkill);
     }
 
     try {
       await process.exitCode.timeout(const Duration(milliseconds: 500));
     } on TimeoutException {
-      final method = usedTaskkillFallback ? 'native/taskkill' : 'native';
       _rememberAppLog(
-        'Process PID ${process.pid} still did not report exit after $method termination.',
-      );
-    }
-  }
-
-  Future<void> _terminateWindowsProcessWithTaskkill(Process process) async {
-    try {
-      final result = await _runTimedProcess(
-        'taskkill:${process.pid}',
-        'taskkill.exe',
-        <String>['/PID', process.pid.toString(), '/T', '/F'],
-        timeout: const Duration(seconds: 2),
-      );
-      if (result.exitCode != 0 && !await _hasProcessExited(process)) {
-        _rememberAppLog(
-          'taskkill failed for PID ${process.pid}: ${_describeError(result.stderr)}',
-        );
-      }
-    } catch (error) {
-      _rememberAppLog(
-        'taskkill failed for PID ${process.pid}: ${_describeError(error)}',
+        'Process PID ${process.pid} still did not report exit after native process-tree termination.',
       );
     }
   }
@@ -162,21 +125,6 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
 
   String _formatCommand(String executable, List<String> args) {
     return ([executable, ...args]).map(_quoteIfNeeded).join(' ');
-  }
-
-  Future<ProcessResult> _runPowerShellScript(
-    String script, {
-    String label = 'script',
-    Map<String, String> namedArgs = const <String, String>{},
-  }) {
-    return _runTimedProcess('powershell:$label', 'powershell.exe', <String>[
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-Command',
-      _buildPowerShellInvocation(script, namedArgs: namedArgs),
-    ]);
   }
 
   Future<ProcessResult> _runTimedProcess(
@@ -245,27 +193,7 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
     }
   }
 
-  String _buildPowerShellInvocation(
-    String script, {
-    Map<String, String> namedArgs = const <String, String>{},
-  }) {
-    final buffer = StringBuffer('& {\n');
-    buffer.write(script.trim());
-    buffer.write('\n}');
-    namedArgs.forEach((key, value) {
-      buffer.write(' -');
-      buffer.write(key);
-      buffer.write(' ');
-      buffer.write(_quotePowerShellLiteral(value));
-    });
-    return buffer.toString();
-  }
-
   String _quoteIfNeeded(String value) {
     return value.contains(' ') ? '"$value"' : value;
-  }
-
-  String _quotePowerShellLiteral(String value) {
-    return "'${value.replaceAll("'", "''")}'";
   }
 }

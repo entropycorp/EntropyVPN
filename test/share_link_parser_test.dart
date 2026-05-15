@@ -698,7 +698,7 @@ void main() {
           (config['outbounds'] as List<dynamic>).first as Map<String, dynamic>;
       final stream = outbound['streamSettings'] as Map<String, dynamic>;
 
-      expect(stream['network'], 'tcp');
+      expect(stream['network'], 'raw');
       expect(stream['security'], 'reality');
     });
 
@@ -741,10 +741,7 @@ void main() {
       final directStream =
           directOutbound['streamSettings'] as Map<String, dynamic>;
       final directSockopt = directStream['sockopt'] as Map<String, dynamic>;
-      final vnext =
-          (outbound['settings'] as Map<String, dynamic>)['vnext']
-              as List<dynamic>;
-      final vnextServer = vnext.first as Map<String, dynamic>;
+      final outboundSettings = outbound['settings'] as Map<String, dynamic>;
 
       expect(inbound['protocol'], 'tun');
       expect(settings['name'], 'EntropyVPN TUN test');
@@ -757,7 +754,7 @@ void main() {
       expect(dns['servers'], DnsSettings.defaultIpv4Servers);
       expect(dns['queryStrategy'], 'UseIPv4');
       expect(dns['tag'], 'dns-query');
-      expect(vnextServer['address'], '203.0.113.8');
+      expect(outboundSettings['address'], '203.0.113.8');
       expect(sockopt['interface'], 'Ethernet');
       expect(dnsOutbound['protocol'], 'dns');
       expect(blockedAaaaRule['action'], 'reject');
@@ -769,6 +766,33 @@ void main() {
       expect(quicRule['port'], '443');
       expect(quicRule['outboundTag'], 'block');
       expect(directSockopt['interface'], 'Ethernet');
+    });
+
+    test('builds direct native config JSON equivalent to decoded config', () {
+      final profile = parser.parse(
+        'vless://1378b49d-8628-4aae-abcc-129f6c8b4ed1@example.com:443?type=tcp&security=reality&pbk=publicKey&sid=e80f&fp=chrome&sni=www.samsung.com&flow=xtls-rprx-vision#RealityTCP',
+      );
+
+      final configJson = builder.buildJsonFor(
+        CoreFlavor.xray,
+        profile,
+        trafficMode: TrafficMode.tun,
+        tunInterfaceName: 'EntropyVPN TUN test',
+        outboundBindInterface: 'Ethernet',
+        xrayServerAddressOverride: '203.0.113.8',
+      );
+      final decoded = jsonDecode(configJson);
+      final config = builder.buildFor(
+        CoreFlavor.xray,
+        profile,
+        trafficMode: TrafficMode.tun,
+        tunInterfaceName: 'EntropyVPN TUN test',
+        outboundBindInterface: 'Ethernet',
+        xrayServerAddressOverride: '203.0.113.8',
+      );
+
+      expect(decoded, config);
+      expect(configJson, isNot(contains('\n  ')));
     });
 
     test('builds TUN configs with custom DNS settings', () {

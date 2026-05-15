@@ -50,6 +50,12 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
     }
 
     if (splitPerAbi) {
@@ -95,6 +101,13 @@ android {
         getByName("main") {
             jniLibs.srcDir("src/main/jniLibs")
             jniLibs.srcDir(generatedXrayJniLibs)
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 

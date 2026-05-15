@@ -133,70 +133,32 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
             trafficMode == TrafficMode.tun &&
             tunInterfaceName != null;
 
-        // When the service handles both core start and TUN setup, overlap them:
-        // the pipe server supports unlimited instances, so both service requests
-        // execute concurrently. The TUN setup polls for the adapter which appears
-        // once xray.exe creates it, so firing both together saves the sequential gap.
         if (needsXrayTunRoutes && _windowsTunServiceReady) {
-          Object? tunRoutesError;
-          StackTrace? tunRoutesStackTrace;
-          final tunRoutesFuture = startupTiming
-              .time(
-                'xray_tun_adapter_routes',
-                () => _installTemporaryXrayTunRoutes(
-                  interfaceAlias: tunInterfaceName,
-                  tunIpMode: tunIpMode,
-                  dnsSettings: dnsSettings,
-                ),
-              )
-              .catchError((Object error, StackTrace stackTrace) {
-                tunRoutesError = error;
-                tunRoutesStackTrace = stackTrace;
-              });
-
-          void throwTunRoutesErrorIfNeeded() {
-            final error = tunRoutesError;
-            if (error == null) {
-              return;
-            }
-            Error.throwWithStackTrace(
-              error,
-              tunRoutesStackTrace ?? StackTrace.current,
-            );
-          }
-
-          Future<void> awaitTunRoutes({required bool ignoreError}) async {
-            await tunRoutesFuture;
-            if (!ignoreError) {
-              throwTunRoutesErrorIfNeeded();
-            }
-          }
-
-          try {
-            await startupTiming.time(
-              'core_process_start',
-              () => _startSingleCore(
-                core: core,
-                binaryPath: binaryPath,
-                profile: profile,
-                trafficMode: trafficMode,
-                tunIpMode: tunIpMode,
-                dnsSettings: dnsSettings,
-                splitTunnelSettings: effectiveSplitTunnelSettings,
-                domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
-                tunInterfaceName: tunInterfaceName,
-                runtimeDirectory: currentRuntimeDirectory,
-                outboundBindInterface: outboundBindInterface,
-                xrayServerAddressOverride: xrayServerAddressOverride,
-              ),
-            );
-          } catch (_) {
-            // Core start failed; wait for the TUN setup to settle before rethrowing.
-            await awaitTunRoutes(ignoreError: true);
-            rethrow;
-          }
-
-          await awaitTunRoutes(ignoreError: false);
+          await startupTiming.time(
+            'core_process_start',
+            () => _startSingleCore(
+              core: core,
+              binaryPath: binaryPath,
+              profile: profile,
+              trafficMode: trafficMode,
+              tunIpMode: tunIpMode,
+              dnsSettings: dnsSettings,
+              splitTunnelSettings: effectiveSplitTunnelSettings,
+              domainSplitTunnelSettings: effectiveDomainSplitTunnelSettings,
+              tunInterfaceName: tunInterfaceName,
+              runtimeDirectory: currentRuntimeDirectory,
+              outboundBindInterface: outboundBindInterface,
+              xrayServerAddressOverride: xrayServerAddressOverride,
+            ),
+          );
+          await startupTiming.time(
+            'xray_tun_adapter_routes',
+            () => _installTemporaryXrayTunRoutes(
+              interfaceAlias: tunInterfaceName,
+              tunIpMode: tunIpMode,
+              dnsSettings: dnsSettings,
+            ),
+          );
         } else {
           await startupTiming.time(
             'core_process_start',

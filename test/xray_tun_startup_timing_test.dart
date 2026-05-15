@@ -144,61 +144,98 @@ void main() {
   );
 
   test(
-    'Windows Xray TUN setup JSON serialization works on PowerShell 5',
+    'Windows Xray TUN setup delegates fallback choice to native runner',
     () async {
       final source = await _runtimeServiceSource();
-      expect(source, contains(r'Routes = $routeResults.ToArray()'));
-      expect(source, isNot(contains(r'Routes = @($routeResults)')));
-
-      if (!Platform.isWindows) {
-        print(
-          'Xray TUN PowerShell serialization: skipped because this is not Windows.',
-        );
-        return;
-      }
-
-      const script = r'''
-$changes = New-Object System.Collections.Generic.List[string]
-$warnings = New-Object System.Collections.Generic.List[string]
-$routeResults = New-Object System.Collections.Generic.List[object]
-$timings = New-Object System.Collections.Generic.List[string]
-$changes.Add('ipv6-binding=enabled')
-$warnings.Add('Route 0.0.0.0/1: Access is denied.')
-$routeResults.Add([PSCustomObject]@{
-  DestinationPrefix = '0.0.0.0/1'
-  NextHop = '0.0.0.0'
-  Status = 'failed'
-})
-$timings.Add('wait_adapter=0ms')
-[PSCustomObject]@{
-  Changes = $changes.ToArray()
-  Warnings = $warnings.ToArray()
-  Routes = $routeResults.ToArray()
-  Timings = $timings.ToArray()
-} | ConvertTo-Json -Depth 4 -Compress
-''';
-
-      final result = await Process.run('powershell.exe', <String>[
-        '-NoProfile',
-        '-NonInteractive',
-        '-ExecutionPolicy',
-        'Bypass',
-        '-Command',
-        script,
-      ]);
-
-      expect(result.exitCode, 0, reason: result.stderr.toString());
-      expect(
-        result.stderr.toString(),
-        isNot(contains('Argument types do not match')),
-      );
-      final decoded = jsonDecode(result.stdout.toString().trim());
-      expect(decoded, isA<Map<String, dynamic>>());
-      final routes =
-          (decoded as Map<String, dynamic>)['Routes'] as List<dynamic>;
-      expect((routes.first as Map<String, dynamic>)['Status'], 'failed');
+      expect(source, contains('prepareXrayTunRoutes'));
+      expect(source, isNot(contains('prepareXrayTunRoutesOnly')));
+      expect(source, isNot(contains('prepareXrayTunAdapterAndRoutes')));
+      expect(source, isNot(contains('xray_tun_route_only')));
+      expect(source, isNot(contains('xray_tun_adapter_routes')));
+      expect(source, isNot(contains(r'Get-NetAdapter -Name $InterfaceAlias')));
     },
   );
+
+  test('Windows service startup uses native service control', () async {
+    final source = await _runtimeServiceSource();
+    expect(source, contains('startWindowsService'));
+    expect(source, isNot(contains("Process.run('sc.exe'")));
+    expect(source, isNot(contains('Process.run("sc.exe"')));
+  });
+
+  test('Windows service pipe client uses native runner', () async {
+    final source = await _runtimeServiceSource();
+    expect(source, contains('runWindowsServiceHelper'));
+    expect(source, isNot(contains('_sendWindowsServicePipeRequest')));
+    expect(source, isNot(contains('_buildWindowsServiceRequest')));
+    expect(source, isNot(contains('_parseWindowsServiceResponse')));
+    expect(source, isNot(contains('WaitNamedPipeW')));
+    expect(source, isNot(contains('Isolate.run')));
+  });
+
+  test('Windows service Xray TUN setup starts core before routes', () async {
+    final source = await File(
+      'lib/services/core_runtime_service_lifecycle.dart',
+    ).readAsString();
+    final branchStart = source.indexOf(
+      'if (needsXrayTunRoutes && _windowsTunServiceReady)',
+    );
+    final coreStart = source.indexOf("'core_process_start'", branchStart);
+    final routeSetup = source.indexOf("'xray_tun_adapter_routes'", branchStart);
+
+    expect(branchStart, greaterThanOrEqualTo(0));
+    expect(coreStart, greaterThan(branchStart));
+    expect(routeSetup, greaterThan(coreStart));
+    expect(source, isNot(contains('tunRoutesFuture')));
+  });
+
+  test(
+    'Windows Xray TUN route setup replaces stale interface routes',
+    () async {
+      final serviceTunSource = await File(
+        'windows/runner/entropy_vpn_service_tun.cpp',
+      ).readAsString();
+      final runnerTunSource = await File(
+        'windows/runner/windows_tun_channel.cpp',
+      ).readAsString();
+
+      for (final source in <String>[serviceTunSource, runnerTunSource]) {
+        expect(source, contains('RemoveConflictingIpv4Routes'));
+        expect(source, contains('route.InterfaceIndex != interface_index'));
+        expect(source, contains('"replaced"'));
+      }
+    },
+  );
+
+  test('desktop runtime config writer uses native JSON directly', () async {
+    final source = await _runtimeServiceSource();
+    expect(source, contains('buildJsonFor'));
+    expect(
+      source,
+      isNot(contains("JsonEncoder.withIndent('  ').convert(config)")),
+    );
+  });
+
+  test(
+    'Windows split tunnel process tree expansion uses native runner',
+    () async {
+      final source = await _runtimeServiceSource();
+      expect(source, contains('expandSplitTunnelProcessTree'));
+      expect(source, isNot(contains('_findRunningDescendantAppsWithToolhelp')));
+      expect(source, isNot(contains('childrenByParent')));
+    },
+  );
+
+  test('Windows stale core sweep and termination use native runner', () async {
+    final source = await _runtimeServiceSource();
+    expect(source, contains('stopStaleCoreProcesses'));
+    expect(source, contains('terminateProcessTree'));
+    expect(source, isNot(contains('_snapshotWindowsProcesses')));
+    expect(source, isNot(contains('_terminateWindowsProcessWithTaskkill')));
+    expect(source, isNot(contains('taskkill.exe')));
+    expect(source, isNot(contains('CreateToolhelp32Snapshot')));
+    expect(source, isNot(contains('TerminateProcessNative')));
+  });
 
   test('Windows TUN TCP ping bypass routes are action-scoped', () async {
     final source = await _runtimeServiceSource();
@@ -283,11 +320,11 @@ $timings.Add('wait_adapter=0ms')
 Future<String> _runtimeServiceSource() async {
   final files = <String>[
     'lib/services/core_runtime_service.dart',
+    'lib/services/core_runtime_service_config_io.dart',
     'lib/services/core_runtime_service_windows.dart',
     'lib/services/core_runtime_service_windows_process.dart',
-    'lib/services/core_runtime_service_windows_server_routing.dart',
+    'lib/services/core_runtime_service_windows_service.dart',
     'lib/services/core_runtime_service_windows_temporary_routes.dart',
-    'lib/services/core_runtime_service_windows_xray_tun.dart',
     'lib/services/core_runtime_service_windows_types.dart',
   ];
   final chunks = await Future.wait(
@@ -297,20 +334,8 @@ Future<String> _runtimeServiceSource() async {
 }
 
 Future<bool> _isRunningAsAdministrator() async {
-  final result = await Process.run('powershell.exe', <String>[
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-Command',
-    r'''
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
-[Console]::Out.Write($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
-''',
-  ]);
-  return result.exitCode == 0 &&
-      result.stdout.toString().trim().toLowerCase() == 'true';
+  final result = await Process.run('fltmc.exe', const <String>[]);
+  return result.exitCode == 0;
 }
 
 Future<int> _reserveLoopbackPort() async {

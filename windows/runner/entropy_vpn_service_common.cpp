@@ -180,86 +180,12 @@ bool IsAllowedCoreExecutable(const std::wstring& executable) {
   return !ResolveAllowedCoreExecutable(executable).empty();
 }
 
-std::string LowerWideArg(const std::wstring& value) {
-  return ToLowerAscii(Utf8FromWide(value));
-}
-
-bool StartsWith(const std::string& value, const std::string& prefix) {
-  return value.rfind(prefix, 0) == 0;
-}
-
-bool HasArgument(const std::vector<std::string>& args,
-                 const std::string& value) {
-  return std::find(args.begin(), args.end(), value) != args.end();
-}
-
-bool HasArgumentPrefix(const std::vector<std::string>& args,
-                       const std::string& prefix) {
-  return std::any_of(args.begin(), args.end(), [&](const std::string& arg) {
-    return StartsWith(arg, prefix);
-  });
-}
-
-bool IsAllowedRouteInvocation(const std::vector<std::string>& args) {
-  if (args.empty()) {
-    return false;
-  }
-  return args[0] == "print" || args[0] == "add" || args[0] == "delete";
-}
-
-bool IsAllowedNetshInvocation(const std::vector<std::string>& args) {
-  if (args.size() < 4 || args[0] != "interface" || args[1] != "ipv4") {
-    return false;
-  }
-  if (args[2] == "show" && args.size() == 4) {
-    return args[3] == "addresses" || args[3] == "interfaces";
-  }
-  if (args[2] == "set" && args[3] == "address") {
-    return HasArgumentPrefix(args, "name=") &&
-           HasArgument(args, "source=static") &&
-           HasArgument(args, "address=172.19.0.1") &&
-           HasArgument(args, "mask=255.255.255.252") &&
-           HasArgument(args, "gateway=none") &&
-           HasArgument(args, "store=active");
-  }
-  if (args[2] == "set" && args[3] == "interface") {
-    return HasArgumentPrefix(args, "interface=") &&
-           HasArgument(args, "metric=1") &&
-           HasArgument(args, "store=active");
-  }
-  if (args[2] == "set" && args[3] == "dnsservers") {
-    return HasArgumentPrefix(args, "name=") &&
-           HasArgument(args, "source=static") &&
-           HasArgumentPrefix(args, "address=") &&
-           HasArgument(args, "register=none") &&
-           HasArgument(args, "validate=no");
-  }
-  if (args[2] == "add" && args[3] == "dnsservers") {
-    return HasArgumentPrefix(args, "name=") &&
-           HasArgumentPrefix(args, "address=") &&
-           HasArgumentPrefix(args, "index=") &&
-           HasArgument(args, "validate=no");
-  }
-  return false;
-}
-
 bool IsAllowedToolInvocation(const std::wstring& executable,
                              const std::vector<std::wstring>& args) {
   if (HasPathSeparator(executable)) {
     return false;
   }
   const std::string lower = ToLowerAscii(Utf8FromWide(Basename(executable)));
-  std::vector<std::string> lowered_args;
-  lowered_args.reserve(args.size());
-  for (const auto& arg : args) {
-    lowered_args.push_back(LowerWideArg(arg));
-  }
-  if (lower == "route.exe") {
-    return IsAllowedRouteInvocation(lowered_args);
-  }
-  if (lower == "netsh.exe") {
-    return IsAllowedNetshInvocation(lowered_args);
-  }
   if (lower == "fltmc.exe") {
     return args.empty();
   }
