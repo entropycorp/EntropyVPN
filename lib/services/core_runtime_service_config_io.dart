@@ -228,23 +228,11 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
     required TunIpMode tunIpMode,
     String? tunInterfaceName,
   }) {
-    final decoded = jsonDecode(profile.singBoxConfigJson!);
-    if (decoded is! Map<String, dynamic>) {
-      throw StateError('Native sing-box config must be a JSON object.');
-    }
-    final appliedTunSettings = _configBuilder.applyNativeSingBoxTunSettings(
-      decoded,
+    return _configBuilder.buildSingBox(
+      profile,
       tunIpMode: tunIpMode,
-      tunInterfaceName: Platform.isWindows ? tunInterfaceName : null,
-      mtu: Platform.isAndroid ? CoreConfigBuilder.tunMtu : null,
-      androidCompatibility: Platform.isAndroid,
+      tunInterfaceName: tunInterfaceName,
     );
-    if (appliedTunSettings && !Platform.isAndroid) {
-      _rememberAppLog(
-        'Applied ${tunIpMode.name} TUN IP mode to native sing-box config.',
-      );
-    }
-    return decoded;
   }
 
   Map<String, dynamic> _buildNativeXrayRuntimeConfig({

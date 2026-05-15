@@ -71,6 +71,7 @@ struct ConfigOptions {
   std::string traffic_mode = "systemProxy";
   std::string tun_ip_mode = "ipv4";
   bool is_android = false;
+  bool is_windows = false;
   std::vector<std::string> dns_servers;
   std::string split_tunnel_mode = "off";
   std::vector<std::string> split_tunnel_app_names;
@@ -138,7 +139,53 @@ struct Json {
   bool contains(const std::string& key) const {
     return object().find(key) != object().end();
   }
+  bool is_null() const { return std::holds_alternative<std::nullptr_t>(value); }
+  Object& object_mut() {
+    if (!is_object()) value = Object{};
+    return std::get<Object>(value);
+  }
+  Array& array_mut() {
+    if (!is_array()) value = Array{};
+    return std::get<Array>(value);
+  }
+  Json& member(const std::string& key) { return object_mut()[key]; }
+  void erase(const std::string& key) {
+    if (is_object()) std::get<Object>(value).erase(key);
+  }
 };
+
+long read_hex4(std::string_view text, size_t pos) {
+  if (pos + 4 > text.size()) return -1;
+  long value = 0;
+  for (size_t i = 0; i < 4; ++i) {
+    const char ch = text[pos + i];
+    value <<= 4;
+    if (ch >= '0' && ch <= '9') value |= (ch - '0');
+    else if (ch >= 'a' && ch <= 'f') value |= (ch - 'a' + 10);
+    else if (ch >= 'A' && ch <= 'F') value |= (ch - 'A' + 10);
+    else return -1;
+  }
+  return value;
+}
+
+void append_utf8(std::string& out, unsigned long cp) {
+  if (cp == 0) return;
+  if (cp < 0x80) {
+    out.push_back(static_cast<char>(cp));
+  } else if (cp < 0x800) {
+    out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else if (cp < 0x10000) {
+    out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  } else {
+    out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+    out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+  }
+}
 
 class JsonParser {
  public:
@@ -237,15 +284,18 @@ class JsonParser {
           case 'r': out.push_back('\r'); break;
           case 't': out.push_back('\t'); break;
           case 'u': {
-            if (pos_ + 4 <= text_.size()) {
-              const auto hex = std::string(text_.substr(pos_, 4));
-              pos_ += 4;
-              char* end = nullptr;
-              const auto code = std::strtol(hex.c_str(), &end, 16);
-              if (end != nullptr && *end == '\0' && code > 0 && code < 128) {
-                out.push_back(static_cast<char>(code));
+            long code = read_hex4(text_, pos_);
+            if (code < 0) break;
+            pos_ += 4;
+            if (code >= 0xD800 && code <= 0xDBFF && pos_ + 6 <= text_.size() &&
+                text_[pos_] == '\\' && text_[pos_ + 1] == 'u') {
+              const long low = read_hex4(text_, pos_ + 2);
+              if (low >= 0xDC00 && low <= 0xDFFF) {
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                pos_ += 6;
               }
             }
+            append_utf8(out, static_cast<unsigned long>(code));
             break;
           }
           default: out.push_back(escaped); break;
@@ -1385,6 +1435,7 @@ ConfigOptions options_from_json(const std::string& json) {
   options.tun_ip_mode = json_string_value(json, "tunIpMode");
   if (options.tun_ip_mode.empty()) options.tun_ip_mode = "ipv4";
   options.is_android = json_bool_value(json, "isAndroid");
+  options.is_windows = json_bool_value(json, "isWindows");
   options.dns_servers = json_string_array_value(json, "dnsServers");
   options.split_tunnel_mode = json_string_value(json, "splitTunnelMode");
   if (options.split_tunnel_mode.empty()) options.split_tunnel_mode = "off";
@@ -1786,8 +1837,434 @@ std::string sing_box_outbound_json(const Profile& profile, const std::string& bi
   return json.str();
 }
 
+void serialize_json(std::ostringstream& out, const Json& json) {
+  if (json.is_object()) {
+    out << '{';
+    bool first = true;
+    for (const auto& entry : json.object()) {
+      if (!first) out << ',';
+      first = false;
+      out << '"' << json_escape(entry.first) << "\":";
+      serialize_json(out, entry.second);
+    }
+    out << '}';
+  } else if (json.is_array()) {
+    out << '[';
+    const auto& items = json.array();
+    for (size_t i = 0; i < items.size(); ++i) {
+      if (i > 0) out << ',';
+      serialize_json(out, items[i]);
+    }
+    out << ']';
+  } else if (json.is_string()) {
+    out << '"' << json_escape(json.string_value()) << '"';
+  } else if (json.is_bool()) {
+    out << (json.bool_value() ? "true" : "false");
+  } else if (json.is_number()) {
+    const double number = std::get<double>(json.value);
+    if (number == static_cast<long long>(number)) {
+      out << static_cast<long long>(number);
+    } else {
+      out << number;
+    }
+  } else {
+    out << "null";
+  }
+}
+
+std::string serialize_json(const Json& json) {
+  std::ostringstream out;
+  serialize_json(out, json);
+  return out.str();
+}
+
+// --- Native sing-box TUN settings transform.
+// Ported from lib/services/core_config_native_tun.dart so the native builder
+// returns a final config instead of relying on Dart post-processing.
+
+Json make_string_array(const std::vector<std::string>& values) {
+  Json::Array array;
+  for (const auto& value : values) array.push_back(Json(value));
+  return Json(std::move(array));
+}
+
+std::vector<std::string> tun_string_field_values(const Json& value) {
+  std::vector<std::string> values;
+  if (value.is_string()) {
+    const auto trimmed = trim(std::get<std::string>(value.value));
+    if (!trimmed.empty()) values.push_back(trimmed);
+    return values;
+  }
+  if (value.is_array()) {
+    for (const auto& item : value.array()) {
+      const auto trimmed = trim(item.string_value());
+      if (!trimmed.empty()) values.push_back(trimmed);
+    }
+  }
+  return values;
+}
+
+std::string tun_address_host(const std::string& value) {
+  const auto trimmed = trim(value);
+  if (!trimmed.empty() && trimmed.front() == '[') {
+    const auto end = trimmed.find(']');
+    if (end != std::string::npos && end > 1) {
+      return trimmed.substr(1, end - 1);
+    }
+  }
+  const auto slash = trimmed.find('/');
+  return trim(slash == std::string::npos ? trimmed : trimmed.substr(0, slash));
+}
+
+bool is_ipv6_address_like(const std::string& value) {
+  return tun_address_host(value).find(':') != std::string::npos;
+}
+
+bool matches_tun_ip_mode(const std::string& value, const std::string& mode) {
+  if (mode == "ipv6") return is_ipv6_address_like(value);
+  if (mode == "dualStack") return true;
+  return !is_ipv6_address_like(value);
+}
+
+bool field_has_selected_ip_family(const Json& value, const std::string& mode) {
+  for (const auto& item : tun_string_field_values(value)) {
+    if (matches_tun_ip_mode(item, mode)) return true;
+  }
+  return false;
+}
+
+Json& ensure_map_field(Json& target, const std::string& field) {
+  Json& value = target.member(field);
+  if (!value.is_object()) value = Json(Json::Object{});
+  return value;
+}
+
+Json& ensure_rules_list(Json& route) {
+  Json& rules = route.member("rules");
+  if (rules.is_array()) return rules;
+  if (rules.is_object()) {
+    Json::Array wrapped;
+    wrapped.push_back(rules);
+    rules = Json(std::move(wrapped));
+    return rules;
+  }
+  rules = Json(Json::Array{});
+  return rules;
+}
+
+void filter_ip_family_field(Json& target, const std::string& field, const std::string& mode,
+                            const std::vector<std::string>* fallback) {
+  const Json raw = target.at(field);
+  const auto values = tun_string_field_values(raw);
+  if (values.empty()) return;
+
+  std::vector<std::string> filtered;
+  for (const auto& value : values) {
+    if (matches_tun_ip_mode(value, mode)) filtered.push_back(value);
+  }
+  if (filtered.empty()) {
+    if (fallback == nullptr || fallback->empty()) {
+      target.erase(field);
+    } else {
+      target.member(field) = make_string_array(*fallback);
+    }
+    return;
+  }
+  if (raw.is_string() && filtered.size() == 1) {
+    target.member(field) = Json(filtered.front());
+  } else {
+    target.member(field) = make_string_array(filtered);
+  }
+}
+
+void ensure_tun_address_field(Json& inbound, const std::string& mode) {
+  if (mode == "dualStack") return;
+  if (field_has_selected_ip_family(inbound.at("address"), mode)) return;
+  const std::string legacy = mode == "ipv4" ? "inet4_address" : "inet6_address";
+  if (field_has_selected_ip_family(inbound.at(legacy), mode)) return;
+  inbound.member("address") = make_string_array(tun_addresses(mode));
+}
+
+void apply_tun_ip_mode_to_inbound(Json& inbound, const std::string& mode) {
+  if (mode == "dualStack") {
+    ensure_tun_address_field(inbound, mode);
+    return;
+  }
+  const auto fallback = tun_addresses(mode);
+  filter_ip_family_field(inbound, "address", mode, &fallback);
+  filter_ip_family_field(inbound, "route_address", mode, nullptr);
+  filter_ip_family_field(inbound, "route_exclude_address", mode, nullptr);
+  if (mode == "ipv4") {
+    inbound.erase("inet6_address");
+    inbound.erase("inet6_route_address");
+    inbound.erase("inet6_route_exclude_address");
+  } else {
+    inbound.erase("inet4_address");
+    inbound.erase("inet4_route_address");
+    inbound.erase("inet4_route_exclude_address");
+  }
+  ensure_tun_address_field(inbound, mode);
+}
+
+void apply_android_tun_compatibility(Json& inbound, const std::string& android_tun_stack) {
+  inbound.erase("interface_name");
+  inbound.erase("strict_route");
+  inbound.erase("gso");
+  inbound.member("stack") = Json(android_tun_stack);
+}
+
+void apply_android_route_compatibility(Json& config) {
+  Json& route = ensure_map_field(config, "route");
+  route.member("auto_detect_interface") = Json(true);
+}
+
+std::vector<Json*> sing_box_tun_inbounds(Json& config) {
+  std::vector<Json*> result;
+  if (!config.is_object()) return result;
+  auto& obj = config.object_mut();
+  const auto it = obj.find("inbounds");
+  if (it == obj.end() || !it->second.is_array()) return result;
+  for (Json& inbound : it->second.array_mut()) {
+    if (!inbound.is_object()) continue;
+    if (lower(trim(inbound.at("type").string_value())) == "tun") {
+      result.push_back(&inbound);
+    }
+  }
+  return result;
+}
+
+Json build_tun_inbound_matcher(const std::vector<Json*>& tun_inbounds) {
+  std::vector<std::string> tags;
+  for (const Json* inbound : tun_inbounds) {
+    const auto tag = trim(inbound->at("tag").string_value());
+    if (!tag.empty()) tags.push_back(tag);
+  }
+  if (tags.size() != tun_inbounds.size() || tags.empty()) return Json();
+  if (tags.size() == 1) return Json(tags.front());
+  return make_string_array(tags);
+}
+
+std::set<std::string> inbound_matcher_tags(const Json& value) {
+  std::set<std::string> tags;
+  if (value.is_string()) {
+    const auto tag = trim(std::get<std::string>(value.value));
+    if (!tag.empty()) tags.insert(tag);
+  } else if (value.is_array()) {
+    for (const auto& item : value.array()) {
+      const auto tag = trim(item.string_value());
+      if (!tag.empty()) tags.insert(tag);
+    }
+  }
+  return tags;
+}
+
+bool rule_inbound_matches(const Json& rule_inbound, const Json& inbound_matcher) {
+  if (inbound_matcher.is_null()) return rule_inbound.is_null();
+  if (rule_inbound.is_null()) return true;
+  const auto rule_tags = inbound_matcher_tags(rule_inbound);
+  const auto target_tags = inbound_matcher_tags(inbound_matcher);
+  return !rule_tags.empty() && !target_tags.empty() && rule_tags == target_tags;
+}
+
+bool field_contains_port(const Json& value, int port) {
+  if (value.is_number()) {
+    return static_cast<long long>(std::get<double>(value.value)) == port;
+  }
+  if (value.is_string()) {
+    const auto& text = std::get<std::string>(value.value);
+    const auto wanted = std::to_string(port);
+    size_t start = 0;
+    while (start <= text.size()) {
+      const auto next = text.find(',', start);
+      const auto item = trim(text.substr(start, next == std::string::npos ? std::string::npos : next - start));
+      if (item == wanted) return true;
+      if (next == std::string::npos) break;
+      start = next + 1;
+    }
+    return false;
+  }
+  if (value.is_array()) {
+    for (const auto& item : value.array()) {
+      if (field_contains_port(item, port)) return true;
+    }
+  }
+  return false;
+}
+
+bool rule_matches_dns(const Json& rule) {
+  const Json& protocol = rule.at("protocol");
+  if (protocol.is_string() && lower(trim(std::get<std::string>(protocol.value))) == "dns") {
+    return true;
+  }
+  if (protocol.is_array()) {
+    for (const auto& item : protocol.array()) {
+      if (lower(trim(item.string_value())) == "dns") return true;
+    }
+  }
+  if (field_contains_port(rule.at("port"), 53)) return true;
+  const Json& children = rule.at("rules");
+  if (children.is_array()) {
+    for (const auto& child : children.array()) {
+      if (child.is_object() && rule_matches_dns(child)) return true;
+    }
+  }
+  return false;
+}
+
+bool is_dns_hijack_rule(const Json& rule, const Json& inbound_matcher) {
+  if (lower(trim(rule.at("action").string_value())) != "hijack-dns") return false;
+  return rule_inbound_matches(rule.at("inbound"), inbound_matcher) && rule_matches_dns(rule);
+}
+
+bool is_generic_resolve_rule(const Json& rule, const Json& inbound_matcher) {
+  if (lower(trim(rule.at("action").string_value())) != "resolve") return false;
+  if (!rule_inbound_matches(rule.at("inbound"), inbound_matcher)) return false;
+  static const std::set<std::string> generic_resolve_keys = {
+      "action", "inbound", "server", "strategy", "disable_cache",
+      "disable_optimistic_cache", "rewrite_ttl", "timeout", "client_subnet"};
+  for (const auto& entry : rule.object()) {
+    if (generic_resolve_keys.find(entry.first) == generic_resolve_keys.end()) return false;
+  }
+  return true;
+}
+
+Json build_sing_box_dns_matcher_rule() {
+  Json::Array rules;
+  Json protocol_rule(Json::Object{});
+  protocol_rule.member("protocol") = Json(std::string("dns"));
+  Json port_rule(Json::Object{});
+  port_rule.member("port") = Json(53.0);
+  rules.push_back(std::move(protocol_rule));
+  rules.push_back(std::move(port_rule));
+
+  Json rule(Json::Object{});
+  rule.member("type") = Json(std::string("logical"));
+  rule.member("mode") = Json(std::string("or"));
+  rule.member("rules") = Json(std::move(rules));
+  return rule;
+}
+
+Json build_sing_box_dns_hijack_rule() {
+  Json rule = build_sing_box_dns_matcher_rule();
+  rule.member("action") = Json(std::string("hijack-dns"));
+  return rule;
+}
+
+void apply_dns_strategy(Json& config, const std::string& mode) {
+  if (!config.is_object()) return;
+  auto& obj = config.object_mut();
+  const auto it = obj.find("dns");
+  if (it == obj.end() || !it->second.is_object()) return;
+  it->second.member("strategy") = Json(dns_strategy(mode));
+}
+
+void ensure_resolve_rule_after_sniff(Json& config, const std::string& mode,
+                                     const std::vector<Json*>& tun_inbounds) {
+  Json& route = ensure_map_field(config, "route");
+  Json& rules = ensure_rules_list(route);
+  const auto strategy = dns_strategy(mode);
+  const Json inbound_matcher = build_tun_inbound_matcher(tun_inbounds);
+
+  for (Json& rule : rules.array_mut()) {
+    if (!rule.is_object()) continue;
+    if (is_generic_resolve_rule(rule, inbound_matcher)) {
+      rule.member("strategy") = Json(strategy);
+      return;
+    }
+  }
+
+  Json resolve_rule(Json::Object{});
+  resolve_rule.member("action") = Json(std::string("resolve"));
+  resolve_rule.member("strategy") = Json(strategy);
+  if (!inbound_matcher.is_null()) resolve_rule.member("inbound") = inbound_matcher;
+
+  auto& items = rules.array_mut();
+  for (size_t i = 0; i < items.size(); ++i) {
+    const Json& rule = items[i];
+    if (!rule.is_object()) continue;
+    if (lower(trim(rule.at("action").string_value())) == "sniff" &&
+        rule_inbound_matches(rule.at("inbound"), inbound_matcher)) {
+      items.insert(items.begin() + static_cast<std::ptrdiff_t>(i) + 1, std::move(resolve_rule));
+      return;
+    }
+  }
+
+  Json sniff_rule(Json::Object{});
+  sniff_rule.member("action") = Json(std::string("sniff"));
+  if (!inbound_matcher.is_null()) sniff_rule.member("inbound") = inbound_matcher;
+  items.insert(items.begin(), std::move(resolve_rule));
+  items.insert(items.begin(), std::move(sniff_rule));
+}
+
+void ensure_dns_hijack_rule_after_resolve(Json& config, const std::vector<Json*>& tun_inbounds) {
+  Json& route = ensure_map_field(config, "route");
+  Json& rules = ensure_rules_list(route);
+  const Json inbound_matcher = build_tun_inbound_matcher(tun_inbounds);
+
+  for (const Json& rule : rules.array()) {
+    if (!rule.is_object()) continue;
+    if (is_dns_hijack_rule(rule, inbound_matcher)) return;
+  }
+
+  Json hijack_rule = build_sing_box_dns_hijack_rule();
+  if (!inbound_matcher.is_null()) hijack_rule.member("inbound") = inbound_matcher;
+
+  auto& items = rules.array_mut();
+  for (size_t i = 0; i < items.size(); ++i) {
+    const Json& rule = items[i];
+    if (!rule.is_object()) continue;
+    if (lower(trim(rule.at("action").string_value())) == "resolve" &&
+        rule_inbound_matches(rule.at("inbound"), inbound_matcher)) {
+      items.insert(items.begin() + static_cast<std::ptrdiff_t>(i) + 1, std::move(hijack_rule));
+      return;
+    }
+  }
+  for (size_t i = 0; i < items.size(); ++i) {
+    const Json& rule = items[i];
+    if (!rule.is_object()) continue;
+    if (lower(trim(rule.at("action").string_value())) == "sniff" &&
+        rule_inbound_matches(rule.at("inbound"), inbound_matcher)) {
+      items.insert(items.begin() + static_cast<std::ptrdiff_t>(i) + 1, std::move(hijack_rule));
+      return;
+    }
+  }
+  items.insert(items.begin(), std::move(hijack_rule));
+}
+
+bool apply_native_sing_box_tun_settings(Json& config, const std::string& tun_ip_mode,
+                                        const std::string& android_tun_stack,
+                                        const std::string& tun_interface_name, int mtu,
+                                        bool android_compatibility) {
+  const auto tun_inbounds = sing_box_tun_inbounds(config);
+  if (tun_inbounds.empty()) return false;
+
+  const auto normalized_interface = trim(tun_interface_name);
+  for (Json* inbound : tun_inbounds) {
+    if (!normalized_interface.empty()) {
+      inbound->member("interface_name") = Json(normalized_interface);
+    }
+    if (mtu > 0) inbound->member("mtu") = Json(static_cast<double>(mtu));
+    if (android_compatibility) apply_android_tun_compatibility(*inbound, android_tun_stack);
+    apply_tun_ip_mode_to_inbound(*inbound, tun_ip_mode);
+  }
+  if (android_compatibility) apply_android_route_compatibility(config);
+  apply_dns_strategy(config, tun_ip_mode);
+  ensure_resolve_rule_after_sniff(config, tun_ip_mode, tun_inbounds);
+  ensure_dns_hijack_rule_after_resolve(config, tun_inbounds);
+  return true;
+}
+
 std::string build_sing_box_config(const Profile& profile, const ConfigOptions& options) {
-  if (!profile.sing_box_config_json.empty()) return profile.sing_box_config_json;
+  if (!profile.sing_box_config_json.empty()) {
+    Json config = JsonParser(profile.sing_box_config_json).parse();
+    if (!config.is_object()) return profile.sing_box_config_json;
+    const std::string tun_interface =
+        options.is_windows ? trim(options.tun_interface_name) : std::string();
+    const int tun_mtu = options.is_android ? 1400 : 0;
+    const bool applied = apply_native_sing_box_tun_settings(
+        config, options.tun_ip_mode, "gvisor", tun_interface, tun_mtu, options.is_android);
+    return applied ? serialize_json(config) : profile.sing_box_config_json;
+  }
   const bool tun = is_tun(options);
   const bool android_tun = tun && options.is_android;
   const auto dns_servers = options.dns_servers.empty() ? std::vector<std::string>{"1.1.1.1"} : options.dns_servers;

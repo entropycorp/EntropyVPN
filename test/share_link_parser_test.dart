@@ -303,36 +303,37 @@ void main() {
     });
 
     test('applies TUN IP mode to native sing-box configs', () {
-      final config = <String, dynamic>{
-        'inbounds': <Map<String, dynamic>>[
-          <String, dynamic>{
-            'type': 'tun',
-            'tag': 'tun-in',
-            'mtu': 9000,
-            'address': <String>['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-            'route_address': <String>[
-              '0.0.0.0/1',
-              '128.0.0.0/1',
-              '::/1',
-              '8000::/1',
-            ],
-            'auto_route': true,
-          },
-        ],
-        'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
-        'route': <String, dynamic>{
-          'rules': <Map<String, dynamic>>[
-            <String, dynamic>{'inbound': 'tun-in', 'action': 'sniff'},
+      final profile = ParsedVpnProfile.singBoxConfig(
+        configJson: jsonEncode(<String, dynamic>{
+          'inbounds': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'type': 'tun',
+              'tag': 'tun-in',
+              'mtu': 9000,
+              'address': <String>['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
+              'route_address': <String>[
+                '0.0.0.0/1',
+                '128.0.0.0/1',
+                '::/1',
+                '8000::/1',
+              ],
+              'auto_route': true,
+            },
           ],
-          'final': 'proxy',
-        },
-      };
+          'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
+          'route': <String, dynamic>{
+            'rules': <Map<String, dynamic>>[
+              <String, dynamic>{'inbound': 'tun-in', 'action': 'sniff'},
+            ],
+            'final': 'proxy',
+          },
+        }),
+      );
 
-      final applied = builder.applyNativeSingBoxTunSettings(
-        config,
+      final config = builder.buildSingBox(
+        profile,
         tunIpMode: TunIpMode.ipv4,
         tunInterfaceName: 'EntropyVPN TUN test',
-        mtu: CoreConfigBuilder.tunMtu,
       );
       final inbound =
           (config['inbounds'] as List<dynamic>).first as Map<String, dynamic>;
@@ -340,9 +341,8 @@ void main() {
       final route = config['route'] as Map<String, dynamic>;
       final rules = route['rules'] as List<dynamic>;
 
-      expect(applied, isTrue);
       expect(inbound['interface_name'], 'EntropyVPN TUN test');
-      expect(inbound['mtu'], CoreConfigBuilder.tunMtu);
+      expect(inbound['mtu'], 9000);
       expect(inbound['address'], <String>['172.19.0.1/30']);
       expect(inbound['route_address'], <String>['0.0.0.0/1', '128.0.0.0/1']);
       expect(dns['strategy'], 'ipv4_only');
@@ -355,38 +355,36 @@ void main() {
     });
 
     test('adds DNS hijack to native sing-box TUN configs', () {
-      final config = <String, dynamic>{
-        'inbounds': <Map<String, dynamic>>[
-          <String, dynamic>{
-            'type': 'tun',
-            'tag': 'tun-in',
-            'address': <String>['172.19.0.1/30'],
-            'auto_route': true,
-          },
-          <String, dynamic>{
-            'type': 'mixed',
-            'tag': 'mixed-in',
-            'listen': '127.0.0.1',
-            'listen_port': 2080,
-          },
-        ],
-        'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
-        'route': <String, dynamic>{
-          'rules': <Map<String, dynamic>>[
-            <String, dynamic>{'action': 'sniff'},
+      final profile = ParsedVpnProfile.singBoxConfig(
+        configJson: jsonEncode(<String, dynamic>{
+          'inbounds': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'type': 'tun',
+              'tag': 'tun-in',
+              'address': <String>['172.19.0.1/30'],
+              'auto_route': true,
+            },
+            <String, dynamic>{
+              'type': 'mixed',
+              'tag': 'mixed-in',
+              'listen': '127.0.0.1',
+              'listen_port': 2080,
+            },
           ],
-          'final': 'proxy',
-        },
-      };
-
-      final applied = builder.applyNativeSingBoxTunSettings(
-        config,
-        tunIpMode: TunIpMode.ipv4,
+          'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
+          'route': <String, dynamic>{
+            'rules': <Map<String, dynamic>>[
+              <String, dynamic>{'action': 'sniff'},
+            ],
+            'final': 'proxy',
+          },
+        }),
       );
+
+      final config = builder.buildSingBox(profile, tunIpMode: TunIpMode.ipv4);
       final route = config['route'] as Map<String, dynamic>;
       final rules = route['rules'] as List<dynamic>;
 
-      expect(applied, isTrue);
       expect((rules[0] as Map<String, dynamic>)['action'], 'sniff');
       expect((rules[1] as Map<String, dynamic>)['action'], 'resolve');
       expect((rules[1] as Map<String, dynamic>)['inbound'], 'tun-in');
@@ -396,77 +394,72 @@ void main() {
       expect(jsonEncode(rules[2]), contains('"port":53'));
     });
 
-    test('normalizes native sing-box TUN configs for Android SFA runtime', () {
-      final config = <String, dynamic>{
-        'inbounds': <Map<String, dynamic>>[
-          <String, dynamic>{
-            'type': 'tun',
-            'tag': 'tun-in',
-            'interface_name': 'desktop-tun',
-            'stack': 'mixed',
-            'strict_route': true,
-            'gso': true,
-            'mtu': 9000,
-            'address': <String>['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-            'auto_route': true,
-          },
-        ],
-        'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
-        'route': <String, dynamic>{'final': 'proxy'},
-      };
+    test('keeps dual-stack addresses for native sing-box TUN configs', () {
+      final profile = ParsedVpnProfile.singBoxConfig(
+        configJson: jsonEncode(<String, dynamic>{
+          'inbounds': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'type': 'tun',
+              'tag': 'tun-in',
+              'stack': 'mixed',
+              'address': <String>['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
+              'auto_route': true,
+            },
+          ],
+          'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
+          'route': <String, dynamic>{'final': 'proxy'},
+        }),
+      );
 
-      final applied = builder.applyNativeSingBoxTunSettings(
-        config,
+      final config = builder.buildSingBox(
+        profile,
         tunIpMode: TunIpMode.dualStack,
-        mtu: CoreConfigBuilder.tunMtu,
-        androidCompatibility: true,
       );
       final inbound =
           (config['inbounds'] as List<dynamic>).first as Map<String, dynamic>;
-      final route = config['route'] as Map<String, dynamic>;
-
-      expect(applied, isTrue);
-      expect(inbound['stack'], CoreConfigBuilder.androidTunStack);
-      expect(inbound['mtu'], CoreConfigBuilder.tunMtu);
-      expect(inbound.containsKey('interface_name'), isFalse);
-      expect(inbound.containsKey('strict_route'), isFalse);
-      expect(inbound.containsKey('gso'), isFalse);
-      expect(route['auto_detect_interface'], isTrue);
-    });
-
-    test('keeps existing native sing-box DNS hijack rules', () {
-      final existingHijack = <String, dynamic>{
-        'protocol': 'dns',
-        'action': 'hijack-dns',
-      };
-      final config = <String, dynamic>{
-        'inbounds': <Map<String, dynamic>>[
-          <String, dynamic>{
-            'type': 'tun',
-            'tag': 'tun-in',
-            'address': <String>['172.19.0.1/30'],
-            'auto_route': true,
-          },
-        ],
-        'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
-        'route': <String, dynamic>{
-          'rules': <Map<String, dynamic>>[
-            <String, dynamic>{'action': 'sniff'},
-            <String, dynamic>{'action': 'resolve', 'strategy': 'prefer_ipv4'},
-            existingHijack,
-          ],
-          'final': 'proxy',
-        },
-      };
-
-      final applied = builder.applyNativeSingBoxTunSettings(
-        config,
-        tunIpMode: TunIpMode.ipv4,
-      );
+      final dns = config['dns'] as Map<String, dynamic>;
       final route = config['route'] as Map<String, dynamic>;
       final rules = route['rules'] as List<dynamic>;
 
-      expect(applied, isTrue);
+      expect(inbound['stack'], 'mixed');
+      expect(inbound['address'], <String>[
+        '172.19.0.1/30',
+        'fdfe:dcba:9876::1/126',
+      ]);
+      expect(dns['strategy'], 'prefer_ipv4');
+      expect((rules[0] as Map<String, dynamic>)['action'], 'sniff');
+      expect((rules[1] as Map<String, dynamic>)['action'], 'resolve');
+      expect((rules[1] as Map<String, dynamic>)['strategy'], 'prefer_ipv4');
+      expect((rules[2] as Map<String, dynamic>)['action'], 'hijack-dns');
+    });
+
+    test('keeps existing native sing-box DNS hijack rules', () {
+      final profile = ParsedVpnProfile.singBoxConfig(
+        configJson: jsonEncode(<String, dynamic>{
+          'inbounds': <Map<String, dynamic>>[
+            <String, dynamic>{
+              'type': 'tun',
+              'tag': 'tun-in',
+              'address': <String>['172.19.0.1/30'],
+              'auto_route': true,
+            },
+          ],
+          'dns': <String, dynamic>{'servers': <Map<String, dynamic>>[]},
+          'route': <String, dynamic>{
+            'rules': <Map<String, dynamic>>[
+              <String, dynamic>{'action': 'sniff'},
+              <String, dynamic>{'action': 'resolve', 'strategy': 'prefer_ipv4'},
+              <String, dynamic>{'protocol': 'dns', 'action': 'hijack-dns'},
+            ],
+            'final': 'proxy',
+          },
+        }),
+      );
+
+      final config = builder.buildSingBox(profile, tunIpMode: TunIpMode.ipv4);
+      final route = config['route'] as Map<String, dynamic>;
+      final rules = route['rules'] as List<dynamic>;
+
       expect(
         rules.where((rule) {
           return rule is Map &&
@@ -474,7 +467,10 @@ void main() {
         }),
         hasLength(1),
       );
-      expect(identical(rules[2], existingHijack), isTrue);
+      expect((rules[1] as Map<String, dynamic>)['action'], 'resolve');
+      expect((rules[1] as Map<String, dynamic>)['strategy'], 'ipv4_only');
+      expect((rules[2] as Map<String, dynamic>)['action'], 'hijack-dns');
+      expect((rules[2] as Map<String, dynamic>)['protocol'], 'dns');
     });
 
     test('builds TUN route exclusion for IP server', () {

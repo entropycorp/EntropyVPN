@@ -7,7 +7,6 @@ import 'package:ffi/ffi.dart';
 import '../models/dns_settings.dart';
 import '../models/split_tunnel.dart';
 import '../models/vpn_profile.dart';
-import 'core_config_native_tun.dart';
 
 class CoreConfigBuilder {
   static const int singBoxMixedPort = 2080;
@@ -133,22 +132,6 @@ class CoreConfigBuilder {
     );
   }
 
-  bool applyNativeSingBoxTunSettings(
-    Map<String, dynamic> config, {
-    required TunIpMode tunIpMode,
-    String? tunInterfaceName,
-    int? mtu,
-    bool androidCompatibility = false,
-  }) {
-    return applyNativeSingBoxTunSettingsToConfig(
-      config,
-      tunIpMode: tunIpMode,
-      tunInterfaceName: tunInterfaceName,
-      mtu: mtu,
-      androidCompatibility: androidCompatibility,
-      androidTunStack: androidTunStack,
-    );
-  }
 }
 
 typedef _NativeBuildCoreConfig =
@@ -257,6 +240,7 @@ class _NativeCoreConfigBuilder {
       'trafficMode': trafficMode.name,
       'tunIpMode': tunIpMode.name,
       'isAndroid': Platform.isAndroid,
+      'isWindows': Platform.isWindows,
       'dnsServers': dnsSettings.normalized.serversFor(tunIpMode),
       'splitTunnelMode': splitTunnel.mode.name,
       'splitTunnelAppNames': splitTunnel.apps
