@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <tuple>
@@ -637,6 +638,163 @@ std::string PrepareXrayTunIpv4RoutesNative(
                    std::get<1>(routes[i]), std::get<2>(routes[i]));
   }
   return BuildResponse(response);
+}
+
+// ---------------------------------------------------------------------------
+// Pre-warmed TUN adapter.
+//
+// xray/sing-tun opens an existing wintun adapter by name rather than always
+// creating a fresh one. A brand-new wintun adapter is not route-able for
+// ~100ms while Windows finishes registering it, which the connect path
+// otherwise spins through. By creating "EntropyVPN TUN" once when the app
+// launches and holding the handle for the whole app session, the adapter is
+// already settled by the time the user connects, so route installation
+// succeeds on the first attempt.
+// ---------------------------------------------------------------------------
+namespace {
+
+using WintunAdapterHandle = void*;
+using WintunCreateAdapterFn =
+    WintunAdapterHandle(WINAPI*)(LPCWSTR, LPCWSTR, const GUID*);
+using WintunOpenAdapterFn = WintunAdapterHandle(WINAPI*)(LPCWSTR);
+using WintunCloseAdapterFn = void(WINAPI*)(WintunAdapterHandle);
+using WintunGetAdapterLuidFn = void(WINAPI*)(WintunAdapterHandle, NET_LUID*);
+
+std::mutex g_prewarm_mutex;
+HMODULE g_wintun_module = nullptr;
+WintunAdapterHandle g_prewarmed_adapter = nullptr;
+WintunCreateAdapterFn g_wintun_create_adapter = nullptr;
+WintunOpenAdapterFn g_wintun_open_adapter = nullptr;
+WintunCloseAdapterFn g_wintun_close_adapter = nullptr;
+WintunGetAdapterLuidFn g_wintun_get_adapter_luid = nullptr;
+
+// Stable adapter identity so repeated app launches reuse the same device
+// entry instead of accumulating ghost adapters.
+constexpr GUID kPrewarmedTunGuid = {
+    0x6f3a1d2e, 0x9c4b, 0x4e7a,
+    {0xb2, 0x18, 0x5d, 0x0c, 0x7e, 0x3f, 0xa1, 0x96}};
+
+bool EnsureWintunLoadedLocked() {
+  if (g_wintun_create_adapter != nullptr &&
+      g_wintun_open_adapter != nullptr &&
+      g_wintun_close_adapter != nullptr &&
+      g_wintun_get_adapter_luid != nullptr) {
+    return true;
+  }
+  if (g_wintun_module == nullptr) {
+    const std::wstring dll = ModuleDirectory() + L"\\cores\\wintun.dll";
+    g_wintun_module = LoadLibraryExW(dll.c_str(), nullptr,
+                                     LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (g_wintun_module == nullptr) {
+      return false;
+    }
+  }
+  g_wintun_create_adapter = reinterpret_cast<WintunCreateAdapterFn>(
+      GetProcAddress(g_wintun_module, "WintunCreateAdapter"));
+  g_wintun_open_adapter = reinterpret_cast<WintunOpenAdapterFn>(
+      GetProcAddress(g_wintun_module, "WintunOpenAdapter"));
+  g_wintun_close_adapter = reinterpret_cast<WintunCloseAdapterFn>(
+      GetProcAddress(g_wintun_module, "WintunCloseAdapter"));
+  g_wintun_get_adapter_luid = reinterpret_cast<WintunGetAdapterLuidFn>(
+      GetProcAddress(g_wintun_module, "WintunGetAdapterLUID"));
+  return g_wintun_create_adapter != nullptr &&
+         g_wintun_open_adapter != nullptr &&
+         g_wintun_close_adapter != nullptr &&
+         g_wintun_get_adapter_luid != nullptr;
+}
+
+NET_IFINDEX PrewarmedAdapterIndexLocked() {
+  if (g_prewarmed_adapter == nullptr || g_wintun_get_adapter_luid == nullptr) {
+    return 0;
+  }
+  NET_LUID luid{};
+  g_wintun_get_adapter_luid(g_prewarmed_adapter, &luid);
+  NET_IFINDEX index = 0;
+  if (ConvertInterfaceLuidToIndex(&luid, &index) != NO_ERROR) {
+    return 0;
+  }
+  return index;
+}
+
+}  // namespace
+
+std::string PrewarmTunAdapterNative(
+    const std::map<std::string, std::string>& fields) {
+  std::wstring interface_alias = ReadDecodedWide(fields, "interfaceAlias");
+  if (interface_alias.empty()) {
+    interface_alias = L"EntropyVPN TUN";
+  }
+
+  std::lock_guard<std::mutex> lock(g_prewarm_mutex);
+
+  if (g_prewarmed_adapter != nullptr) {
+    std::vector<std::pair<std::string, std::string>> response;
+    AddResultSuccess(&response);
+    AddField(&response, "status", "already-warm");
+    AddIntField(&response, "interfaceIndex",
+                static_cast<int64_t>(PrewarmedAdapterIndexLocked()));
+    return BuildResponse(response);
+  }
+
+  if (!EnsureWintunLoadedLocked()) {
+    const DWORD error = GetLastError();
+    return BuildFailure("wintun-load",
+                        error == NO_ERROR ? ERROR_MOD_NOT_FOUND : error);
+  }
+
+  const auto start = std::chrono::steady_clock::now();
+
+  // Prefer opening an existing adapter (e.g. a stale one left behind by a
+  // crash or by Windows not fully unloading the device node from the
+  // previous launch). WintunCreateAdapter blocks for tens of seconds when
+  // it has to evict an existing adapter with the same name, so opening is
+  // both faster and avoids that lock-up.
+  WintunAdapterHandle adapter =
+      g_wintun_open_adapter(interface_alias.c_str());
+  const char* status = "opened";
+  if (adapter == nullptr) {
+    adapter = g_wintun_create_adapter(interface_alias.c_str(), L"EntropyVPN",
+                                      &kPrewarmedTunGuid);
+    status = "created";
+  }
+  if (adapter == nullptr) {
+    return BuildFailure("wintun-create", GetLastError());
+  }
+  g_prewarmed_adapter = adapter;
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start);
+
+  std::vector<std::pair<std::string, std::string>> response;
+  AddResultSuccess(&response);
+  AddField(&response, "status", status);
+  AddIntField(&response, "interfaceIndex",
+              static_cast<int64_t>(PrewarmedAdapterIndexLocked()));
+  AddIntField(&response, "elapsedMs", elapsed.count());
+  return BuildResponse(response);
+}
+
+std::string ReleaseTunAdapterNative(
+    const std::map<std::string, std::string>& fields) {
+  (void)fields;
+  std::lock_guard<std::mutex> lock(g_prewarm_mutex);
+  bool released = false;
+  if (g_prewarmed_adapter != nullptr && g_wintun_close_adapter != nullptr) {
+    g_wintun_close_adapter(g_prewarmed_adapter);
+    g_prewarmed_adapter = nullptr;
+    released = true;
+  }
+  std::vector<std::pair<std::string, std::string>> response;
+  AddResultSuccess(&response);
+  AddBoolField(&response, "released", released);
+  return BuildResponse(response);
+}
+
+void ReleasePrewarmedTunAdapter() {
+  std::lock_guard<std::mutex> lock(g_prewarm_mutex);
+  if (g_prewarmed_adapter != nullptr && g_wintun_close_adapter != nullptr) {
+    g_wintun_close_adapter(g_prewarmed_adapter);
+    g_prewarmed_adapter = nullptr;
+  }
 }
 
 }  // namespace entropy_vpn_service

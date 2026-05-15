@@ -698,6 +698,17 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
     _rememberAppLog(
       'Xray TUN adapter setup timing: prepare=${_orDash(decoded['elapsedMs']?.toString())}ms, wait_adapter=${_orDash(decoded['waitMs']?.toString())}ms, configure=${_orDash(decoded['configureMs']?.toString())}ms, routes=${_orDash(decoded['routeMs']?.toString())}ms.',
     );
+    _logWindowsXrayTunRetryDiagnostics(decoded);
+  }
+
+  void _logWindowsXrayTunRetryDiagnostics(Map<Object?, Object?> decoded) {
+    final attempts = decoded['attempts'];
+    if (attempts == null) {
+      return;
+    }
+    _rememberAppLog(
+      'Xray TUN adapter setup retries: attempts=$attempts, retry_sleep=${_orDash(decoded['retrySleepMs']?.toString())}ms, configure_total=${_orDash(decoded['configureTotalMs']?.toString())}ms, route_total=${_orDash(decoded['routeTotalMs']?.toString())}ms, waits=ip_change:${_orDash(decoded['interfaceChangeWaits']?.toString())}|high_res:${_orDash(decoded['highResWaits']?.toString())}|sleep:${_orDash(decoded['fallbackSleepWaits']?.toString())}|yield:${_orDash(decoded['yieldWaits']?.toString())}.',
+    );
   }
 
   void _logWindowsXrayTunConfiguration(Map<Object?, Object?> decoded) {

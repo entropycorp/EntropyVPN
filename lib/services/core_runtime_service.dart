@@ -34,7 +34,7 @@ class CoreRuntimeService {
     GeoIpService? geoIpService,
     SystemProxyService? systemProxyService,
   }) : _configBuilder = configBuilder ?? CoreConfigBuilder(),
-       _geoIpService = geoIpService ?? GeoIpService(),
+       _geoIpService = geoIpService ?? GeoIpService.shared,
        _systemProxyService = systemProxyService ?? SystemProxyService();
 
   static const int _maxRecentLogs = 400;

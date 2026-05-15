@@ -824,6 +824,114 @@ bool TryPrepareXrayTunIpv4ViaService(
          ServiceXrayTunIpv4FieldsToResponse(parsed.fields, response);
 }
 
+// Fire-and-result helper for prewarm/release-tun-adapter. Returns true if the
+// service responded with resultOk=1. Populates `status_out` with the status
+// field ("created", "already-warm") and `elapsed_ms_out` with elapsedMs (0 if
+// absent). All outputs may be null.
+bool TryPrewarmTunAdapterViaService(const std::string& interface_alias,
+                                    DWORD timeout_ms,
+                                    std::string* status_out,
+                                    int64_t* elapsed_ms_out,
+                                    int64_t* interface_index_out,
+                                    std::string* error_out) {
+  const std::vector<std::string> service_args = {
+      "prewarm-tun-adapter",
+      "--interface-alias",
+      interface_alias,
+  };
+  std::string request;
+  std::string build_error;
+  if (!BuildWindowsServiceRequest(service_args, &request, &build_error)) {
+    if (error_out) *error_out = build_error;
+    return false;
+  }
+
+  std::string stdout_text;
+  std::string stderr_text;
+  DWORD exit_code = 0;
+  const PipeRequestResult direct_result =
+      SendWindowsServicePipeRequest(request, timeout_ms);
+  if (!direct_result.ok || direct_result.response.empty()) {
+    const HelperProcessResult helper_result = RunWindowsServiceHelperProcess(
+        service_args, timeout_ms, direct_result.error);
+    if (!helper_result.ok) {
+      if (error_out) *error_out = helper_result.error;
+      return false;
+    }
+    stdout_text = helper_result.stdout_text;
+    stderr_text = helper_result.stderr_text;
+    exit_code = helper_result.exit_code;
+  } else {
+    stdout_text = direct_result.response;
+  }
+
+  const ParsedServiceResponse parsed =
+      ParseWindowsServiceResponse(stdout_text, stderr_text, exit_code);
+  if (!parsed.ok ||
+      ServiceFieldValue(parsed.fields, "resultOk") != "1") {
+    if (error_out) {
+      *error_out = ServiceFieldValue(parsed.fields, "failedStep");
+      if (error_out->empty()) *error_out = "service-error";
+    }
+    return false;
+  }
+  if (status_out) *status_out = ServiceFieldValue(parsed.fields, "status");
+  if (elapsed_ms_out) {
+    *elapsed_ms_out = ParseServiceInt64(parsed.fields, "elapsedMs");
+  }
+  if (interface_index_out) {
+    *interface_index_out =
+        ParseServiceInt64(parsed.fields, "interfaceIndex");
+  }
+  return true;
+}
+
+bool TryReleaseTunAdapterViaService(DWORD timeout_ms,
+                                    bool* released_out,
+                                    std::string* error_out) {
+  const std::vector<std::string> service_args = {"release-tun-adapter"};
+  std::string request;
+  std::string build_error;
+  if (!BuildWindowsServiceRequest(service_args, &request, &build_error)) {
+    if (error_out) *error_out = build_error;
+    return false;
+  }
+
+  std::string stdout_text;
+  std::string stderr_text;
+  DWORD exit_code = 0;
+  const PipeRequestResult direct_result =
+      SendWindowsServicePipeRequest(request, timeout_ms);
+  if (!direct_result.ok || direct_result.response.empty()) {
+    const HelperProcessResult helper_result = RunWindowsServiceHelperProcess(
+        service_args, timeout_ms, direct_result.error);
+    if (!helper_result.ok) {
+      if (error_out) *error_out = helper_result.error;
+      return false;
+    }
+    stdout_text = helper_result.stdout_text;
+    stderr_text = helper_result.stderr_text;
+    exit_code = helper_result.exit_code;
+  } else {
+    stdout_text = direct_result.response;
+  }
+
+  const ParsedServiceResponse parsed =
+      ParseWindowsServiceResponse(stdout_text, stderr_text, exit_code);
+  if (!parsed.ok ||
+      ServiceFieldValue(parsed.fields, "resultOk") != "1") {
+    if (error_out) {
+      *error_out = ServiceFieldValue(parsed.fields, "failedStep");
+      if (error_out->empty()) *error_out = "service-error";
+    }
+    return false;
+  }
+  if (released_out) {
+    *released_out = ServiceFieldValue(parsed.fields, "released") == "1";
+  }
+  return true;
+}
+
 bool TryPrepareServerRoutingViaService(const std::vector<std::string>& args,
                                        DWORD timeout_ms,
                                        EncodableMap* response) {

@@ -321,6 +321,12 @@ std::string HandleRequest(const std::string& request_text) {
   if (command->second == "prepare_xray_tun_ipv4_routes") {
     return PrepareXrayTunIpv4RoutesNative(fields);
   }
+  if (command->second == "prewarm_tun_adapter") {
+    return PrewarmTunAdapterNative(fields);
+  }
+  if (command->second == "release_tun_adapter") {
+    return ReleaseTunAdapterNative(fields);
+  }
   return ErrorResponse("Unknown service command.", ERROR_INVALID_PARAMETER);
 }
 

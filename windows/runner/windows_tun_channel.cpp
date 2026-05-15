@@ -264,3 +264,27 @@ CreateWindowsTunChannel(flutter::BinaryMessenger* messenger) {
 
   return channel;
 }
+
+void PrewarmTunAdapterAsync() {
+  std::thread([] {
+    std::string status;
+    int64_t elapsed_ms = 0;
+    int64_t interface_index = 0;
+    std::string error;
+    // Generous timeout: the helper-process fallback can be slow to spin up
+    // on a cold service, and we tolerate the call failing silently.
+    constexpr DWORD kTimeoutMs = 8000;
+    TryPrewarmTunAdapterViaService(/*interface_alias=*/"EntropyVPN TUN",
+                                   kTimeoutMs, &status, &elapsed_ms,
+                                   &interface_index, &error);
+    // Intentionally no error surfacing — connect-time path will still work
+    // (it falls back to creating the adapter on demand, just slower).
+  }).detach();
+}
+
+void ReleaseTunAdapterSync() {
+  bool released = false;
+  std::string error;
+  constexpr DWORD kTimeoutMs = 2000;
+  TryReleaseTunAdapterViaService(kTimeoutMs, &released, &error);
+}

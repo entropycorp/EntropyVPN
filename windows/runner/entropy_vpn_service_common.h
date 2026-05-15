@@ -26,6 +26,7 @@ bool ContainsToken(const std::string& value, const std::string& token);
 bool LooksVirtualInterfaceAlias(const std::string& alias);
 bool IsRetryableNetworkSetupError(DWORD error);
 
+std::wstring ModuleDirectory();
 bool IsAllowedCoreExecutable(const std::wstring& executable);
 std::wstring ResolveAllowedCoreExecutable(const std::wstring& executable);
 bool IsAllowedToolInvocation(const std::wstring& executable,

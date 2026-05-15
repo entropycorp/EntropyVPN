@@ -736,6 +736,7 @@ class WindowsRuntimeController {
         return MakeFailureFromNativeMap(xray_routes, "xray-tun-routes");
       }
       DecodeRoutes(xray_routes, false, &state->tun_routes);
+      EmitXrayTunSetupTiming(xray_routes);
       EmitLog("[app] Xray TUN adapter and routes are ready.");
     }
 
@@ -1371,6 +1372,46 @@ class WindowsRuntimeController {
     return map == nullptr ? MakeFailure("xray-tun-routes",
                                         "Xray TUN route setup returned no result.")
                           : *map;
+  }
+
+  void EmitXrayTunSetupTiming(const EncodableMap& xray_routes) {
+    const std::string setup_kind = MapString(xray_routes, "setupKind");
+    EmitLog("[app] Xray TUN adapter setup timing: prepare=" +
+            std::to_string(MapInt64(xray_routes, "elapsedMs")) +
+            "ms, wait_adapter=" +
+            std::to_string(MapInt64(xray_routes, "waitMs")) +
+            "ms, configure=" +
+            std::to_string(MapInt64(xray_routes, "configureMs")) +
+            "ms, routes=" +
+            std::to_string(MapInt64(xray_routes, "routeMs")) + "ms" +
+            (setup_kind.empty() ? "" : ", kind=" + setup_kind) + ".");
+    EmitLog("[app] Xray TUN adapter setup retries: attempts=" +
+            std::to_string(MapInt64(xray_routes, "attempts")) +
+            ", retry_sleep=" +
+            std::to_string(MapInt64(xray_routes, "retrySleepMs")) +
+            "ms, configure_total=" +
+            std::to_string(MapInt64(xray_routes, "configureTotalMs")) +
+            "ms, route_total=" +
+            std::to_string(MapInt64(xray_routes, "routeTotalMs")) +
+            "ms, waits=ip_change:" +
+            std::to_string(MapInt64(xray_routes, "interfaceChangeWaits")) +
+            "|high_res:" +
+            std::to_string(MapInt64(xray_routes, "highResWaits")) +
+            "|sleep:" +
+            std::to_string(MapInt64(xray_routes, "fallbackSleepWaits")) +
+            "|yield:" +
+            std::to_string(MapInt64(xray_routes, "yieldWaits")) +
+            ", last_fail=step:" +
+            (MapString(xray_routes, "lastRetryStep").empty()
+                 ? std::string("-")
+                 : MapString(xray_routes, "lastRetryStep")) +
+            "|err:" +
+            std::to_string(MapInt64(xray_routes, "lastRetryErrorCode")) +
+            "|route:" +
+            (MapString(xray_routes, "lastRetryRoutePrefix").empty()
+                 ? std::string("-")
+                 : MapString(xray_routes, "lastRetryRoutePrefix")) +
+            ".");
   }
 
   EncodableMap CaptureProxy(ProxySnapshot* snapshot) {

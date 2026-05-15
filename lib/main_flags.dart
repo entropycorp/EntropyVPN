@@ -27,7 +27,7 @@ class ServerFlagBadge extends StatefulWidget {
 }
 
 class ServerFlagBadgeState extends State<ServerFlagBadge> {
-  static final GeoIpService _geoIpService = GeoIpService();
+  static final GeoIpService _geoIpService = GeoIpService.shared;
 
   late Future<GeoIpInfo?> _lookup;
 

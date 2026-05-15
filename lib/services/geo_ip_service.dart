@@ -75,9 +75,14 @@ class GeoIpService {
   static const MethodChannel _androidControlChannel = MethodChannel(
     'entropy_vpn/control',
   );
+  /// Process-wide instance. Production code must use this so a single
+  /// in-memory cache and a single file writer back the whole app.
+  static final GeoIpService shared = GeoIpService();
+
   static final Uri _defaultIpWhoIsEndpoint = Uri.https('ipwho.is', '/');
   static const int _cacheVersion = 2;
   static const String _cacheProvider = 'ipwho.is';
+  static const Duration _saveDebounce = Duration(milliseconds: 750);
 
   final HttpClient _httpClient;
   final Future<File> Function() _cacheFileProvider;
@@ -89,6 +94,9 @@ class GeoIpService {
   final Map<String, Future<GeoIpInfo?>> _pendingIpLookups =
       <String, Future<GeoIpInfo?>>{};
   Future<void>? _persistentCacheLoad;
+  Timer? _saveTimer;
+  Future<void>? _activeSave;
+  bool _cacheDirty = false;
 
   Future<GeoIpInfo?> resolveServer(String server) {
     final normalizedServer = server.trim();
@@ -134,7 +142,7 @@ class GeoIpService {
       return _serverCache[cacheKey];
     }
 
-    await _rememberServerInfo(cacheKey, info);
+    _rememberServerInfo(cacheKey, info);
     return info;
   }
 
@@ -256,7 +264,7 @@ class GeoIpService {
             _readText(decoded['as']) ??
             _readText(decoded['isp']),
       );
-      await _rememberIpInfo(ipAddress, info);
+      _rememberIpInfo(ipAddress, info);
       return info;
     } on HandshakeException {
       return null;
@@ -285,15 +293,47 @@ class GeoIpService {
     );
   }
 
-  Future<void> _rememberServerInfo(String cacheKey, GeoIpInfo info) async {
+  void _rememberServerInfo(String cacheKey, GeoIpInfo info) {
     _serverCache[cacheKey] = info;
     _ipCache[info.resolvedIp] = info;
-    await _savePersistentCache();
+    _scheduleSave();
   }
 
-  Future<void> _rememberIpInfo(String ipAddress, GeoIpInfo info) async {
+  void _rememberIpInfo(String ipAddress, GeoIpInfo info) {
     _ipCache[ipAddress] = info;
-    await _savePersistentCache();
+    _scheduleSave();
+  }
+
+  /// Coalesces a burst of cache updates into a single delayed disk write.
+  void _scheduleSave() {
+    _cacheDirty = true;
+    _saveTimer ??= Timer(_saveDebounce, _runSave);
+  }
+
+  /// Runs the persistent write, ensuring only one write is in flight at a
+  /// time. If more entries land mid-write, a follow-up write is scheduled.
+  void _runSave() {
+    _saveTimer = null;
+    if (_activeSave != null || !_cacheDirty) {
+      return;
+    }
+    _cacheDirty = false;
+    _activeSave = _savePersistentCache().whenComplete(() {
+      _activeSave = null;
+      if (_cacheDirty) {
+        _runSave();
+      }
+    });
+  }
+
+  /// Flushes any pending cache write to disk and waits for it to finish.
+  Future<void> dispose() async {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    _runSave();
+    while (_activeSave != null) {
+      await _activeSave;
+    }
   }
 
   Future<void> _ensurePersistentCacheLoaded() {
@@ -340,31 +380,19 @@ class GeoIpService {
       final file = await _cacheFileProvider();
       await file.parent.create(recursive: true);
 
-      final servers = <String, GeoIpInfo>{};
-      final ips = <String, GeoIpInfo>{};
-      if (await file.exists()) {
-        final raw = await file.readAsString();
-        final decoded = raw.trim().isEmpty ? null : jsonDecode(raw);
-        if (decoded is Map && _isCurrentCache(decoded)) {
-          servers.addAll(_readInfoMap(decoded['servers']));
-          ips.addAll(_readInfoMap(decoded['ips']));
-        }
-      }
-
-      servers.addAll(_serverCache);
-      ips.addAll(_ipCache);
-
+      // The in-memory caches are authoritative: they are seeded from disk on
+      // load and only ever grow, so they can be written out wholesale without
+      // re-reading and merging the file on every save.
       final payload = <String, Object?>{
         'version': _cacheVersion,
         'provider': _cacheProvider,
-        'servers': servers.map((key, value) => MapEntry(key, value.toJson())),
-        'ips': ips.map((key, value) => MapEntry(key, value.toJson())),
+        'servers': _serverCache.map(
+          (key, value) => MapEntry(key, value.toJson()),
+        ),
+        'ips': _ipCache.map((key, value) => MapEntry(key, value.toJson())),
       };
       final tempFile = File('${file.path}.tmp');
-      await tempFile.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(payload),
-        flush: true,
-      );
+      await tempFile.writeAsString(jsonEncode(payload), flush: true);
       if (await file.exists()) {
         await file.delete();
       }

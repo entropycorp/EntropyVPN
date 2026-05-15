@@ -209,6 +209,11 @@ bool FlutterWindow::OnCreate() {
       CreateWindowsAppCatalogChannel(flutter_controller_->engine()->messenger());
   windows_tun_channel_ =
       CreateWindowsTunChannel(flutter_controller_->engine()->messenger());
+  // Kick off TUN-adapter pre-warm immediately so the wintun adapter is
+  // already settled by the time the user hits Connect. Fire-and-forget on a
+  // background thread — failures are non-fatal (the connect path still works
+  // without it, just slower).
+  PrewarmTunAdapterAsync();
   WindowsRuntimeChannels windows_runtime_channels =
       CreateWindowsRuntimeChannels(flutter_controller_->engine()->messenger());
   windows_runtime_channel_ = std::move(windows_runtime_channels.method);
@@ -230,6 +235,11 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  // Release the pre-warmed TUN adapter while the service pipe is still
+  // reachable. Service-side shutdown also releases as a defensive fallback,
+  // but doing it here keeps the adapter from lingering between app runs when
+  // the service stays up.
+  ReleaseTunAdapterSync();
   RemoveTrayIcon();
   ReleaseTrayMenuResources();
   windows_app_catalog_channel_ = nullptr;

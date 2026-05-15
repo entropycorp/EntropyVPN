@@ -26,7 +26,7 @@ class WindowsTrayMenuService {
   static const double _flagPngCornerRadius = 8;
 
   final VpnController _controller;
-  final GeoIpService _geoIpService = GeoIpService();
+  final GeoIpService _geoIpService = GeoIpService.shared;
   final Map<String, String?> _serverCountryCodes = <String, String?>{};
   final Set<String> _pendingServerLookups = <String>{};
   final Map<String, String?> _flagPaths = <String, String?>{};

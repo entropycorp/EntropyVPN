@@ -69,6 +69,7 @@ void main() {
           path: '/geo',
         ),
       );
+      addTearDown(service.dispose);
 
       final info = await service.resolveServer('8.8.8.8');
 
@@ -113,6 +114,7 @@ void main() {
       );
 
       final service = GeoIpService(cacheFileProvider: () async => cacheFile);
+      addTearDown(service.dispose);
 
       final info = await service.resolveServer('VPN.EXAMPLE.COM');
 
@@ -178,6 +180,7 @@ void main() {
           port: server.port,
         ),
       );
+      addTearDown(service.dispose);
 
       final info = await service.resolveServer('2.27.11.183');
 

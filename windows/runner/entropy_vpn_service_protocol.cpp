@@ -137,6 +137,13 @@ bool BuildWindowsServiceRequest(const std::vector<std::string>& args,
         WindowsServiceOptionValue(args, "--prefix-length", "30"));
     AppendServiceField(request, "metric",
                        WindowsServiceOptionValue(args, "--metric", "1"));
+  } else if (command == "prewarm-tun-adapter") {
+    AppendServiceField(request, "command", "prewarm_tun_adapter");
+    AppendEncodedServiceField(
+        request, "interfaceAlias",
+        WindowsServiceOptionValue(args, "--interface-alias"));
+  } else if (command == "release-tun-adapter") {
+    AppendServiceField(request, "command", "release_tun_adapter");
   } else {
     *error = "Unknown EntropyVPN service command: " + command;
     return false;
