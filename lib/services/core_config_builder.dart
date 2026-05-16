@@ -234,6 +234,7 @@ class _NativeCoreConfigBuilder {
   }) {
     final splitTunnel = splitTunnelSettings.normalized;
     final domainSplitTunnel = domainSplitTunnelSettings.normalized;
+    final normalizedDns = dnsSettings.normalized;
     final profileJson = jsonEncode(profile.toJson()).toNativeUtf8();
     final optionsJson = jsonEncode(<String, Object?>{
       'core': core.name,
@@ -241,7 +242,8 @@ class _NativeCoreConfigBuilder {
       'tunIpMode': tunIpMode.name,
       'isAndroid': Platform.isAndroid,
       'isWindows': Platform.isWindows,
-      'dnsServers': dnsSettings.normalized.serversFor(tunIpMode),
+      'dnsMode': normalizedDns.mode.name,
+      'dnsServers': normalizedDns.serversFor(tunIpMode),
       'splitTunnelMode': splitTunnel.mode.name,
       'splitTunnelAppNames': splitTunnel.apps
           .map((app) => app.name)

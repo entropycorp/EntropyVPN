@@ -72,6 +72,7 @@ struct ConfigOptions {
   std::string tun_ip_mode = "ipv4";
   bool is_android = false;
   bool is_windows = false;
+  std::string dns_mode = "classic";
   std::vector<std::string> dns_servers;
   std::string split_tunnel_mode = "off";
   std::vector<std::string> split_tunnel_app_names;
@@ -1436,6 +1437,8 @@ ConfigOptions options_from_json(const std::string& json) {
   if (options.tun_ip_mode.empty()) options.tun_ip_mode = "ipv4";
   options.is_android = json_bool_value(json, "isAndroid");
   options.is_windows = json_bool_value(json, "isWindows");
+  options.dns_mode = json_string_value(json, "dnsMode");
+  if (options.dns_mode.empty()) options.dns_mode = "classic";
   options.dns_servers = json_string_array_value(json, "dnsServers");
   options.split_tunnel_mode = json_string_value(json, "splitTunnelMode");
   if (options.split_tunnel_mode.empty()) options.split_tunnel_mode = "off";
@@ -1515,6 +1518,163 @@ bool looks_ipv4(const std::string& value) {
 
 bool looks_ipv6(const std::string& value) {
   return value.find(':') != std::string::npos;
+}
+
+struct DohServer {
+  std::string host;
+  int port = 443;
+  std::string path = "/dns-query";
+};
+
+DohServer parse_doh_server(const std::string& value) {
+  DohServer parsed;
+  std::string remainder = trim(value);
+  const std::string scheme_prefix = "https://";
+  if (remainder.size() >= scheme_prefix.size() &&
+      std::equal(scheme_prefix.begin(), scheme_prefix.end(), remainder.begin(),
+                 [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); })) {
+    remainder = remainder.substr(scheme_prefix.size());
+  }
+  std::string authority = remainder;
+  const auto slash = remainder.find('/');
+  if (slash != std::string::npos) {
+    authority = remainder.substr(0, slash);
+    parsed.path = remainder.substr(slash);
+  }
+  std::string host = authority;
+  if (!host.empty() && host.front() == '[') {
+    const auto end = host.find(']');
+    if (end != std::string::npos) {
+      const std::string after = host.substr(end + 1);
+      parsed.host = host.substr(1, end - 1);
+      if (after.size() > 1 && after.front() == ':') {
+        const int port = std::atoi(after.c_str() + 1);
+        if (port > 0 && port <= 65535) parsed.port = port;
+      }
+      return parsed;
+    }
+  }
+  const auto colon = host.rfind(':');
+  if (colon != std::string::npos && host.find(':') == colon) {
+    const int port = std::atoi(host.c_str() + colon + 1);
+    if (port > 0 && port <= 65535) {
+      parsed.port = port;
+      host = host.substr(0, colon);
+    }
+  }
+  parsed.host = host;
+  return parsed;
+}
+
+struct DotServer {
+  std::string host;
+  int port = 853;
+};
+
+DotServer parse_dot_server(const std::string& value) {
+  DotServer parsed;
+  std::string remainder = trim(value);
+  const std::string scheme_prefix = "tls://";
+  if (remainder.size() >= scheme_prefix.size() &&
+      std::equal(scheme_prefix.begin(), scheme_prefix.end(), remainder.begin(),
+                 [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b)); })) {
+    remainder = remainder.substr(scheme_prefix.size());
+  }
+  if (!remainder.empty() && remainder.front() == '[') {
+    const auto end = remainder.find(']');
+    if (end != std::string::npos) {
+      const std::string after = remainder.substr(end + 1);
+      parsed.host = remainder.substr(1, end - 1);
+      if (after.size() > 1 && after.front() == ':') {
+        const int port = std::atoi(after.c_str() + 1);
+        if (port > 0 && port <= 65535) parsed.port = port;
+      }
+      return parsed;
+    }
+  }
+  const auto colon_count = std::count(remainder.begin(), remainder.end(), ':');
+  if (colon_count == 1) {
+    const auto colon = remainder.find(':');
+    const int port = std::atoi(remainder.c_str() + colon + 1);
+    if (port > 0 && port <= 65535) {
+      parsed.port = port;
+      parsed.host = remainder.substr(0, colon);
+      return parsed;
+    }
+  }
+  parsed.host = remainder;
+  return parsed;
+}
+
+std::string xray_dns_entry(const std::string& mode, const std::string& value) {
+  const std::string trimmed = trim(value);
+  if (trimmed.empty()) return trimmed;
+  if (mode == "doh") {
+    if (trimmed.rfind("https://", 0) == 0 || trimmed.rfind("https+local://", 0) == 0) {
+      return trimmed;
+    }
+    return "https://" + trimmed;
+  }
+  if (mode == "dot") {
+    if (trimmed.rfind("tls://", 0) == 0 || trimmed.rfind("tls+local://", 0) == 0) {
+      return trimmed;
+    }
+    // Bracket bare IPv6 literals so the URL parser keeps the colons attached
+    // to the host instead of treating them as port separators.
+    if (trimmed.find(':') != std::string::npos && trimmed.front() != '[' &&
+        std::count(trimmed.begin(), trimmed.end(), ':') > 1) {
+      return "tls://[" + trimmed + "]";
+    }
+    return "tls://" + trimmed;
+  }
+  return trimmed;
+}
+
+void write_sing_box_dns_server(std::ostringstream& json,
+                               const std::string& mode,
+                               const std::string& tag,
+                               const std::string& server,
+                               const std::string& detour) {
+  if (mode == "doh") {
+    const auto parsed = parse_doh_server(server);
+    json << "{\"type\":\"https\",\"tag\":";
+    write_string(json, tag);
+    json << ",\"server\":";
+    write_string(json, parsed.host);
+    json << ",\"server_port\":" << parsed.port;
+    json << ",\"path\":";
+    write_string(json, parsed.path);
+    if (!detour.empty()) {
+      json << ",\"detour\":";
+      write_string(json, detour);
+    }
+    json << '}';
+    return;
+  }
+  if (mode == "dot") {
+    const auto parsed = parse_dot_server(server);
+    json << "{\"type\":\"tls\",\"tag\":";
+    write_string(json, tag);
+    json << ",\"server\":";
+    write_string(json, parsed.host);
+    json << ",\"server_port\":" << parsed.port;
+    if (!detour.empty()) {
+      json << ",\"detour\":";
+      write_string(json, detour);
+    }
+    json << '}';
+    return;
+  }
+  json << "{\"type\":\"udp\",\"tag\":";
+  write_string(json, tag);
+  json << ",\"server\":";
+  write_string(json, server);
+  json << ",\"server_port\":53";
+  if (!detour.empty()) {
+    json << ",\"detour\":";
+    write_string(json, detour);
+  }
+  json << '}';
 }
 
 std::vector<std::string> tun_route_excludes(const Profile& profile) {
@@ -2278,9 +2438,8 @@ std::string build_sing_box_config(const Profile& profile, const ConfigOptions& o
   if (tun) {
     json << ",\"dns\":{\"servers\":[";
     if (!android_tun) json << "{\"type\":\"local\",\"tag\":\"dns-local\"},";
-    json << "{\"type\":\"udp\",\"tag\":\"dns-remote\",\"server\":";
-    write_string(json, dns_servers.front());
-    json << ",\"server_port\":53,\"detour\":\"proxy\"}],\"final\":\"dns-remote\",\"strategy\":\"" << dns_strategy(options.tun_ip_mode) << "\",\"independent_cache\":true}";
+    write_sing_box_dns_server(json, options.dns_mode, "dns-remote", dns_servers.front(), "proxy");
+    json << "],\"final\":\"dns-remote\",\"strategy\":\"" << dns_strategy(options.tun_ip_mode) << "\",\"independent_cache\":true}";
   }
   json << ",\"inbounds\":[";
   if (!tun) {
@@ -2447,7 +2606,12 @@ std::string build_xray_config(const Profile& profile, const ConfigOptions& optio
   const bool domain_whitelist = options.domain_split_tunnel_mode == "whitelist" && !options.domain_split_tunnel_domains.empty();
   const bool domain_blacklist = options.domain_split_tunnel_mode == "blacklist" && !options.domain_split_tunnel_domains.empty();
   const auto interface_name = trim(options.tun_interface_name).empty() ? "xray0" : trim(options.tun_interface_name);
-  const auto dns_servers = options.dns_servers.empty() ? std::vector<std::string>{"1.1.1.1"} : options.dns_servers;
+  const auto raw_dns_servers = options.dns_servers.empty() ? std::vector<std::string>{"1.1.1.1"} : options.dns_servers;
+  std::vector<std::string> dns_servers;
+  dns_servers.reserve(raw_dns_servers.size());
+  for (const auto& server : raw_dns_servers) {
+    dns_servers.push_back(xray_dns_entry(options.dns_mode, server));
+  }
 
   std::ostringstream json;
   json << "{\"log\":{\"loglevel\":\"warning\"}";

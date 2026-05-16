@@ -39,6 +39,18 @@ class AppStrings {
   String get saveAction => 'Save';
   String get dnsServersIncompleteMessage => 'Enter both DNS servers.';
   String dnsServersInvalid(String servers) => 'Invalid DNS: $servers';
+  String get dnsModeLabel => _ru ? 'Режим DNS' : 'DNS mode';
+  String get dnsModeClassicLabel => _ru ? 'Классический' : 'Classic';
+  String get dnsModeDohLabel => 'DoH';
+  String get dnsModeDotLabel => 'DoT';
+  String get dohServerHint => 'https://1.1.1.1/dns-query';
+  String get dotServerHint => '1.1.1.1 or cloudflare-dns.com';
+  String get dohServerInvalidMessage => _ru
+      ? 'Введите https:// URL'
+      : 'Enter an https:// URL';
+  String get dotServerInvalidMessage => _ru
+      ? 'Введите хост (или хост:порт)'
+      : 'Enter a host (or host:port)';
   String get tunIpModeLabel => _ru ? 'IP-режим TUN' : 'TUN IP mode';
   String get splitTunnelLabel => _ru ? 'Сплит-туннелинг' : 'Split tunneling';
   String get splitTunnelAppsLabel => _ru ? 'Приложения' : 'Applications';

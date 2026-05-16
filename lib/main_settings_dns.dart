@@ -41,19 +41,31 @@ class _DnsSettingsDialog extends StatefulWidget {
 }
 
 class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
+  late DnsMode _mode;
   late final _Ipv4AddressInputController _primaryIpv4Controller;
   late final _Ipv4AddressInputController _secondaryIpv4Controller;
   late final TextEditingController _primaryIpv6Controller;
   late final TextEditingController _secondaryIpv6Controller;
   late final FocusNode _primaryIpv6FocusNode;
   late final FocusNode _secondaryIpv6FocusNode;
+  late final TextEditingController _primaryDohController;
+  late final TextEditingController _secondaryDohController;
+  late final FocusNode _primaryDohFocusNode;
+  late final FocusNode _secondaryDohFocusNode;
+  late final TextEditingController _primaryDotController;
+  late final TextEditingController _secondaryDotController;
+  late final FocusNode _primaryDotFocusNode;
+  late final FocusNode _secondaryDotFocusNode;
 
   @override
   void initState() {
     super.initState();
     final settings = widget.controller.dnsSettings;
+    _mode = settings.mode;
     final ipv4Servers = settings.ipv4Servers;
     final ipv6Servers = settings.ipv6Servers;
+    final dohServers = settings.dohServers;
+    final dotServers = settings.dotServers;
     _primaryIpv4Controller = _Ipv4AddressInputController(
       address: ipv4Servers.isNotEmpty
           ? ipv4Servers[0]
@@ -76,6 +88,30 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
     )..addListener(_handleTextChanged);
     _primaryIpv6FocusNode = FocusNode();
     _secondaryIpv6FocusNode = FocusNode();
+    _primaryDohController = TextEditingController(
+      text: dohServers.isNotEmpty
+          ? dohServers[0]
+          : DnsSettings.defaultDohServers[0],
+    )..addListener(_handleTextChanged);
+    _secondaryDohController = TextEditingController(
+      text: dohServers.length > 1
+          ? dohServers[1]
+          : DnsSettings.defaultDohServers[1],
+    )..addListener(_handleTextChanged);
+    _primaryDohFocusNode = FocusNode();
+    _secondaryDohFocusNode = FocusNode();
+    _primaryDotController = TextEditingController(
+      text: dotServers.isNotEmpty
+          ? dotServers[0]
+          : DnsSettings.defaultDotServers[0],
+    )..addListener(_handleTextChanged);
+    _secondaryDotController = TextEditingController(
+      text: dotServers.length > 1
+          ? dotServers[1]
+          : DnsSettings.defaultDotServers[1],
+    )..addListener(_handleTextChanged);
+    _primaryDotFocusNode = FocusNode();
+    _secondaryDotFocusNode = FocusNode();
   }
 
   @override
@@ -94,16 +130,29 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
       ..dispose();
     _primaryIpv6FocusNode.dispose();
     _secondaryIpv6FocusNode.dispose();
+    _primaryDohController
+      ..removeListener(_handleTextChanged)
+      ..dispose();
+    _secondaryDohController
+      ..removeListener(_handleTextChanged)
+      ..dispose();
+    _primaryDohFocusNode.dispose();
+    _secondaryDohFocusNode.dispose();
+    _primaryDotController
+      ..removeListener(_handleTextChanged)
+      ..dispose();
+    _secondaryDotController
+      ..removeListener(_handleTextChanged)
+      ..dispose();
+    _primaryDotFocusNode.dispose();
+    _secondaryDotFocusNode.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final strings = widget.strings;
-    final canSave =
-        widget.controller.canChangeDnsSettings &&
-        _isVisibleIpv4Complete &&
-        _isVisibleIpv6Complete;
+    final canSave = widget.controller.canChangeDnsSettings && _isModeComplete;
 
     return AlertDialog(
       title: Text(strings.dnsSettingsLabel),
@@ -113,7 +162,7 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: _buildDnsFields(context),
+            children: _buildContent(context),
           ),
         ),
       ),
@@ -150,7 +199,46 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
             _isValidIpv6Server(_secondaryIpv6Controller.text));
   }
 
-  List<Widget> _buildDnsFields(BuildContext context) {
+  bool get _isModeComplete {
+    return switch (_mode) {
+      DnsMode.classic => _isVisibleIpv4Complete && _isVisibleIpv6Complete,
+      DnsMode.doh =>
+        DnsSettings.isValidDohServer(_primaryDohController.text) &&
+            DnsSettings.isValidDohServer(_secondaryDohController.text),
+      DnsMode.dot =>
+        DnsSettings.isValidDotServer(_primaryDotController.text) &&
+            DnsSettings.isValidDotServer(_secondaryDotController.text),
+    };
+  }
+
+  List<Widget> _buildContent(BuildContext context) {
+    final widgets = <Widget>[
+      _DnsModeSelector(
+        mode: _mode,
+        enabled: widget.controller.canChangeDnsSettings,
+        strings: widget.strings,
+        onChanged: _setMode,
+      ),
+      const SizedBox(height: 18),
+    ];
+    widgets.addAll(switch (_mode) {
+      DnsMode.classic => _buildClassicFields(context),
+      DnsMode.doh => _buildDohFields(context),
+      DnsMode.dot => _buildDotFields(context),
+    });
+    return widgets;
+  }
+
+  void _setMode(DnsMode mode) {
+    if (_mode == mode) {
+      return;
+    }
+    setState(() {
+      _mode = mode;
+    });
+  }
+
+  List<Widget> _buildClassicFields(BuildContext context) {
     final strings = widget.strings;
     final enabled = widget.controller.canChangeDnsSettings;
     final fields = <Widget>[];
@@ -219,6 +307,66 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
     return fields;
   }
 
+  List<Widget> _buildDohFields(BuildContext context) {
+    final strings = widget.strings;
+    final enabled = widget.controller.canChangeDnsSettings;
+    return <Widget>[
+      _DnsTextAddressField(
+        controller: _primaryDohController,
+        focusNode: _primaryDohFocusNode,
+        nextController: _secondaryDohController,
+        nextFocusNode: _secondaryDohFocusNode,
+        label: strings.primaryDnsServerLabel,
+        hintText: strings.dohServerHint,
+        enabled: enabled,
+        errorText: _dohErrorText(_primaryDohController),
+        onSubmitted: () =>
+            _moveTextFocus(_secondaryDohFocusNode, _secondaryDohController),
+      ),
+      const SizedBox(height: 14),
+      _DnsTextAddressField(
+        controller: _secondaryDohController,
+        focusNode: _secondaryDohFocusNode,
+        previousController: _primaryDohController,
+        previousFocusNode: _primaryDohFocusNode,
+        label: strings.secondaryDnsServerLabel,
+        hintText: strings.dohServerHint,
+        enabled: enabled,
+        errorText: _dohErrorText(_secondaryDohController),
+      ),
+    ];
+  }
+
+  List<Widget> _buildDotFields(BuildContext context) {
+    final strings = widget.strings;
+    final enabled = widget.controller.canChangeDnsSettings;
+    return <Widget>[
+      _DnsTextAddressField(
+        controller: _primaryDotController,
+        focusNode: _primaryDotFocusNode,
+        nextController: _secondaryDotController,
+        nextFocusNode: _secondaryDotFocusNode,
+        label: strings.primaryDnsServerLabel,
+        hintText: strings.dotServerHint,
+        enabled: enabled,
+        errorText: _dotErrorText(_primaryDotController),
+        onSubmitted: () =>
+            _moveTextFocus(_secondaryDotFocusNode, _secondaryDotController),
+      ),
+      const SizedBox(height: 14),
+      _DnsTextAddressField(
+        controller: _secondaryDotController,
+        focusNode: _secondaryDotFocusNode,
+        previousController: _primaryDotController,
+        previousFocusNode: _primaryDotFocusNode,
+        label: strings.secondaryDnsServerLabel,
+        hintText: strings.dotServerHint,
+        enabled: enabled,
+        errorText: _dotErrorText(_secondaryDotController),
+      ),
+    ];
+  }
+
   String? _ipv4ErrorText(_Ipv4AddressInputController controller) {
     if (!_showsIpv4 || controller.isComplete) {
       return null;
@@ -237,6 +385,28 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
     return widget.strings.dnsServersInvalid(text);
   }
 
+  String? _dohErrorText(TextEditingController controller) {
+    if (DnsSettings.isValidDohServer(controller.text)) {
+      return null;
+    }
+    final text = controller.text.trim();
+    if (text.isEmpty) {
+      return widget.strings.dnsServersIncompleteMessage;
+    }
+    return widget.strings.dohServerInvalidMessage;
+  }
+
+  String? _dotErrorText(TextEditingController controller) {
+    if (DnsSettings.isValidDotServer(controller.text)) {
+      return null;
+    }
+    final text = controller.text.trim();
+    if (text.isEmpty) {
+      return widget.strings.dnsServersIncompleteMessage;
+    }
+    return widget.strings.dotServerInvalidMessage;
+  }
+
   bool _isValidIpv6Server(String text) {
     final value = text.trim();
     final parsed = InternetAddress.tryParse(value);
@@ -250,32 +420,61 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
   }
 
   void _resetToDefaults() {
-    if (_showsIpv4) {
-      _primaryIpv4Controller.setAddress(DnsSettings.defaultIpv4Servers[0]);
-      _secondaryIpv4Controller.setAddress(DnsSettings.defaultIpv4Servers[1]);
-    }
-    if (_showsIpv6) {
-      _primaryIpv6Controller.text = DnsSettings.defaultIpv6Servers[0];
-      _secondaryIpv6Controller.text = DnsSettings.defaultIpv6Servers[1];
+    switch (_mode) {
+      case DnsMode.classic:
+        if (_showsIpv4) {
+          _primaryIpv4Controller.setAddress(DnsSettings.defaultIpv4Servers[0]);
+          _secondaryIpv4Controller.setAddress(
+            DnsSettings.defaultIpv4Servers[1],
+          );
+        }
+        if (_showsIpv6) {
+          _primaryIpv6Controller.text = DnsSettings.defaultIpv6Servers[0];
+          _secondaryIpv6Controller.text = DnsSettings.defaultIpv6Servers[1];
+        }
+      case DnsMode.doh:
+        _primaryDohController.text = DnsSettings.defaultDohServers[0];
+        _secondaryDohController.text = DnsSettings.defaultDohServers[1];
+      case DnsMode.dot:
+        _primaryDotController.text = DnsSettings.defaultDotServers[0];
+        _secondaryDotController.text = DnsSettings.defaultDotServers[1];
     }
   }
 
   void _save() {
     final currentSettings = widget.controller.dnsSettings;
+    final ipv4Servers = _mode == DnsMode.classic && _showsIpv4
+        ? <String>[
+            _primaryIpv4Controller.address,
+            _secondaryIpv4Controller.address,
+          ]
+        : currentSettings.ipv4Servers;
+    final ipv6Servers = _mode == DnsMode.classic && _showsIpv6
+        ? <String>[
+            _primaryIpv6Controller.text.trim(),
+            _secondaryIpv6Controller.text.trim(),
+          ]
+        : currentSettings.ipv6Servers;
+    final dohServers = _mode == DnsMode.doh
+        ? <String>[
+            _primaryDohController.text.trim(),
+            _secondaryDohController.text.trim(),
+          ]
+        : currentSettings.dohServers;
+    final dotServers = _mode == DnsMode.dot
+        ? <String>[
+            _primaryDotController.text.trim(),
+            _secondaryDotController.text.trim(),
+          ]
+        : currentSettings.dotServers;
+
     widget.controller.setDnsSettings(
       DnsSettings(
-        ipv4Servers: _showsIpv4
-            ? <String>[
-                _primaryIpv4Controller.address,
-                _secondaryIpv4Controller.address,
-              ]
-            : currentSettings.ipv4Servers,
-        ipv6Servers: _showsIpv6
-            ? <String>[
-                _primaryIpv6Controller.text.trim(),
-                _secondaryIpv6Controller.text.trim(),
-              ]
-            : currentSettings.ipv6Servers,
+        mode: _mode,
+        ipv4Servers: ipv4Servers,
+        ipv6Servers: ipv6Servers,
+        dohServers: dohServers,
+        dotServers: dotServers,
       ),
     );
     Navigator.of(context).pop();
@@ -469,6 +668,7 @@ class _DnsTextAddressField extends StatelessWidget {
     this.nextController,
     this.nextFocusNode,
     this.errorText,
+    this.hintText,
     this.onSubmitted,
   });
 
@@ -485,6 +685,7 @@ class _DnsTextAddressField extends StatelessWidget {
   final String label;
   final bool enabled;
   final String? errorText;
+  final String? hintText;
   final VoidCallback? onSubmitted;
 
   @override
@@ -521,7 +722,7 @@ class _DnsTextAddressField extends StatelessWidget {
                 ? TextInputAction.done
                 : TextInputAction.next,
             inputFormatters: _inputFormatters,
-            decoration: const _DnsTextInputDecoration(),
+            decoration: _DnsTextInputDecoration(hintText: hintText),
             onSubmitted: (_) => onSubmitted?.call(),
           ),
           if (errorText != null) ...<Widget>[
@@ -573,7 +774,7 @@ class _DnsTextAddressField extends StatelessWidget {
 }
 
 class _DnsTextInputDecoration extends InputDecoration {
-  const _DnsTextInputDecoration()
+  const _DnsTextInputDecoration({super.hintText})
     : super(
         border: InputBorder.none,
         enabledBorder: InputBorder.none,
@@ -584,6 +785,62 @@ class _DnsTextInputDecoration extends InputDecoration {
         isDense: true,
         contentPadding: const EdgeInsets.symmetric(vertical: 2),
       );
+}
+
+class _DnsModeSelector extends StatelessWidget {
+  const _DnsModeSelector({
+    required this.mode,
+    required this.enabled,
+    required this.strings,
+    required this.onChanged,
+  });
+
+  final DnsMode mode;
+  final bool enabled;
+  final AppStrings strings;
+  final ValueChanged<DnsMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final labelStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: enabled
+          ? theme.colorScheme.onSurfaceVariant
+          : theme.colorScheme.onSurface.withValues(alpha: 0.38),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(strings.dnsModeLabel, style: labelStyle),
+        const SizedBox(height: 8),
+        SegmentedButton<DnsMode>(
+          segments: <ButtonSegment<DnsMode>>[
+            ButtonSegment<DnsMode>(
+              value: DnsMode.classic,
+              label: Text(strings.dnsModeClassicLabel),
+            ),
+            ButtonSegment<DnsMode>(
+              value: DnsMode.doh,
+              label: Text(strings.dnsModeDohLabel),
+            ),
+            ButtonSegment<DnsMode>(
+              value: DnsMode.dot,
+              label: Text(strings.dnsModeDotLabel),
+            ),
+          ],
+          selected: <DnsMode>{mode},
+          showSelectedIcon: false,
+          onSelectionChanged: enabled
+              ? (selection) {
+                  if (selection.isNotEmpty) {
+                    onChanged(selection.first);
+                  }
+                }
+              : null,
+        ),
+      ],
+    );
+  }
 }
 
 class _Ipv4OctetInputDecoration extends InputDecoration {

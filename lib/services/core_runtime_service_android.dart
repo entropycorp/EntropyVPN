@@ -102,7 +102,17 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     required DomainSplitTunnelSettings domainSplitTunnelSettings,
   }) {
     final effectiveDnsSettings = dnsSettings.normalized;
-    final dnsServers = effectiveDnsSettings.serversFor(tunIpMode);
+    // The Android VpnService.Builder.addDnsServer() API requires numeric IPs.
+    // DoH/DoT is applied inside the core's config (sing-box/xray) instead, so
+    // the bridge always receives the classic IP list regardless of mode.
+    final dnsServers = switch (tunIpMode) {
+      TunIpMode.ipv4 => effectiveDnsSettings.ipv4Servers,
+      TunIpMode.ipv6 => effectiveDnsSettings.ipv6Servers,
+      TunIpMode.dualStack => <String>[
+        ...effectiveDnsSettings.ipv4Servers,
+        ...effectiveDnsSettings.ipv6Servers,
+      ],
+    };
     if (profile.isSingBoxConfig) {
       final config = _buildNativeSingBoxRuntimeConfig(
         profile: profile,

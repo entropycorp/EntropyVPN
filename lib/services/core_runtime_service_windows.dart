@@ -269,12 +269,14 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
   }) {
     final splitTunnel = splitTunnelSettings.normalized;
     final domainSplitTunnel = domainSplitTunnelSettings.normalized;
+    final normalizedDns = dnsSettings.normalized;
     return jsonEncode(<String, Object?>{
       'core': core.name,
       'trafficMode': trafficMode.name,
       'tunIpMode': tunIpMode.name,
       'isAndroid': false,
-      'dnsServers': dnsSettings.normalized.serversFor(tunIpMode),
+      'dnsMode': normalizedDns.mode.name,
+      'dnsServers': normalizedDns.serversFor(tunIpMode),
       'splitTunnelMode': splitTunnel.mode.name,
       'splitTunnelAppNames': splitTunnel.apps
           .map((app) => app.name)
@@ -508,5 +510,4 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
       ),
     );
   }
-
 }
