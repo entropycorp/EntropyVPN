@@ -695,7 +695,25 @@ class _DnsTextAddressField extends StatelessWidget {
                 ? TextInputAction.done
                 : TextInputAction.next,
             inputFormatters: _inputFormatters,
-            decoration: _DnsTextInputDecoration(hintText: hintText),
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding: const EdgeInsets.symmetric(vertical: 6),
+              hintText: hintText,
+              border: UnderlineInputBorder(
+                borderSide: BorderSide(color: scheme.outlineVariant),
+              ),
+              enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: scheme.outlineVariant),
+              ),
+              focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: scheme.primary, width: 2),
+              ),
+              disabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(
+                  color: scheme.onSurface.withValues(alpha: 0.12),
+                ),
+              ),
+            ),
             onSubmitted: (_) => onSubmitted?.call(),
           ),
           if (errorText != null) ...<Widget>[
@@ -746,20 +764,6 @@ class _DnsTextAddressField extends StatelessWidget {
   }
 }
 
-class _DnsTextInputDecoration extends InputDecoration {
-  const _DnsTextInputDecoration({super.hintText})
-    : super(
-        border: InputBorder.none,
-        enabledBorder: InputBorder.none,
-        focusedBorder: InputBorder.none,
-        disabledBorder: InputBorder.none,
-        errorBorder: InputBorder.none,
-        focusedErrorBorder: InputBorder.none,
-        isDense: true,
-        contentPadding: const EdgeInsets.symmetric(vertical: 2),
-      );
-}
-
 class _DnsModeSelector extends StatelessWidget {
   const _DnsModeSelector({
     required this.mode,
@@ -806,21 +810,6 @@ class _DnsModeSelector extends StatelessWidget {
   }
 }
 
-class _Ipv4OctetInputDecoration extends InputDecoration {
-  const _Ipv4OctetInputDecoration()
-    : super(
-        border: InputBorder.none,
-        enabledBorder: InputBorder.none,
-        focusedBorder: InputBorder.none,
-        disabledBorder: InputBorder.none,
-        errorBorder: InputBorder.none,
-        focusedErrorBorder: InputBorder.none,
-        counterText: '',
-        isDense: true,
-        contentPadding: const EdgeInsets.symmetric(vertical: 2),
-      );
-}
-
 class _Ipv4OctetField extends StatelessWidget {
   const _Ipv4OctetField({
     required this.controller,
@@ -844,6 +833,7 @@ class _Ipv4OctetField extends StatelessWidget {
   Widget build(BuildContext context) {
     final octetController = controller.octetControllers[index];
     final focusNode = controller.focusNodes[index];
+    final scheme = Theme.of(context).colorScheme;
 
     return Focus(
       onKeyEvent: (_, event) => _handleKeyEvent(event),
@@ -861,7 +851,25 @@ class _Ipv4OctetField extends StatelessWidget {
               : TextInputAction.done,
           maxLength: 3,
           inputFormatters: inputFormatters,
-          decoration: const _Ipv4OctetInputDecoration(),
+          decoration: InputDecoration(
+            counterText: '',
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(vertical: 6),
+            border: UnderlineInputBorder(
+              borderSide: BorderSide(color: scheme.outlineVariant),
+            ),
+            enabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: scheme.outlineVariant),
+            ),
+            focusedBorder: UnderlineInputBorder(
+              borderSide: BorderSide(color: scheme.primary, width: 2),
+            ),
+            disabledBorder: UnderlineInputBorder(
+              borderSide: BorderSide(
+                color: scheme.onSurface.withValues(alpha: 0.12),
+              ),
+            ),
+          ),
           onChanged: (value) {
             if (value.length == 3 && index < 3) {
               _moveFocus(index + 1, selectAll: true);
