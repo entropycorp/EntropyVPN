@@ -219,7 +219,7 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
         strings: widget.strings,
         onChanged: _setMode,
       ),
-      const SizedBox(height: 18),
+      const SizedBox(height: 14),
     ];
     widgets.addAll(switch (_mode) {
       DnsMode.classic => _buildClassicFields(context),
@@ -252,17 +252,15 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
         _Ipv4AddressField(
           controller: _primaryIpv4Controller,
           nextController: _secondaryIpv4Controller,
-          label: strings.primaryDnsServerLabel,
           enabled: enabled,
           errorText: _ipv4ErrorText(_primaryIpv4Controller),
         ),
       );
-      fields.add(const SizedBox(height: 14));
+      fields.add(const SizedBox(height: 10));
       fields.add(
         _Ipv4AddressField(
           controller: _secondaryIpv4Controller,
           previousController: _primaryIpv4Controller,
-          label: strings.secondaryDnsServerLabel,
           enabled: enabled,
           errorText: _ipv4ErrorText(_secondaryIpv4Controller),
         ),
@@ -283,21 +281,19 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
           focusNode: _primaryIpv6FocusNode,
           nextController: _secondaryIpv6Controller,
           nextFocusNode: _secondaryIpv6FocusNode,
-          label: strings.primaryDnsServerLabel,
           enabled: enabled,
           errorText: _ipv6ErrorText(_primaryIpv6Controller),
           onSubmitted: () =>
               _moveTextFocus(_secondaryIpv6FocusNode, _secondaryIpv6Controller),
         ),
       );
-      fields.add(const SizedBox(height: 14));
+      fields.add(const SizedBox(height: 10));
       fields.add(
         _DnsTextAddressField(
           controller: _secondaryIpv6Controller,
           focusNode: _secondaryIpv6FocusNode,
           previousController: _primaryIpv6Controller,
           previousFocusNode: _primaryIpv6FocusNode,
-          label: strings.secondaryDnsServerLabel,
           enabled: enabled,
           errorText: _ipv6ErrorText(_secondaryIpv6Controller),
         ),
@@ -316,20 +312,18 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
         focusNode: _primaryDohFocusNode,
         nextController: _secondaryDohController,
         nextFocusNode: _secondaryDohFocusNode,
-        label: strings.primaryDnsServerLabel,
         hintText: strings.dohServerHint,
         enabled: enabled,
         errorText: _dohErrorText(_primaryDohController),
         onSubmitted: () =>
             _moveTextFocus(_secondaryDohFocusNode, _secondaryDohController),
       ),
-      const SizedBox(height: 14),
+      const SizedBox(height: 10),
       _DnsTextAddressField(
         controller: _secondaryDohController,
         focusNode: _secondaryDohFocusNode,
         previousController: _primaryDohController,
         previousFocusNode: _primaryDohFocusNode,
-        label: strings.secondaryDnsServerLabel,
         hintText: strings.dohServerHint,
         enabled: enabled,
         errorText: _dohErrorText(_secondaryDohController),
@@ -346,20 +340,18 @@ class _DnsSettingsDialogState extends State<_DnsSettingsDialog> {
         focusNode: _primaryDotFocusNode,
         nextController: _secondaryDotController,
         nextFocusNode: _secondaryDotFocusNode,
-        label: strings.primaryDnsServerLabel,
         hintText: strings.dotServerHint,
         enabled: enabled,
         errorText: _dotErrorText(_primaryDotController),
         onSubmitted: () =>
             _moveTextFocus(_secondaryDotFocusNode, _secondaryDotController),
       ),
-      const SizedBox(height: 14),
+      const SizedBox(height: 10),
       _DnsTextAddressField(
         controller: _secondaryDotController,
         focusNode: _secondaryDotFocusNode,
         previousController: _primaryDotController,
         previousFocusNode: _primaryDotFocusNode,
-        label: strings.secondaryDnsServerLabel,
         hintText: strings.dotServerHint,
         enabled: enabled,
         errorText: _dotErrorText(_secondaryDotController),
@@ -556,7 +548,6 @@ class _Ipv4AddressInputController extends ChangeNotifier {
 class _Ipv4AddressField extends StatelessWidget {
   const _Ipv4AddressField({
     required this.controller,
-    required this.label,
     required this.enabled,
     this.previousController,
     this.nextController,
@@ -572,7 +563,6 @@ class _Ipv4AddressField extends StatelessWidget {
   final _Ipv4AddressInputController controller;
   final _Ipv4AddressInputController? previousController;
   final _Ipv4AddressInputController? nextController;
-  final String label;
   final bool enabled;
   final String? errorText;
 
@@ -585,19 +575,11 @@ class _Ipv4AddressField extends StatelessWidget {
       fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
       letterSpacing: 0,
     );
-
-    final labelStyle = theme.textTheme.bodyMedium?.copyWith(
-      color: enabled
-          ? scheme.onSurfaceVariant
-          : scheme.onSurface.withValues(alpha: 0.38),
-    );
     final errorStyle = theme.textTheme.bodySmall?.copyWith(color: scheme.error);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Text(label, style: labelStyle),
-        const SizedBox(height: 6),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
@@ -661,7 +643,6 @@ class _DnsTextAddressField extends StatelessWidget {
   const _DnsTextAddressField({
     required this.controller,
     required this.focusNode,
-    required this.label,
     required this.enabled,
     this.previousController,
     this.previousFocusNode,
@@ -682,7 +663,6 @@ class _DnsTextAddressField extends StatelessWidget {
   final FocusNode? previousFocusNode;
   final TextEditingController? nextController;
   final FocusNode? nextFocusNode;
-  final String label;
   final bool enabled;
   final String? errorText;
   final String? hintText;
@@ -692,11 +672,6 @@ class _DnsTextAddressField extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final labelStyle = theme.textTheme.bodyMedium?.copyWith(
-      color: enabled
-          ? scheme.onSurfaceVariant
-          : scheme.onSurface.withValues(alpha: 0.38),
-    );
     final textStyle = theme.textTheme.titleMedium?.copyWith(
       fontWeight: FontWeight.w400,
       fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
@@ -709,8 +684,6 @@ class _DnsTextAddressField extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text(label, style: labelStyle),
-          const SizedBox(height: 6),
           TextField(
             controller: controller,
             focusNode: focusNode,
@@ -802,43 +775,33 @@ class _DnsModeSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final labelStyle = theme.textTheme.bodyMedium?.copyWith(
-      color: enabled
-          ? theme.colorScheme.onSurfaceVariant
-          : theme.colorScheme.onSurface.withValues(alpha: 0.38),
-    );
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        Text(strings.dnsModeLabel, style: labelStyle),
-        const SizedBox(height: 8),
-        SegmentedButton<DnsMode>(
-          segments: <ButtonSegment<DnsMode>>[
-            ButtonSegment<DnsMode>(
-              value: DnsMode.classic,
-              label: Text(strings.dnsModeClassicLabel),
-            ),
-            ButtonSegment<DnsMode>(
-              value: DnsMode.doh,
-              label: Text(strings.dnsModeDohLabel),
-            ),
-            ButtonSegment<DnsMode>(
-              value: DnsMode.dot,
-              label: Text(strings.dnsModeDotLabel),
-            ),
-          ],
-          selected: <DnsMode>{mode},
-          showSelectedIcon: false,
-          onSelectionChanged: enabled
-              ? (selection) {
-                  if (selection.isNotEmpty) {
-                    onChanged(selection.first);
-                  }
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SegmentedButton<DnsMode>(
+        segments: <ButtonSegment<DnsMode>>[
+          ButtonSegment<DnsMode>(
+            value: DnsMode.classic,
+            label: Text(strings.dnsModeClassicLabel),
+          ),
+          ButtonSegment<DnsMode>(
+            value: DnsMode.doh,
+            label: Text(strings.dnsModeDohLabel),
+          ),
+          ButtonSegment<DnsMode>(
+            value: DnsMode.dot,
+            label: Text(strings.dnsModeDotLabel),
+          ),
+        ],
+        selected: <DnsMode>{mode},
+        showSelectedIcon: false,
+        onSelectionChanged: enabled
+            ? (selection) {
+                if (selection.isNotEmpty) {
+                  onChanged(selection.first);
                 }
-              : null,
-        ),
-      ],
+              }
+            : null,
+      ),
     );
   }
 }
