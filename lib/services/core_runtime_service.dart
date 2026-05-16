@@ -34,8 +34,7 @@ class CoreRuntimeService {
     GeoIpService? geoIpService,
     SystemProxyService? systemProxyService,
   }) : _configBuilder = configBuilder ?? CoreConfigBuilder(),
-       _geoIpService = geoIpService ?? GeoIpService.shared,
-       _systemProxyService = systemProxyService ?? SystemProxyService();
+       _geoIpService = geoIpService ?? GeoIpService.shared;
 
   static const int _maxRecentLogs = 400;
   static const Duration _splitTunnelExpansionCacheTtl = Duration(seconds: 30);
@@ -51,7 +50,6 @@ class CoreRuntimeService {
 
   final CoreConfigBuilder _configBuilder;
   final GeoIpService _geoIpService;
-  final SystemProxyService _systemProxyService;
   final Queue<String> _recentLogs = Queue<String>();
   final AndroidVpnBridge? _androidBridge = Platform.isAndroid
       ? AndroidVpnBridge()
@@ -59,24 +57,14 @@ class CoreRuntimeService {
 
   Process? _process;
   WindowsServiceCoreProcess? _windowsServiceProcess;
-  Directory? _runtimeDirectory;
-  StreamSubscription<String>? _stdoutSubscription;
-  StreamSubscription<String>? _stderrSubscription;
-  Timer? _windowsServicePollTimer;
   StreamSubscription<dynamic>? _windowsNativeRuntimeEventsSubscription;
-  bool _windowsServicePollInFlight = false;
-  bool _windowsServiceStartupSetupInProgress = false;
   bool _windowsNativeRuntimeRunning = false;
   int _windowsNativeRuntimePid = 0;
-  SystemProxySnapshot? _savedProxySnapshot;
   bool? _cachedWindowsElevation;
   bool _windowsTunServiceReady = false;
   _SplitTunnelExpansionCacheEntry? _splitTunnelExpansionCache;
   Future<void>? _pendingStopCleanup;
-  final Set<String> _sweptWindowsTunCorePaths = <String>{};
-  final Set<String> _preparedXrayTunAdapterKeys = <String>{};
   List<WindowsHostRoute> _temporaryServerRoutes = const <WindowsHostRoute>[];
-  List<WindowsTunRoute> _temporaryTunRoutes = const <WindowsTunRoute>[];
 
   void Function(String? error)? onProcessExit;
   void Function()? onLogUpdated;
@@ -225,14 +213,8 @@ class CoreRuntimeService {
       return;
     }
 
-    await _startOnDesktop(
-      core: core,
-      profile: profile,
-      trafficMode: trafficMode,
-      tunIpMode: tunIpMode,
-      dnsSettings: dnsSettings,
-      splitTunnelSettings: splitTunnelSettings,
-      domainSplitTunnelSettings: domainSplitTunnelSettings,
+    throw UnsupportedError(
+      'EntropyVPN runtime is only supported on Android and Windows.',
     );
   }
 
@@ -245,7 +227,6 @@ class CoreRuntimeService {
       await _stopWindowsNativeRuntime(waitForCleanup: waitForCleanup);
       return;
     }
-    await _stopOnDesktop(waitForCleanup: waitForCleanup);
   }
 
   void dispose() => _disposeRuntime();

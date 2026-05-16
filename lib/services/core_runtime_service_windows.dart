@@ -132,6 +132,39 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
     }
   }
 
+  /// Asks the EntropyVPN service to create the Windows TUN adapter ahead of
+  /// time (at app launch) so it is already settled when the user connects,
+  /// eliminating the cold-adapter delay from connect-time startup. Best
+  /// effort: failures are logged and connecting still works (xray falls back
+  /// to creating its own adapter).
+  Future<void> prewarmWindowsTunAdapter() async {
+    if (!Platform.isWindows) {
+      return;
+    }
+    try {
+      final rawResult = await CoreRuntimeService._windowsRuntimeChannel
+          .invokeMethod<Object?>('prewarmTunAdapter');
+      if (rawResult is! Map) {
+        return;
+      }
+      final result = rawResult.cast<Object?, Object?>();
+      if (result['ok'] == true) {
+        _rememberAppLog(
+          'Windows TUN adapter pre-warm: ${result['status'] ?? 'ok'}.',
+        );
+      } else {
+        _rememberAppLog(
+          'Windows TUN adapter pre-warm failed: '
+          '${result['error'] ?? result['failedStep'] ?? 'unknown'}.',
+        );
+      }
+    } catch (error) {
+      _rememberAppLog(
+        'Windows TUN adapter pre-warm unavailable: ${_describeError(error)}',
+      );
+    }
+  }
+
   Future<void> _stopWindowsNativeRuntime({required bool waitForCleanup}) async {
     if (!Platform.isWindows) {
       return;
@@ -254,27 +287,6 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
           .map((domain) => domain.matchSuffix)
           .toList(growable: false),
     });
-  }
-
-  Future<void> _ensureWindowsTunPrerequisites(
-    String binaryPath, {
-    required TunIpMode tunIpMode,
-  }) async {
-    if (!Platform.isWindows) {
-      return;
-    }
-
-    final wintunPath = p.join(p.dirname(binaryPath), 'wintun.dll');
-    if (!File(wintunPath).existsSync()) {
-      final executableName = p.basename(binaryPath);
-      throw StateError(
-        'wintun.dll was not found next to $executableName. Windows TUN mode requires wintun.dll in ${p.dirname(binaryPath)}.',
-      );
-    }
-
-    if (!await ensureWindowsTunPrivileges(tunIpMode: tunIpMode)) {
-      throw const WindowsTunPrivilegeDeniedException();
-    }
   }
 
   Future<bool> ensureWindowsTunPrivileges({TunIpMode? tunIpMode}) async {
@@ -497,241 +509,4 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
     );
   }
 
-  Future<void> _installTemporaryXrayTunRoutes({
-    required String interfaceAlias,
-    required TunIpMode tunIpMode,
-    required DnsSettings dnsSettings,
-  }) async {
-    if (!Platform.isWindows) {
-      return;
-    }
-    if (_temporaryTunRoutes.isNotEmpty) {
-      await _removeTemporaryTunRoutes();
-    }
-
-    final adapterKey = _xrayTunAdapterKey(
-      interfaceAlias,
-      tunIpMode,
-      dnsSettings,
-    );
-    final routeOnlyAllowed = _preparedXrayTunAdapterKeys.contains(adapterKey);
-    Object? rawResult;
-    try {
-      rawResult = await CoreRuntimeService._windowsTunChannel
-          .invokeMethod<Object?>('prepareXrayTunRoutes', <String, Object?>{
-            'interfaceAlias': interfaceAlias,
-            'timeoutMs': routeOnlyAllowed ? 2500 : 7000,
-            'tunIpMode': tunIpMode.name,
-            'address': '172.19.0.1',
-            'prefixLength': 30,
-            'metric': 1,
-            'dnsServers': _xrayTunDnsServersText(dnsSettings, tunIpMode),
-            'useService': _windowsTunServiceReady,
-            'routeOnlyAllowed': routeOnlyAllowed,
-          });
-    } on MissingPluginException {
-      _rememberAppLog(
-        'Native Xray TUN setup unavailable: Windows runner channel is not registered.',
-      );
-      rawResult = null;
-    } on PlatformException catch (error) {
-      _rememberAppLog(
-        'Native Xray TUN setup unavailable: ${error.message ?? error.code}',
-      );
-      rawResult = null;
-    } catch (error) {
-      _rememberAppLog(
-        'Native Xray TUN setup unavailable: ${_describeError(error)}',
-      );
-      rawResult = null;
-    }
-
-    final setup = _decodeWindowsXrayTunSetup(rawResult);
-    if (setup == null) {
-      throw StateError('Failed to prepare Xray TUN adapter and routes.');
-    }
-
-    _temporaryTunRoutes = List<WindowsTunRoute>.unmodifiable(setup.routes);
-    _preparedXrayTunAdapterKeys.add(adapterKey);
-    if (setup.networkChanged) {
-      _rememberAppLog(
-        'Xray TUN adapter settings changed; Windows may need a moment to settle.',
-      );
-    } else {
-      _rememberAppLog(
-        'Xray TUN adapter was already configured; skipping extra readiness waits.',
-      );
-    }
-  }
-
-  String _xrayTunAdapterKey(
-    String interfaceAlias,
-    TunIpMode tunIpMode,
-    DnsSettings dnsSettings,
-  ) {
-    final dnsKey = _xrayTunDnsServersText(dnsSettings, tunIpMode);
-    return '${interfaceAlias.trim().toLowerCase()}|${tunIpMode.name}|$dnsKey';
-  }
-
-  String _xrayTunDnsServersText(DnsSettings dnsSettings, TunIpMode tunIpMode) {
-    return dnsSettings.serversFor(tunIpMode).join(',');
-  }
-
-  WindowsTunSetup? _decodeWindowsXrayTunSetup(Object? rawResult) {
-    if (rawResult is! Map) {
-      _rememberAppLog(
-        'Prepared Xray TUN adapter and routes, but the native runner returned no usable details.',
-      );
-      return null;
-    }
-
-    final decoded = rawResult.cast<Object?, Object?>();
-    final elapsedMs = decoded['elapsedMs']?.toString();
-    if (decoded['ok'] != true) {
-      final failedStep = decoded['failedStep']?.toString() ?? 'unknown';
-      final error = decoded['error']?.toString() ?? 'unknown error';
-      final elapsed = elapsedMs == null ? '' : ' after ${elapsedMs}ms';
-      _rememberAppLog(
-        'Prepared Xray TUN adapter and routes failed: $failedStep$elapsed: $error',
-      );
-      return null;
-    }
-
-    final adapter = (decoded['Adapter'] as Map?)?.cast<Object?, Object?>();
-    final alias =
-        decoded['interfaceAlias']?.toString().trim() ??
-        adapter?['InterfaceAlias']?.toString().trim();
-    final index =
-        (decoded['interfaceIndex'] as num?)?.toInt() ??
-        (adapter?['InterfaceIndex'] as num?)?.toInt();
-    if (alias == null || alias.isEmpty || index == null || index <= 0) {
-      _rememberAppLog(
-        'Prepared Xray TUN adapter and routes, but adapter details were incomplete: "$rawResult".',
-      );
-      return null;
-    }
-
-    final setupKind = decoded['setupKind']?.toString();
-    switch (setupKind) {
-      case 'serviceIpv4':
-        _rememberAppLog(
-          'Xray TUN adapter configured through EntropyVPN Service.',
-        );
-      case 'fastNativeApi':
-        _rememberAppLog(
-          'Xray TUN adapter configured with native Windows API setup.',
-        );
-      case 'routeOnly':
-        _rememberAppLog(
-          'Xray TUN adapter was previously configured; using route-only setup.',
-        );
-    }
-
-    final status = decoded['status'] ?? adapter?['Status'];
-    _rememberAppLog(
-      'Xray TUN adapter ready: interface=$alias, ifIndex=$index, status=$status.',
-    );
-    _logWindowsXrayTunTiming(decoded);
-    _logWindowsXrayTunConfiguration(decoded);
-
-    final routeItems = decoded['routes'] is List
-        ? decoded['routes'] as List
-        : decoded['Routes'] is List
-        ? decoded['Routes'] as List
-        : decoded['Routes'] == null
-        ? const <dynamic>[]
-        : <dynamic>[decoded['Routes']];
-    final routes = <WindowsTunRoute>[];
-    for (final item in routeItems) {
-      if (item is! Map) {
-        continue;
-      }
-      final destinationPrefix = item['DestinationPrefix']?.toString().trim();
-      final nextHop = item['NextHop']?.toString().trim();
-      if (destinationPrefix == null ||
-          destinationPrefix.isEmpty ||
-          nextHop == null ||
-          nextHop.isEmpty) {
-        continue;
-      }
-      final route = WindowsTunRoute(
-        destinationPrefix: destinationPrefix,
-        interfaceAlias: alias,
-        interfaceIndex: index,
-        nextHop: nextHop,
-      );
-      final status = item['Status']?.toString();
-      if (status != 'failed') {
-        routes.add(route);
-      }
-      _rememberAppLog(
-        'Xray TUN route ${route.destinationPrefix} via ${route.interfaceAlias} ${status == 'created'
-            ? 'created'
-            : status == 'failed'
-            ? 'could not be installed'
-            : 'already existed'}.',
-      );
-    }
-
-    if (routes.isEmpty) {
-      _rememberAppLog(
-        'Prepared Xray TUN adapter, but no temporary routes were installed by the app.',
-      );
-    }
-
-    return WindowsTunSetup(
-      routes: routes,
-      networkChanged: decoded['NetworkChanged'] == true,
-    );
-  }
-
-  void _logWindowsXrayTunTiming(Map<Object?, Object?> decoded) {
-    final timings = (decoded['Timings'] as List?)
-        ?.map((value) => value.toString())
-        .where((value) => value.trim().isNotEmpty)
-        .join(', ');
-    if (timings != null && timings.trim().isNotEmpty) {
-      _rememberAppLog('Xray TUN adapter setup timing: $timings.');
-      return;
-    }
-
-    _rememberAppLog(
-      'Xray TUN adapter setup timing: prepare=${_orDash(decoded['elapsedMs']?.toString())}ms, wait_adapter=${_orDash(decoded['waitMs']?.toString())}ms, configure=${_orDash(decoded['configureMs']?.toString())}ms, routes=${_orDash(decoded['routeMs']?.toString())}ms.',
-    );
-    _logWindowsXrayTunRetryDiagnostics(decoded);
-  }
-
-  void _logWindowsXrayTunRetryDiagnostics(Map<Object?, Object?> decoded) {
-    final attempts = decoded['attempts'];
-    if (attempts == null) {
-      return;
-    }
-    _rememberAppLog(
-      'Xray TUN adapter setup retries: attempts=$attempts, retry_sleep=${_orDash(decoded['retrySleepMs']?.toString())}ms, configure_total=${_orDash(decoded['configureTotalMs']?.toString())}ms, route_total=${_orDash(decoded['routeTotalMs']?.toString())}ms, waits=ip_change:${_orDash(decoded['interfaceChangeWaits']?.toString())}|high_res:${_orDash(decoded['highResWaits']?.toString())}|sleep:${_orDash(decoded['fallbackSleepWaits']?.toString())}|yield:${_orDash(decoded['yieldWaits']?.toString())}.',
-    );
-  }
-
-  void _logWindowsXrayTunConfiguration(Map<Object?, Object?> decoded) {
-    final changes = (decoded['Changes'] as List?)
-        ?.map((value) => value.toString())
-        .where((value) => value.trim().isNotEmpty)
-        .join(', ');
-    if (changes != null && changes.trim().isNotEmpty) {
-      _rememberAppLog('Configured Xray TUN adapter DNS/IP settings: $changes.');
-    } else {
-      _rememberAppLog(
-        'Configured Xray TUN adapter DNS/IP settings: ipv4-address=172.19.0.1/30 (${decoded['addressStatus']}), ipv4-metric=1 (${decoded['metricStatus']}), dns=${decoded['dnsStatus']}.',
-      );
-    }
-
-    final warnings = (decoded['Warnings'] as List?)
-        ?.map((value) => value.toString())
-        .where((value) => value.trim().isNotEmpty)
-        .join('; ');
-    if (warnings != null && warnings.trim().isNotEmpty) {
-      _rememberAppLog(
-        'Xray TUN adapter DNS/IP configuration warnings: $warnings',
-      );
-    }
-  }
 }

@@ -142,6 +142,8 @@ bool BuildWindowsServiceRequest(const std::vector<std::string>& args,
     AppendEncodedServiceField(
         request, "interfaceAlias",
         WindowsServiceOptionValue(args, "--interface-alias"));
+    AppendServiceField(request, "appPid",
+                       WindowsServiceOptionValue(args, "--app-pid", "0"));
   } else if (command == "release-tun-adapter") {
     AppendServiceField(request, "command", "release_tun_adapter");
   } else {

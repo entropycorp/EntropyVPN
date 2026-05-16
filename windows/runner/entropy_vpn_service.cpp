@@ -79,7 +79,7 @@ void WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
   }
 
   StopActiveCore();
-  ReleasePrewarmedTunAdapter();
+  ReleasePrewarmTunAdapter();
 
   CloseHandleIfValid(&g_stop_event);
   SetServiceState(SERVICE_STOPPED);

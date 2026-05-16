@@ -1,20 +1,6 @@
 part of 'core_runtime_service.dart';
 
 extension CoreRuntimeServiceDiagnostics on CoreRuntimeService {
-  StreamSubscription<String> _listenTo(
-    Stream<List<int>> stream, {
-    bool isError = false,
-    String? sourceLabel,
-  }) {
-    return stream
-        .transform(utf8.decoder)
-        .transform(const LineSplitter())
-        .listen((line) {
-          final prefix = sourceLabel == null ? '' : '[$sourceLabel] ';
-          _rememberLog(isError ? 'ERR: $prefix$line' : '$prefix$line');
-        });
-  }
-
   void _rememberLog(String line) {
     if (line.trim().isEmpty) {
       return;
@@ -30,42 +16,6 @@ extension CoreRuntimeServiceDiagnostics on CoreRuntimeService {
     _rememberLog('[app] $line');
   }
 
-  void _rememberProcessOutput(String prefix, String text) {
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) {
-      return;
-    }
-    for (final line in const LineSplitter().convert(trimmed)) {
-      _rememberLog('$prefix$line');
-    }
-  }
-
-  Future<void> _logTunDiagnostics(String binaryPath) async {
-    _rememberAppLog(
-      'TUN diagnostics: platform=${Platform.operatingSystem}, os=${Platform.operatingSystemVersion}.',
-    );
-
-    if (Platform.isWindows) {
-      final elevated = await _isRunningAsAdministrator();
-      _rememberAppLog(
-        'TUN diagnostics: elevated=${_describeNullableBool(elevated)}.',
-      );
-      if (elevated == false && !_windowsTunServiceReady) {
-        _rememberAppLog(
-          'TUN prerequisite warning: Windows TUN mode usually requires Administrator rights.',
-        );
-      } else if (elevated == false && _windowsTunServiceReady) {
-        _rememberAppLog(
-          'TUN diagnostics: UI is not elevated; privileged work is delegated to EntropyVPN Service.',
-        );
-      }
-    }
-
-    final wintunPath = p.join(p.dirname(binaryPath), 'wintun.dll');
-    _rememberAppLog(
-      'TUN diagnostics: sibling wintun.dll present=${File(wintunPath).existsSync()} at $wintunPath.',
-    );
-  }
 
   String _describeProfile(ParsedVpnProfile profile) {
     if (profile.isSingBoxConfig) {
@@ -217,56 +167,6 @@ extension CoreRuntimeServiceDiagnostics on CoreRuntimeService {
     return '-:-';
   }
 
-  String _describeProxySnapshot(SystemProxySnapshot snapshot) {
-    return 'enabled=${snapshot.enabled}, server=${_orDash(snapshot.server)}, override=${_orDash(snapshot.override)}';
-  }
-
-  String _buildUnexpectedExitMessage(int exitCode) {
-    final diagnostic = _findLastDiagnosticLog();
-    if (diagnostic == null) {
-      return 'Core process exited with code $exitCode.';
-    }
-    return 'Core process exited with code $exitCode.\n$diagnostic';
-  }
-
-  String? _findLastDiagnosticLog() {
-    for (final line in _recentLogs.toList().reversed) {
-      if (line.startsWith('[app] Core process exited with code ')) {
-        continue;
-      }
-      if (line.startsWith('[app]')) {
-        if (line.contains('Start failed:') ||
-            line.contains('validation failed') ||
-            line.contains('prerequisite warning')) {
-          return line;
-        }
-        continue;
-      }
-      if (line.startsWith('ERR:')) {
-        return line;
-      }
-      if (_looksLikeFailure(line)) {
-        return line;
-      }
-    }
-    return null;
-  }
-
-  bool _looksLikeFailure(String line) {
-    final lowered = line.toLowerCase();
-    return lowered.contains('error') ||
-        lowered.contains('fatal') ||
-        lowered.contains('fail') ||
-        lowered.contains('denied') ||
-        lowered.contains('permission');
-  }
-
-  String _describeNullableBool(bool? value) {
-    if (value == null) {
-      return 'unknown';
-    }
-    return value ? 'true' : 'false';
-  }
 
   String _orDash(String? value) {
     if (value == null) {

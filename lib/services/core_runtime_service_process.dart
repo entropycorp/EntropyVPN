@@ -65,68 +65,6 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
     }
   }
 
-  Future<void> _terminateProcess(Process process) async {
-    _rememberAppLog('Sending termination signal to PID ${process.pid}...');
-    if (Platform.isWindows) {
-      await _terminateWindowsProcess(process);
-      return;
-    }
-
-    process.kill();
-    try {
-      await process.exitCode.timeout(const Duration(seconds: 5));
-    } on TimeoutException {
-      _rememberAppLog(
-        'Process PID ${process.pid} did not exit in time, forcing termination.',
-      );
-      process.kill(ProcessSignal.sigkill);
-      await process.exitCode;
-    }
-  }
-
-  Future<void> _terminateWindowsProcess(Process process) async {
-    final terminatedNatively = await _terminateWindowsProcessTreeByPid(
-      process.pid,
-      timingLabel: 'native_terminate_tree:${process.pid}',
-    );
-    if (!terminatedNatively && !await _hasProcessExited(process)) {
-      _rememberAppLog(
-        'Native process-tree termination failed for PID ${process.pid}; falling back to Dart process kill.',
-      );
-      process.kill(ProcessSignal.sigkill);
-    }
-
-    try {
-      await process.exitCode.timeout(const Duration(milliseconds: 500));
-    } on TimeoutException {
-      _rememberAppLog(
-        'Process PID ${process.pid} still did not report exit after native process-tree termination.',
-      );
-    }
-  }
-
-  Future<bool> _hasProcessExited(Process process) async {
-    try {
-      await process.exitCode.timeout(Duration.zero);
-      return true;
-    } on TimeoutException {
-      return false;
-    }
-  }
-
-  Future<void> _cleanupRuntimeDirectory(Directory directory) async {
-    if (!directory.existsSync()) {
-      return;
-    }
-    _rememberAppLog('Removing runtime directory ${directory.path}...');
-    await directory.delete(recursive: true);
-    _rememberAppLog('Runtime directory removed.');
-  }
-
-  String _formatCommand(String executable, List<String> args) {
-    return ([executable, ...args]).map(_quoteIfNeeded).join(' ');
-  }
-
   Future<ProcessResult> _runTimedProcess(
     String label,
     String executable,
@@ -166,34 +104,4 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
     }
   }
 
-  Future<Process> _startTimedProcess(
-    String label,
-    String executable,
-    List<String> args, {
-    String? workingDirectory,
-  }) async {
-    final stopwatch = Stopwatch()..start();
-    try {
-      final process = await Process.start(
-        executable,
-        args,
-        workingDirectory: workingDirectory,
-      );
-      stopwatch.stop();
-      _rememberAppLog(
-        'Process timing: $label elapsed=${stopwatch.elapsedMilliseconds}ms pid=${process.pid}.',
-      );
-      return process;
-    } catch (error) {
-      stopwatch.stop();
-      _rememberAppLog(
-        'Process timing: $label elapsed=${stopwatch.elapsedMilliseconds}ms failed=${_describeError(error)}.',
-      );
-      rethrow;
-    }
-  }
-
-  String _quoteIfNeeded(String value) {
-    return value.contains(' ') ? '"$value"' : value;
-  }
 }

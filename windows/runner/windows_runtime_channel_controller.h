@@ -16,6 +16,7 @@ void ClearWindowsRuntimeEventSink();
 EncodableValue StartWindowsRuntime(const EncodableMap& arguments);
 EncodableValue StopWindowsRuntime(bool wait_for_cleanup);
 EncodableValue WindowsRuntimeStatus();
+EncodableValue PrewarmWindowsTunAdapter();
 
 }  // namespace entropy_vpn::windows_runtime
 

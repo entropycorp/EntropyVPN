@@ -468,6 +468,39 @@ class WindowsRuntimeController {
     return EncodableValue(std::move(response));
   }
 
+  // Asks the service to create the "EntropyVPN TUN" wintun adapter now (at
+  // app launch) so it is fully settled before the user connects. The service
+  // ties the adapter's lifetime to this process.
+  EncodableValue PrewarmTunAdapter() {
+    if (!EnsureWindowsServiceReady()) {
+      return EncodableValue(MakeFailure(
+          "service",
+          "EntropyVPN service is not available for TUN pre-warm."));
+    }
+    const std::vector<std::string> args = {
+        "prewarm-tun-adapter",
+        "--interface-alias",
+        "EntropyVPN TUN",
+        "--app-pid",
+        std::to_string(GetCurrentProcessId()),
+    };
+    ParsedServiceResponse parsed;
+    if (!RunServiceRequest(args, 8000, &parsed) || !parsed.ok) {
+      const std::string error =
+          parsed.error.empty() ? "TUN adapter pre-warm failed." : parsed.error;
+      EmitLog("[app] TUN adapter pre-warm failed: " + error);
+      return EncodableValue(MakeFailure("prewarm", error));
+    }
+    const std::string status = ServiceFieldValue(parsed.fields, "status");
+    EmitLog("[app] TUN adapter pre-warm: " +
+            (status.empty() ? std::string("ok") : status) + ".");
+    EncodableMap response;
+    response.insert_or_assign(EncodableValue("ok"), EncodableValue(true));
+    response.insert_or_assign(EncodableValue("status"),
+                              EncodableValue(status));
+    return EncodableValue(std::move(response));
+  }
+
  private:
   WindowsRuntimeController() = default;
 
@@ -1541,6 +1574,10 @@ EncodableValue StopWindowsRuntime(bool wait_for_cleanup) {
 
 EncodableValue WindowsRuntimeStatus() {
   return WindowsRuntimeController::Instance().Status();
+}
+
+EncodableValue PrewarmWindowsTunAdapter() {
+  return WindowsRuntimeController::Instance().PrewarmTunAdapter();
 }
 
 }  // namespace entropy_vpn::windows_runtime

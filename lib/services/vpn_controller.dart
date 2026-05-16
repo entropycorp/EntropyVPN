@@ -43,6 +43,9 @@ class VpnController extends ChangeNotifier {
     _language = detectAppLanguage(Platform.localeName);
     _runtimeService.onProcessExit = _handleUnexpectedExit;
     _runtimeService.onLogUpdated = _handleRuntimeLogUpdated;
+    // Create the Windows TUN adapter at launch so it is already settled by
+    // the time the user connects (eliminates the cold-adapter startup delay).
+    unawaited(_runtimeService.prewarmWindowsTunAdapter());
     _autoUpdateTimer = Timer.periodic(
       const Duration(minutes: 1),
       (_) => unawaited(refreshDueSubscriptions()),

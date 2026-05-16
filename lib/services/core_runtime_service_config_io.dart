@@ -1,87 +1,6 @@
 part of 'core_runtime_service.dart';
 
 extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
-  Future<void> _startSingleCore({
-    required CoreFlavor core,
-    required String binaryPath,
-    required ParsedVpnProfile profile,
-    required TrafficMode trafficMode,
-    required TunIpMode tunIpMode,
-    required DnsSettings dnsSettings,
-    required SplitTunnelSettings splitTunnelSettings,
-    required DomainSplitTunnelSettings domainSplitTunnelSettings,
-    String? tunInterfaceName,
-    required Directory runtimeDirectory,
-    String? outboundBindInterface,
-    String? xrayServerAddressOverride,
-  }) async {
-    final configFile = File(p.join(runtimeDirectory.path, 'config.json'));
-    final config = _buildRuntimeConfigPayload(
-      core: core,
-      profile: profile,
-      trafficMode: trafficMode,
-      tunIpMode: tunIpMode,
-      dnsSettings: dnsSettings,
-      splitTunnelSettings: splitTunnelSettings,
-      domainSplitTunnelSettings: domainSplitTunnelSettings,
-      tunInterfaceName: tunInterfaceName,
-      outboundBindInterface: outboundBindInterface,
-      xrayServerAddressOverride: xrayServerAddressOverride,
-    );
-    final configJson = config.json;
-    final workingDirectory =
-        _resolveConfigWorkingDirectory(profile) ?? runtimeDirectory.path;
-    _rememberAppLog('Runtime config path: ${configFile.path}');
-    _rememberAppLog('Core working directory: $workingDirectory');
-    _rememberAppLog('Runtime config summary: ${config.summary}');
-    _rememberAppLog(
-      'Writing runtime config (${utf8.encode(configJson).length} bytes)...',
-    );
-    await configFile.writeAsString(configJson);
-    if (config.skipValidation) {
-      _rememberAppLog(
-        'Skipping runtime config validation because xray run -test initializes the Windows TUN driver.',
-      );
-    } else {
-      _rememberAppLog('Validating runtime config...');
-      await _validateConfig(
-        core,
-        binaryPath,
-        configFile.path,
-        workingDirectory: workingDirectory,
-      );
-      _rememberAppLog('Config validation passed.');
-    }
-
-    final args = <String>['run', '-c', configFile.path];
-    _rememberAppLog(
-      'Starting core process: ${_formatCommand(binaryPath, args)}',
-    );
-    if (_windowsTunServiceReady && Platform.isWindows) {
-      await _startWindowsServiceCore(
-        core: core,
-        binaryPath: binaryPath,
-        args: args,
-        workingDirectory: workingDirectory,
-        runtimeDirectory: runtimeDirectory,
-      );
-      return;
-    }
-
-    final process = await _startTimedProcess(
-      '${core.name}_core_start',
-      binaryPath,
-      args,
-      workingDirectory: workingDirectory,
-    );
-
-    _process = process;
-    _runtimeDirectory = runtimeDirectory;
-    _stdoutSubscription = _listenTo(process.stdout);
-    _stderrSubscription = _listenTo(process.stderr, isError: true);
-    _rememberAppLog('Core process started with PID ${process.pid}.');
-  }
-
   _RuntimeConfigPayload _buildRuntimeConfigPayload({
     required CoreFlavor core,
     required ParsedVpnProfile profile,
@@ -311,38 +230,6 @@ extension CoreRuntimeServiceConfigIo on CoreRuntimeService {
     });
   }
 
-  Future<void> _validateConfig(
-    CoreFlavor core,
-    String binaryPath,
-    String configPath, {
-    String? workingDirectory,
-  }) async {
-    final args = switch (core) {
-      CoreFlavor.xray => <String>['run', '-test', '-c', configPath],
-      CoreFlavor.singBox => <String>['check', '-c', configPath],
-    };
-
-    _rememberAppLog('Validation command: ${_formatCommand(binaryPath, args)}');
-    final result = await _runTimedProcess(
-      '${core.name}_config_validation',
-      binaryPath,
-      args,
-      workingDirectory: workingDirectory,
-    );
-    _rememberProcessOutput('[check][stdout] ', result.stdout.toString());
-    _rememberProcessOutput('[check][stderr] ', result.stderr.toString());
-    if (result.exitCode != 0) {
-      final stderr = result.stderr.toString().trim();
-      final stdout = result.stdout.toString().trim();
-      final message = stderr.isNotEmpty ? stderr : stdout;
-      _rememberAppLog(
-        'Runtime config validation failed with exit code ${result.exitCode}.',
-      );
-      throw StateError(
-        message.isEmpty ? 'Core configuration validation failed.' : message,
-      );
-    }
-  }
 }
 
 class _RuntimeConfigPayload {

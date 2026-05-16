@@ -65,6 +65,11 @@ void RunRuntimeMethodAsync(
               entropy_vpn::windows_runtime::WindowsRuntimeStatus());
           return;
         }
+        if (method == "prewarmTunAdapter") {
+          result->Success(
+              entropy_vpn::windows_runtime::PrewarmWindowsTunAdapter());
+          return;
+        }
         result->NotImplemented();
       });
 }
