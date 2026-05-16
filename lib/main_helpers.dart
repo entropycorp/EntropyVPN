@@ -217,6 +217,9 @@ double mobileSourcePageHeight(
     final innerWidth = (maxWidth - mobileSubscriptionPanelPadding * 2)
         .clamp(96.0, double.infinity)
         .toDouble();
+    final headerActionsWidth = mobileSubscriptionHeaderActionsWidth(
+      hasAbout: sourceHasAboutInfo(source),
+    );
     final headerTextWidth =
         (innerWidth -
                 mobileSubscriptionHeaderLeftPadding -
@@ -224,7 +227,7 @@ double mobileSourcePageHeight(
                 mobileSubscriptionHeaderIconSize -
                 mobileSubscriptionHeaderIconGap -
                 8 -
-                mobileSubscriptionHeaderActionWidth)
+                headerActionsWidth)
             .clamp(48.0, double.infinity)
             .toDouble();
     final headerTitleHeight = measuredTextHeight(
@@ -234,22 +237,9 @@ double mobileSourcePageHeight(
       maxWidth: headerTextWidth,
       maxLines: 1,
     );
-    final expiresLabel = sourceTrafficExpiryDateLabel(source);
-    final headerTextHeight = expiresLabel == null
-        ? headerTitleHeight
-        : math.max(
-            headerTitleHeight,
-            measuredTextHeight(
-              context,
-              expiresLabel,
-              subscriptionHeaderExpiryStyle(theme, theme.colorScheme),
-              maxWidth: headerTextWidth,
-              maxLines: 1,
-            ),
-          );
     final headerHeight =
         mobileSubscriptionHeaderBottomPadding +
-        math.max(mobileSubscriptionHeaderIconSize, headerTextHeight);
+        math.max(mobileSubscriptionHeaderIconSize, headerTitleHeight);
 
     var height = mobileSubscriptionPanelPadding * 2 + headerHeight + listHeight;
 
@@ -320,21 +310,6 @@ double mobileSourcePageHeight(
   final usage = source.trafficUsage;
   if (source.isSubscription && usage != null && usage.hasTotal) {
     primaryHeight += 8 + 24;
-    if (usage.expiresAt != null) {
-      final expiresLabel = formatCompactDate(usage.expiresAt!);
-      final expiresStyle = subscriptionTrafficExpiryStyle(
-        theme,
-        theme.colorScheme,
-      );
-      primaryHeight +=
-          7 +
-          measuredTrafficExpiryHeight(
-            context,
-            expiresLabel,
-            expiresStyle,
-            maxWidth: textWidth,
-          );
-    }
   }
 
   var height = primaryHeight;
@@ -483,15 +458,6 @@ double measuredTextHeight(
   return painter.size.height;
 }
 
-TextStyle? subscriptionTrafficExpiryStyle(ThemeData theme, ColorScheme scheme) {
-  return theme.textTheme.bodySmall?.copyWith(
-    color: scheme.onSurface,
-    fontSize: 11,
-    height: 1.25,
-    fontWeight: FontWeight.w500,
-  );
-}
-
 TextStyle? configCardTitleStyle(ThemeData theme) {
   return theme.textTheme.titleSmall?.copyWith(height: 1);
 }
@@ -528,10 +494,6 @@ TextStyle? subscriptionHeaderTitleStyle(ThemeData theme) {
   return theme.textTheme.titleSmall?.copyWith(height: 1);
 }
 
-TextStyle? subscriptionHeaderExpiryStyle(ThemeData theme, ColorScheme scheme) {
-  return subscriptionTrafficExpiryStyle(theme, scheme)?.copyWith(height: 1);
-}
-
 String? sourceTrafficExpiryDateLabel(ConfigSource source) {
   final usage = source.trafficUsage;
   final expiresAt = usage?.expiresAt;
@@ -541,27 +503,8 @@ String? sourceTrafficExpiryDateLabel(ConfigSource source) {
   return formatCompactDate(expiresAt);
 }
 
-double measuredTrafficExpiryHeight(
-  BuildContext context,
-  String dateLabel,
-  TextStyle? style, {
-  required double maxWidth,
-}) {
-  final textWidth =
-      (maxWidth -
-              subscriptionTrafficExpiryIconSize -
-              subscriptionTrafficExpiryIconGap)
-          .clamp(1.0, double.infinity)
-          .toDouble();
-  final textHeight = measuredTextHeight(
-    context,
-    dateLabel,
-    style,
-    maxWidth: textWidth,
-    maxLines: 1,
-  );
-  return math.max(subscriptionTrafficExpiryIconSize, textHeight);
-}
+bool sourceHasAboutInfo(ConfigSource source) =>
+    sourceTrafficExpiryDateLabel(source) != null;
 
 String profileChoiceTitle(ParsedVpnProfile profile) {
   final title = profile.remark?.trim();

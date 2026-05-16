@@ -812,7 +812,6 @@ class _SubscriptionProfilesPage extends StatelessWidget {
                   key: ValueKey<String>('subscription-traffic-${source.id}'),
                   usage: trafficUsage,
                   strings: strings,
-                  showExpiryDate: false,
                 ),
               ],
               if (!desktop || source.profiles.isNotEmpty) ...<Widget>[
@@ -924,9 +923,9 @@ class _MobileSubscriptionHeader extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final title = sourceSubscriptionTitle(source);
-    final expiresLabel = sourceTrafficExpiryDateLabel(source);
     final titleStyle = subscriptionHeaderTitleStyle(theme);
-    final expiresStyle = subscriptionHeaderExpiryStyle(theme, scheme);
+    final hasAbout = sourceHasAboutInfo(source);
+    final actionWidth = mobileSubscriptionHeaderActionsWidth(hasAbout: hasAbout);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -960,52 +959,27 @@ class _MobileSubscriptionHeader extends StatelessWidget {
               child: Baseline(
                 baseline: mobileSubscriptionHeaderTextBaseline,
                 baselineType: TextBaseline.alphabetic,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.baseline,
-                  textBaseline: TextBaseline.alphabetic,
-                  children: <Widget>[
-                    Flexible(
-                      child: Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: titleStyle,
-                        textHeightBehavior:
-                            subscriptionHeaderTextHeightBehavior,
-                      ),
-                    ),
-                    if (expiresLabel != null) ...<Widget>[
-                      const SizedBox(width: 8),
-                      Text(
-                        '|',
-                        style: expiresStyle,
-                        textHeightBehavior:
-                            subscriptionHeaderTextHeightBehavior,
-                      ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          expiresLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: expiresStyle,
-                          textHeightBehavior:
-                              subscriptionHeaderTextHeightBehavior,
-                        ),
-                      ),
-                    ],
-                  ],
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: titleStyle,
+                  textHeightBehavior: subscriptionHeaderTextHeightBehavior,
                 ),
               ),
             ),
           ),
           const SizedBox(width: 8),
           SizedBox(
-            width: mobileSubscriptionHeaderActionWidth,
+            width: actionWidth,
             height: compactSourceActionSize,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: <Widget>[
+                if (hasAbout) ...<Widget>[
+                  _AboutSubscriptionButton(strings: strings, source: source),
+                  const SizedBox(width: compactSourceActionGap),
+                ],
                 SizedBox(
                   width: compactSourceActionSize,
                   height: compactSourceActionSize,
@@ -1709,8 +1683,12 @@ class _QuickSourceTile extends StatelessWidget {
       source.selectedProfileIndex,
     );
     final showPingResult = tcpPingLatency != null;
+    final showAbout = sourceHasAboutInfo(source);
     final actionRowWidth =
-        34.0 + (showSourceState ? 40.0 : 0.0) + (showPingResult ? 72.0 : 0.0);
+        34.0 +
+        (showSourceState ? 40.0 : 0.0) +
+        (showPingResult ? 72.0 : 0.0) +
+        (showAbout ? 40.0 : 0.0);
     final title = sourceHeadline(source, profile);
     final subtitle = sourceSubtitle(
       strings,
@@ -1804,6 +1782,13 @@ class _QuickSourceTile extends StatelessWidget {
                         _SourceCardSelectionIndicator(
                           selected: selected,
                           updating: source.isUpdating,
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      if (showAbout) ...<Widget>[
+                        _AboutSubscriptionButton(
+                          strings: strings,
+                          source: source,
                         ),
                         const SizedBox(width: 6),
                       ],
@@ -1918,12 +1903,10 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
     super.key,
     required this.usage,
     required this.strings,
-    this.showExpiryDate = true,
   });
 
   final SubscriptionTrafficUsage usage;
   final AppStrings strings;
-  final bool showExpiryDate;
 
   @override
   Widget build(BuildContext context) {
@@ -1938,19 +1921,10 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
     const fillColor = connectedColor;
     final usedLabel = formatTrafficBytes(usage.usedBytes);
     final totalLabel = formatTrafficBytes(totalBytes);
-    final expiresLabel = !showExpiryDate || usage.expiresAt == null
-        ? null
-        : formatCompactDate(usage.expiresAt!);
     final percentLabel = '${(ratio * 100).round().clamp(0, 100)}%';
     final usageLabel = strings.subscriptionTrafficUsedOf(usedLabel, totalLabel);
-    final semanticValue = <String>[
-      usageLabel,
-      percentLabel,
-      if (expiresLabel != null)
-        strings.subscriptionTrafficExpires(expiresLabel),
-    ].join(', ');
+    final semanticValue = <String>[usageLabel, percentLabel].join(', ');
     const barHeight = 24.0;
-    final detailStyle = subscriptionTrafficExpiryStyle(theme, scheme);
     final barLabelStyle = theme.textTheme.bodySmall?.copyWith(
       fontFamily: 'Trebuchet MS',
       color: Colors.white,
@@ -1970,109 +1944,162 @@ class _SubscriptionTrafficUsageBar extends StatelessWidget {
     return Semantics(
       label: strings.subscriptionTrafficLabel,
       value: semanticValue,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          SizedBox(
-            height: barHeight,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final rawWidth = constraints.maxWidth * ratio;
-                final minVisibleWidth = constraints.maxWidth < 4
-                    ? constraints.maxWidth
-                    : math.min(barHeight, constraints.maxWidth);
-                final fillWidth = ratio <= 0
-                    ? 0.0
-                    : rawWidth
-                          .clamp(minVisibleWidth, constraints.maxWidth)
-                          .toDouble();
+      child: SizedBox(
+        height: barHeight,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final rawWidth = constraints.maxWidth * ratio;
+            final minVisibleWidth = constraints.maxWidth < 4
+                ? constraints.maxWidth
+                : math.min(barHeight, constraints.maxWidth);
+            final fillWidth = ratio <= 0
+                ? 0.0
+                : rawWidth
+                      .clamp(minVisibleWidth, constraints.maxWidth)
+                      .toDouble();
 
-                return Stack(
-                  children: <Widget>[
-                    Positioned.fill(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          color: trafficBarTrackColor(scheme),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
+            return Stack(
+              children: <Widget>[
+                Positioned.fill(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: trafficBarTrackColor(scheme),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 260),
+                  curve: Curves.easeOutCubic,
+                  width: fillWidth,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(999),
+                    gradient: LinearGradient(
+                      colors: <Color>[
+                        fillColor.withValues(alpha: 0.76),
+                        fillColor,
+                      ],
+                    ),
+                  ),
+                ),
+                Positioned.fill(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Center(
+                      child: Text(
+                        usageLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: barLabelStyle,
                       ),
                     ),
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 260),
-                      curve: Curves.easeOutCubic,
-                      width: fillWidth,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(999),
-                        gradient: LinearGradient(
-                          colors: <Color>[
-                            fillColor.withValues(alpha: 0.76),
-                            fillColor,
-                          ],
-                        ),
-                      ),
-                    ),
-                    Positioned.fill(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: Center(
-                          child: Text(
-                            usageLabel,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: barLabelStyle,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-          if (expiresLabel != null) ...<Widget>[
-            const SizedBox(height: 7),
-            _SubscriptionTrafficExpiryDate(
-              dateLabel: expiresLabel,
-              style: detailStyle,
-            ),
-          ],
-        ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
 }
 
-class _SubscriptionTrafficExpiryDate extends StatelessWidget {
-  const _SubscriptionTrafficExpiryDate({
-    required this.dateLabel,
-    required this.style,
-  });
+class _AboutSubscriptionButton extends StatelessWidget {
+  const _AboutSubscriptionButton({required this.strings, required this.source});
 
-  final String dateLabel;
-  final TextStyle? style;
+  final AppStrings strings;
+  final ConfigSource source;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final color = style?.color ?? scheme.onSurface;
-
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: <Widget>[
-        Icon(
-          Icons.calendar_today_outlined,
-          size: subscriptionTrafficExpiryIconSize,
-          color: color,
+    return IconButton(
+      onPressed: () => unawaited(
+        _showAboutSubscriptionDialog(
+          context,
+          strings: strings,
+          source: source,
         ),
-        const SizedBox(width: subscriptionTrafficExpiryIconGap),
-        Expanded(
-          child: Text(
-            dateLabel,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: style,
-          ),
+      ),
+      tooltip: strings.aboutSubscriptionAction,
+      icon: const Icon(Icons.info_outline_rounded),
+      iconSize: 21,
+      style: _compactSourceIconButtonStyle(scheme),
+    );
+  }
+}
+
+Future<void> _showAboutSubscriptionDialog(
+  BuildContext context, {
+  required AppStrings strings,
+  required ConfigSource source,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (context) =>
+        _AboutSubscriptionDialog(strings: strings, source: source),
+  );
+}
+
+class _AboutSubscriptionDialog extends StatelessWidget {
+  const _AboutSubscriptionDialog({required this.strings, required this.source});
+
+  final AppStrings strings;
+  final ConfigSource source;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final entries = <MapEntry<String, String>>[];
+    final expiresLabel = sourceTrafficExpiryDateLabel(source);
+    if (expiresLabel != null) {
+      entries.add(
+        MapEntry(strings.subscriptionExpiresLabel, expiresLabel),
+      );
+    }
+
+    final labelStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: scheme.onSurfaceVariant,
+      fontWeight: FontWeight.w500,
+    );
+    final valueStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: scheme.onSurface,
+      fontWeight: FontWeight.w600,
+    );
+
+    return AlertDialog(
+      title: Text(strings.aboutSubscriptionDialogTitle),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          for (final entry in entries) ...<Widget>[
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(entry.key, style: labelStyle),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      entry.value,
+                      style: valueStyle,
+                      textAlign: TextAlign.end,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(strings.closeAction),
         ),
       ],
     );

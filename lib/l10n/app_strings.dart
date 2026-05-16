@@ -150,6 +150,10 @@ class AppStrings {
       '$used / $total';
   String subscriptionTrafficExpires(String date) =>
       _ru ? 'до $date' : 'until $date';
+  String get aboutSubscriptionAction => _ru ? 'О подписке' : 'About';
+  String get aboutSubscriptionDialogTitle => _ru ? 'О подписке' : 'About';
+  String get subscriptionExpiresLabel => _ru ? 'Истекает' : 'Expires';
+  String get closeAction => _ru ? 'Закрыть' : 'Close';
   String autoUpdateIntervalValue(Duration interval) {
     final minutes = interval.inMinutes;
     if (minutes < 60) {

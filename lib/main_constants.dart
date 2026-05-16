@@ -61,8 +61,8 @@ const TextHeightBehavior configCardTextHeightBehavior = TextHeightBehavior(
 const double mobileProfileSubtitleFontSize = 13;
 const double compactSourceActionSize = 34;
 const double compactSourceActionGap = 3;
-const double mobileSubscriptionHeaderActionWidth =
-    compactSourceActionSize * 3 + compactSourceActionGap * 2;
 
-const double subscriptionTrafficExpiryIconSize = 13;
-const double subscriptionTrafficExpiryIconGap = 4;
+double mobileSubscriptionHeaderActionsWidth({required bool hasAbout}) {
+  final buttons = hasAbout ? 4 : 3;
+  return compactSourceActionSize * buttons + compactSourceActionGap * (buttons - 1);
+}
