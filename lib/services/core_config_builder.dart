@@ -29,6 +29,8 @@ class CoreConfigBuilder {
     String? outboundBindInterface,
     String? routeDefaultInterface,
     String? xrayServerAddressOverride,
+    String? socksUsername,
+    String? socksPassword,
   }) {
     final decoded = jsonDecode(
       buildJsonFor(
@@ -43,6 +45,8 @@ class CoreConfigBuilder {
         outboundBindInterface: outboundBindInterface,
         routeDefaultInterface: routeDefaultInterface,
         xrayServerAddressOverride: xrayServerAddressOverride,
+        socksUsername: socksUsername,
+        socksPassword: socksPassword,
       ),
     );
     if (decoded is! Map<String, dynamic>) {
@@ -66,6 +70,8 @@ class CoreConfigBuilder {
     String? outboundBindInterface,
     String? routeDefaultInterface,
     String? xrayServerAddressOverride,
+    String? socksUsername,
+    String? socksPassword,
   }) {
     return _NativeCoreConfigBuilder.instance.buildJson(
       core: core,
@@ -79,6 +85,8 @@ class CoreConfigBuilder {
       outboundBindInterface: outboundBindInterface,
       routeDefaultInterface: routeDefaultInterface,
       serverAddressOverride: xrayServerAddressOverride,
+      socksUsername: socksUsername,
+      socksPassword: socksPassword,
     );
   }
 
@@ -194,6 +202,8 @@ class _NativeCoreConfigBuilder {
     String? outboundBindInterface,
     String? routeDefaultInterface,
     String? serverAddressOverride,
+    String? socksUsername,
+    String? socksPassword,
   }) {
     final decoded = jsonDecode(
       buildJson(
@@ -208,6 +218,8 @@ class _NativeCoreConfigBuilder {
         outboundBindInterface: outboundBindInterface,
         routeDefaultInterface: routeDefaultInterface,
         serverAddressOverride: serverAddressOverride,
+        socksUsername: socksUsername,
+        socksPassword: socksPassword,
       ),
     );
     if (decoded is! Map<String, dynamic>) {
@@ -231,6 +243,8 @@ class _NativeCoreConfigBuilder {
     String? outboundBindInterface,
     String? routeDefaultInterface,
     String? serverAddressOverride,
+    String? socksUsername,
+    String? socksPassword,
   }) {
     final splitTunnel = splitTunnelSettings.normalized;
     final domainSplitTunnel = domainSplitTunnelSettings.normalized;
@@ -259,6 +273,8 @@ class _NativeCoreConfigBuilder {
       'outboundBindInterface': outboundBindInterface,
       'routeDefaultInterface': routeDefaultInterface,
       'xrayServerAddressOverride': serverAddressOverride,
+      'socksUsername': socksUsername,
+      'socksPassword': socksPassword,
     }).toNativeUtf8();
     final errorPointer = calloc<ffi.Pointer<Utf8>>();
     ffi.Pointer<Utf8> resultPointer = ffi.nullptr;

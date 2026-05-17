@@ -1,5 +1,6 @@
 #include "windows_runtime_channel_controller.h"
 
+#include "entropy_vpn_killswitch.h"
 #include "entropy_vpn_native_tun.h"
 #include "entropy_vpn_service_common.h"
 #include "entropy_vpn_service_protocol.h"
@@ -389,6 +390,11 @@ class WindowsRuntimeController {
       return EncodableValue(std::move(response));
     }
 
+    // Before starting a fresh connection, tear down any killswitch filters
+    // left over from an earlier session or unexpected exit. Otherwise the
+    // user's tunnel traffic would be blocked by stale rules.
+    AutoDisengageKillswitchLocked(nullptr);
+
     auto state = std::make_shared<RuntimeState>();
     state->phase = kRuntimePhaseStarting;
     state->run_id = std::to_string(
@@ -433,6 +439,10 @@ class WindowsRuntimeController {
   EncodableValue Stop(bool wait_for_cleanup) {
     EncodableMap response;
     const bool stopped = StopInternal(wait_for_cleanup, &response);
+    // A user-initiated stop always clears killswitch protection. An unexpected
+    // exit goes through HandleUnexpectedExit, which intentionally does not
+    // disengage.
+    AutoDisengageKillswitchLocked(nullptr);
     if (!stopped && response.empty()) {
       response = MakeFailure("stop", "Could not stop Windows runtime.");
     }
@@ -465,6 +475,41 @@ class WindowsRuntimeController {
     response.insert_or_assign(
         EncodableValue("useService"),
         EncodableValue(state != nullptr && state->use_service));
+    return EncodableValue(std::move(response));
+  }
+
+  // Stores the user's killswitch preference. The controller owns the full
+  // lifecycle: it auto-engages WFP filters in HandleUnexpectedExit and
+  // auto-disengages them on start / stop / preference-off.
+  EncodableValue SetKillswitchPreference(const EncodableMap& arguments) {
+    bool enabled = false;
+    ReadBool(arguments, "enabled", &enabled);
+    const bool previous =
+        killswitch_preference_.exchange(enabled, std::memory_order_release);
+    bool runtime_running = false;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      runtime_running = state_ != nullptr && state_->started;
+    }
+
+    // When no runtime is active, eagerly clear any stale filters left over
+    // from a previous (possibly crashed) session. The persistent WFP sublayer
+    // would otherwise block all traffic on the next app launch.
+    bool changed = false;
+    if (!runtime_running) {
+      AutoDisengageKillswitchLocked(&changed);
+    }
+
+    if (previous != enabled) {
+      EmitLog(std::string("[app] Killswitch preference set to ") +
+              (enabled ? "on" : "off") + ".");
+    }
+    EncodableMap response;
+    response.insert_or_assign(EncodableValue("ok"), EncodableValue(true));
+    response.insert_or_assign(EncodableValue("enabled"),
+                              EncodableValue(enabled));
+    response.insert_or_assign(EncodableValue("disengaged"),
+                              EncodableValue(changed));
     return EncodableValue(std::move(response));
   }
 
@@ -1372,6 +1417,11 @@ class WindowsRuntimeController {
     EmitLog("[app] Core process exited with code " +
             std::to_string(exit_code) + ".");
     CleanupState(state, false);
+    // Install WFP filters synchronously, before the exit event reaches Dart,
+    // so there is no window between the core dying and traffic being blocked.
+    if (killswitch_preference_.load(std::memory_order_acquire)) {
+      AutoEngageKillswitchLocked(state->binary_path);
+    }
     EmitState();
     EmitExit(exit_code, exit_code == 0
                             ? std::string()
@@ -1544,10 +1594,109 @@ class WindowsRuntimeController {
     }
   }
 
+  // Installs WFP filters using whichever path is available: the EntropyVPN
+  // service when running, else in-process when the runner is elevated. The
+  // sublayer is persistent, so a crashed session leaves stale filters that
+  // SetKillswitchPreference / Start later wipe.
+  void AutoEngageKillswitchLocked(const std::string& core_binary_path) {
+    std::vector<std::string> permit_paths;
+    if (!core_binary_path.empty()) {
+      permit_paths.push_back(core_binary_path);
+    }
+    const std::wstring own_exe = RuntimeExecutablePath();
+    if (!own_exe.empty()) {
+      permit_paths.push_back(Utf8FromWide(own_exe));
+    }
+
+    if (EnsureWindowsServiceReady()) {
+      std::vector<std::string> args;
+      args.push_back("engage-killswitch");
+      for (const std::string& path : permit_paths) {
+        args.push_back("--permit-exe");
+        args.push_back(path);
+      }
+      ParsedServiceResponse parsed;
+      if (RunServiceRequest(args, 8000, &parsed) && parsed.ok) {
+        killswitch_engaged_.store(true, std::memory_order_release);
+        EmitLog("[app] Killswitch engaged via service.");
+        return;
+      }
+      EmitLog("[app] Killswitch engage via service failed: " +
+              (parsed.error.empty() ? std::string("unknown") : parsed.error));
+    }
+
+    if (!IsRunningAsAdministrator()) {
+      EmitLog(
+          "[app] Killswitch could not engage: EntropyVPN service unavailable "
+          "and runner is not elevated.");
+      return;
+    }
+    std::vector<std::wstring> wide_paths;
+    wide_paths.reserve(permit_paths.size());
+    for (const std::string& path : permit_paths) {
+      wide_paths.push_back(WideFromUtf8(path));
+    }
+    std::string error_step;
+    const DWORD result =
+        entropy_vpn_service::EngageKillswitch(wide_paths, &error_step);
+    if (result != NO_ERROR) {
+      EmitLog("[app] Killswitch engage failed at " +
+              (error_step.empty() ? std::string("in-process") : error_step) +
+              ": " + ErrorMessage(result));
+      return;
+    }
+    killswitch_engaged_.store(true, std::memory_order_release);
+    EmitLog("[app] Killswitch engaged in-process (WFP).");
+  }
+
+  // Removes the WFP sublayer; idempotent. Sets *changed if filters were
+  // actually present. Used both on lifecycle transitions (start/stop) and
+  // when the user toggles the preference off.
+  void AutoDisengageKillswitchLocked(bool* changed_out) {
+    bool changed = false;
+    if (EnsureWindowsServiceReady()) {
+      ParsedServiceResponse parsed;
+      if (RunServiceRequest({"disengage-killswitch"}, 8000, &parsed) &&
+          parsed.ok) {
+        if (ServiceFieldValue(parsed.fields, "changed") == "1") {
+          changed = true;
+          EmitLog("[app] Killswitch disengaged via service.");
+        }
+        killswitch_engaged_.store(false, std::memory_order_release);
+        if (changed_out != nullptr) {
+          *changed_out = changed;
+        }
+        return;
+      }
+      EmitLog("[app] Killswitch disengage via service failed: " +
+              (parsed.error.empty() ? std::string("unknown") : parsed.error));
+    }
+
+    if (IsRunningAsAdministrator()) {
+      bool native_changed = false;
+      const DWORD result =
+          entropy_vpn_service::DisengageKillswitch(&native_changed);
+      if (result == NO_ERROR) {
+        if (native_changed) {
+          changed = true;
+          EmitLog("[app] Killswitch disengaged in-process (WFP).");
+        }
+        killswitch_engaged_.store(false, std::memory_order_release);
+      } else {
+        EmitLog("[app] Killswitch disengage failed: " + ErrorMessage(result));
+      }
+    }
+    if (changed_out != nullptr) {
+      *changed_out = changed;
+    }
+  }
+
   std::mutex state_mutex_;
   std::shared_ptr<RuntimeState> state_;
   std::mutex event_mutex_;
   std::unique_ptr<flutter::EventSink<EncodableValue>> event_sink_;
+  std::atomic<bool> killswitch_preference_{false};
+  std::atomic<bool> killswitch_engaged_{false};
   NativeConfigBuilder config_builder_;
 };
 
@@ -1578,6 +1727,10 @@ EncodableValue WindowsRuntimeStatus() {
 
 EncodableValue PrewarmWindowsTunAdapter() {
   return WindowsRuntimeController::Instance().PrewarmTunAdapter();
+}
+
+EncodableValue SetWindowsKillswitchPreference(const EncodableMap& arguments) {
+  return WindowsRuntimeController::Instance().SetKillswitchPreference(arguments);
 }
 
 }  // namespace entropy_vpn::windows_runtime

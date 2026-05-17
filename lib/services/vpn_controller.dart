@@ -111,6 +111,7 @@ class VpnController extends ChangeNotifier {
   bool _showInAppUpdateNotifications = true;
   bool _showAndroidUpdateNotifications = true;
   bool _isCheckingAppUpdate = false;
+  bool _killswitchEnabled = false;
 
   AppLanguage get language => _language;
   TrafficMode get trafficMode => _trafficMode;
@@ -156,6 +157,8 @@ class VpnController extends ChangeNotifier {
   bool get showInAppUpdateNotifications => _showInAppUpdateNotifications;
   bool get showAndroidUpdateNotifications => _showAndroidUpdateNotifications;
   bool get supportsAndroidUpdateNotifications => Platform.isAndroid;
+  bool get supportsKillswitch => Platform.isAndroid || Platform.isWindows;
+  bool get killswitchEnabled => _killswitchEnabled;
 
   bool get isBusy =>
       _phase == ConnectionPhase.connecting ||
@@ -257,6 +260,18 @@ class VpnController extends ChangeNotifier {
     _showInAppUpdateNotifications = enabled;
     _queuePersistState();
     notifyListeners();
+  }
+
+  Future<void> setKillswitchEnabled(bool enabled) async {
+    if (_killswitchEnabled == enabled || !supportsKillswitch) {
+      return;
+    }
+    _killswitchEnabled = enabled;
+    _queuePersistState();
+    notifyListeners();
+    // The native layer owns the state machine (auto-engage on unexpected
+    // exit, auto-disengage on start/stop). Dart just forwards the preference.
+    await _runtimeService.setKillswitchPreference(enabled);
   }
 
   void setShowAndroidUpdateNotifications(bool enabled) {
@@ -1340,6 +1355,12 @@ class VpnController extends ChangeNotifier {
       _lastShownAndroidAppUpdateTag = state.lastShownAndroidAppUpdateTag;
       _showInAppUpdateNotifications = state.showInAppUpdateNotifications;
       _showAndroidUpdateNotifications = state.showAndroidUpdateNotifications;
+      _killswitchEnabled = state.killswitchEnabled && supportsKillswitch;
+      if (supportsKillswitch) {
+        // Native layer doesn't persist the preference itself; push the
+        // restored value so it knows what to do on the next unexpected exit.
+        unawaited(_runtimeService.setKillswitchPreference(_killswitchEnabled));
+      }
       if (_splitTunnelSettings.mode != SplitTunnelMode.off ||
           _domainSplitTunnelSettings.mode != SplitTunnelMode.off) {
         _trafficMode = TrafficMode.tun;
@@ -1382,6 +1403,7 @@ class VpnController extends ChangeNotifier {
         lastShownAndroidAppUpdateTag: _lastShownAndroidAppUpdateTag,
         showInAppUpdateNotifications: _showInAppUpdateNotifications,
         showAndroidUpdateNotifications: _showAndroidUpdateNotifications,
+        killswitchEnabled: _killswitchEnabled,
         subscriptionDeviceId: _ensureSubscriptionDeviceId(),
       ),
     );

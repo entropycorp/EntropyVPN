@@ -146,6 +146,16 @@ bool BuildWindowsServiceRequest(const std::vector<std::string>& args,
                        WindowsServiceOptionValue(args, "--app-pid", "0"));
   } else if (command == "release-tun-adapter") {
     AppendServiceField(request, "command", "release_tun_adapter");
+  } else if (command == "engage-killswitch") {
+    AppendServiceField(request, "command", "engage_killswitch");
+    const std::vector<std::string> permits =
+        WindowsServiceRepeatedOptionValues(args, "--permit-exe");
+    for (size_t i = 0; i < permits.size(); ++i) {
+      AppendEncodedServiceField(request, "permitExe" + std::to_string(i),
+                                permits[i]);
+    }
+  } else if (command == "disengage-killswitch") {
+    AppendServiceField(request, "command", "disengage_killswitch");
   } else {
     *error = "Unknown EntropyVPN service command: " + command;
     return false;

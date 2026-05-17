@@ -499,6 +499,22 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
     );
   }
 
+  Future<void> _setKillswitchPreferenceOnWindows(bool enabled) async {
+    if (!Platform.isWindows) {
+      return;
+    }
+    try {
+      await CoreRuntimeService._windowsRuntimeChannel.invokeMethod<Object?>(
+        'setKillswitchPreference',
+        <String, Object?>{'enabled': enabled},
+      );
+    } catch (error) {
+      _rememberAppLog(
+        'Killswitch preference push failed: ${_describeError(error)}',
+      );
+    }
+  }
+
   void _forgetTemporaryServerRoutes(List<WindowsHostRoute> routes) {
     if (routes.isEmpty || _temporaryServerRoutes.isEmpty) {
       return;

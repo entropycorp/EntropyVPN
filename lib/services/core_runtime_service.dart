@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:ffi/ffi.dart';
 import 'package:flutter/services.dart';
@@ -27,6 +28,7 @@ part 'core_runtime_service_windows.dart';
 part 'core_runtime_service_windows_process.dart';
 part 'core_runtime_service_windows_service.dart';
 part 'core_runtime_service_windows_temporary_routes.dart';
+part 'core_runtime_service_linux.dart';
 
 class CoreRuntimeService {
   CoreRuntimeService({
@@ -213,8 +215,21 @@ class CoreRuntimeService {
       return;
     }
 
+    if (Platform.isLinux) {
+      await _startOnLinux(
+        core: core,
+        profile: profile,
+        trafficMode: trafficMode,
+        tunIpMode: tunIpMode,
+        dnsSettings: dnsSettings,
+        splitTunnelSettings: splitTunnelSettings,
+        domainSplitTunnelSettings: domainSplitTunnelSettings,
+      );
+      return;
+    }
+
     throw UnsupportedError(
-      'EntropyVPN runtime is only supported on Android and Windows.',
+      'EntropyVPN runtime is only supported on Android, Windows, and Linux.',
     );
   }
 
@@ -225,6 +240,26 @@ class CoreRuntimeService {
     }
     if (Platform.isWindows) {
       await _stopWindowsNativeRuntime(waitForCleanup: waitForCleanup);
+      return;
+    }
+    if (Platform.isLinux) {
+      await _stopOnLinux();
+      return;
+    }
+    // Other platforms (macOS): nothing to tear down yet.
+  }
+
+  // Pushes the user's killswitch preference down to the native layer, which
+  // owns the full state machine: auto-engages on unexpected core exit and
+  // auto-disengages on user-initiated start/stop. Best-effort; failures are
+  // logged but never thrown.
+  Future<void> setKillswitchPreference(bool enabled) async {
+    if (Platform.isAndroid) {
+      await _setKillswitchPreferenceOnAndroid(enabled);
+      return;
+    }
+    if (Platform.isWindows) {
+      await _setKillswitchPreferenceOnWindows(enabled);
       return;
     }
   }

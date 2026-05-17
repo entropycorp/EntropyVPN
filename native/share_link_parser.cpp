@@ -83,6 +83,8 @@ struct ConfigOptions {
   std::string outbound_bind_interface;
   std::string route_default_interface;
   std::string xray_server_address_override;
+  std::string socks_username;
+  std::string socks_password;
 };
 
 struct Json {
@@ -1451,6 +1453,8 @@ ConfigOptions options_from_json(const std::string& json) {
   options.outbound_bind_interface = json_string_value(json, "outboundBindInterface");
   options.route_default_interface = json_string_value(json, "routeDefaultInterface");
   options.xray_server_address_override = json_string_value(json, "xrayServerAddressOverride");
+  options.socks_username = json_string_value(json, "socksUsername");
+  options.socks_password = json_string_value(json, "socksPassword");
   return options;
 }
 
@@ -2622,10 +2626,27 @@ std::string build_xray_config(const Profile& profile, const ConfigOptions& optio
     if (tun) json << ",\"tag\":\"dns-query\"";
     json << '}';
   }
+  const bool have_socks_auth = !options.socks_username.empty() && !options.socks_password.empty();
   json << ",\"inbounds\":[";
   if (!tun) {
-    json << "{\"tag\":\"socks-in\",\"protocol\":\"socks\",\"listen\":\"127.0.0.1\",\"port\":2080,\"settings\":{\"udp\":true},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"]}},";
-    json << "{\"tag\":\"http-in\",\"protocol\":\"http\",\"listen\":\"127.0.0.1\",\"port\":2081,\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"]}}";
+    json << "{\"tag\":\"socks-in\",\"protocol\":\"socks\",\"listen\":\"127.0.0.1\",\"port\":2080,\"settings\":{";
+    if (have_socks_auth) {
+      json << "\"auth\":\"password\",\"accounts\":[{\"user\":";
+      write_string(json, options.socks_username);
+      json << ",\"pass\":";
+      write_string(json, options.socks_password);
+      json << "}],";
+    }
+    json << "\"udp\":true},\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"]}},";
+    json << "{\"tag\":\"http-in\",\"protocol\":\"http\",\"listen\":\"127.0.0.1\",\"port\":2081,";
+    if (have_socks_auth) {
+      json << "\"settings\":{\"accounts\":[{\"user\":";
+      write_string(json, options.socks_username);
+      json << ",\"pass\":";
+      write_string(json, options.socks_password);
+      json << "}]},";
+    }
+    json << "\"sniffing\":{\"enabled\":true,\"destOverride\":[\"http\",\"tls\",\"quic\"]}}";
   } else {
     json << "{\"tag\":\"tun-in\",\"protocol\":\"tun\",\"settings\":{\"name\":";
     write_string(json, interface_name);

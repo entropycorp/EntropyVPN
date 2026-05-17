@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=EntropyVPN
+GenericName=VPN Client
+Comment=Xray-core and sing-box VPN client
+Exec=entropy_vpn %U
+Icon=entropy_vpn
+Terminal=false
+Categories=Network;
+StartupWMClass=EntropyVPN
+Keywords=VPN;proxy;xray;sing-box;

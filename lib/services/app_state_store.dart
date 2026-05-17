@@ -24,6 +24,7 @@ class PersistedAppState {
     this.lastShownAndroidAppUpdateTag,
     this.showInAppUpdateNotifications = true,
     this.showAndroidUpdateNotifications = true,
+    this.killswitchEnabled = false,
     this.subscriptionDeviceId,
   });
 
@@ -40,11 +41,12 @@ class PersistedAppState {
   final String? lastShownAndroidAppUpdateTag;
   final bool showInAppUpdateNotifications;
   final bool showAndroidUpdateNotifications;
+  final bool killswitchEnabled;
   final String? subscriptionDeviceId;
 
   Map<String, Object?> toJson() {
     return <String, Object?>{
-      'version': 9,
+      'version': 10,
       'language': language.name,
       'trafficMode': trafficMode.name,
       'tunIpMode': tunIpMode.name,
@@ -53,6 +55,7 @@ class PersistedAppState {
       'dns': dnsSettings.normalized.toJson(),
       'splitTunnel': splitTunnelSettings.normalized.toJson(),
       'domainSplitTunnel': domainSplitTunnelSettings.normalized.toJson(),
+      'killswitch': <String, Object?>{'enabled': killswitchEnabled},
       'appUpdate': <String, Object?>{
         'lastCheckedAt': appUpdateLastCheckedAt?.toIso8601String(),
         'lastShownReleaseTag': lastShownAppUpdateTag,
@@ -89,6 +92,7 @@ class PersistedAppState {
     final shouldMigrateAndroidTunIpMode = Platform.isAndroid && version < 4;
     final appUpdate = _stringKeyedMap(json['appUpdate']);
     final subscription = _stringKeyedMap(json['subscription']);
+    final killswitch = _stringKeyedMap(json['killswitch']);
 
     return PersistedAppState(
       language: _appLanguageByName(json['language'] as String?),
@@ -122,6 +126,7 @@ class PersistedAppState {
         appUpdate?['androidNotificationsEnabled'],
         fallback: true,
       ),
+      killswitchEnabled: _parseBool(killswitch?['enabled'], fallback: false),
       subscriptionDeviceId: _parseOptionalString(
         subscription?['deviceId'] ?? json['subscriptionDeviceId'],
       ),

@@ -2070,7 +2070,6 @@ class _AboutSubscriptionDialog extends StatelessWidget {
     );
 
     return AlertDialog(
-      title: Text(strings.aboutSubscriptionDialogTitle),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2096,12 +2095,6 @@ class _AboutSubscriptionDialog extends StatelessWidget {
           ],
         ],
       ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text(strings.closeAction),
-        ),
-      ],
     );
   }
 }

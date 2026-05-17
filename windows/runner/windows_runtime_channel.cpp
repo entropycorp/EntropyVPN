@@ -70,6 +70,12 @@ void RunRuntimeMethodAsync(
               entropy_vpn::windows_runtime::PrewarmWindowsTunAdapter());
           return;
         }
+        if (method == "setKillswitchPreference") {
+          result->Success(
+              entropy_vpn::windows_runtime::SetWindowsKillswitchPreference(
+                  arguments));
+          return;
+        }
         result->NotImplemented();
       });
 }

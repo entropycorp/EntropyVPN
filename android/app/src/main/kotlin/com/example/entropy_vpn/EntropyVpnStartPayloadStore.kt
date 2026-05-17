@@ -13,11 +13,13 @@ data class EntropyVpnStartPayload(
     val dnsServers: List<String>,
     val splitTunnelMode: String,
     val splitTunnelPackages: List<String>,
+    val socksUsername: String,
+    val socksPassword: String,
 )
 
 object EntropyVpnStartPayloadStore {
     private const val prefsName = "entropy_vpn_start_payload"
-    private const val currentVersion = 3
+    private const val currentVersion = 4
     private const val keyVersion = "version"
     private const val keyCore = "core"
     private const val keyConfig = "config"
@@ -29,6 +31,8 @@ object EntropyVpnStartPayloadStore {
     private const val keyDnsServers = "dnsServers"
     private const val keySplitTunnelMode = "splitTunnelMode"
     private const val keySplitTunnelPackages = "splitTunnelPackages"
+    private const val keySocksUsername = "socksUsername"
+    private const val keySocksPassword = "socksPassword"
 
     fun save(context: Context, payload: EntropyVpnStartPayload) {
         context
@@ -55,6 +59,8 @@ object EntropyVpnStartPayloadStore {
                     .mapNotNull { it.trim().takeIf(String::isNotEmpty) }
                     .toSet(),
             )
+            .putString(keySocksUsername, payload.socksUsername)
+            .putString(keySocksPassword, payload.socksPassword)
             .apply()
     }
 
@@ -101,6 +107,8 @@ object EntropyVpnStartPayloadStore {
                     .orEmpty()
                     .mapNotNull { it.trim().takeIf(String::isNotEmpty) }
                     .sorted(),
+            socksUsername = prefs.getString(keySocksUsername, null).orEmpty(),
+            socksPassword = prefs.getString(keySocksPassword, null).orEmpty(),
         )
     }
 }

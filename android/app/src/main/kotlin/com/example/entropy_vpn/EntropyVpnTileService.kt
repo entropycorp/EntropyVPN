@@ -89,6 +89,8 @@ class EntropyVpnTileService : TileService() {
             dnsServers = payload.dnsServers,
             splitTunnelMode = payload.splitTunnelMode,
             splitTunnelPackages = payload.splitTunnelPackages,
+            socksUsername = payload.socksUsername,
+            socksPassword = payload.socksPassword,
         )
         updateTile(phaseOverride = "connecting")
     }

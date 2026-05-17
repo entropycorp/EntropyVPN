@@ -23,6 +23,7 @@ add_executable(${BINARY_NAME} WIN32
 )
 
 add_library(entropy_vpn_windows_native STATIC
+  "entropy_vpn_killswitch.cpp"
   "entropy_vpn_native_tun.cpp"
   "entropy_vpn_service_common.cpp"
   "entropy_vpn_service_protocol.cpp"
@@ -56,7 +57,9 @@ target_compile_definitions(entropy_vpn_service PRIVATE "NOMINMAX")
 
 
 target_link_libraries(entropy_vpn_windows_native PUBLIC "dnsapi.lib")
+target_link_libraries(entropy_vpn_windows_native PUBLIC "fwpuclnt.lib")
 target_link_libraries(entropy_vpn_windows_native PUBLIC "iphlpapi.lib")
+target_link_libraries(entropy_vpn_windows_native PUBLIC "rpcrt4.lib")
 target_link_libraries(entropy_vpn_windows_native PUBLIC "ws2_32.lib")
 
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)

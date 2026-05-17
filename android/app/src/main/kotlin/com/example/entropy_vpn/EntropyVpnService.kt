@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.DnsResolver
@@ -74,6 +75,8 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         private const val tag = "EntropyVpnService"
         private const val actionStart = "com.example.entropy_vpn.START"
         private const val actionStop = "com.example.entropy_vpn.STOP"
+        const val killswitchPreferencesName = "entropy_vpn.killswitch"
+        const val killswitchPreferenceKeyEnabled = "enabled"
         private const val extraCore = "core"
         private const val extraConfig = "config"
         private const val extraProfileName = "profileName"
@@ -84,6 +87,8 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         private const val extraDnsServers = "dnsServers"
         private const val extraSplitTunnelMode = "splitTunnelMode"
         private const val extraSplitTunnelPackages = "splitTunnelPackages"
+        private const val extraSocksUsername = "socksUsername"
+        private const val extraSocksPassword = "socksPassword"
         private const val notificationChannelId = "entropy_vpn.runtime"
         private const val notificationId = 1107
         private const val xrayNativeLibraryName = "libxray.so"
@@ -116,6 +121,8 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
             dnsServers: List<String>,
             splitTunnelMode: String,
             splitTunnelPackages: List<String>,
+            socksUsername: String,
+            socksPassword: String,
         ) {
             val intent = Intent(context, EntropyVpnService::class.java).apply {
                 action = actionStart
@@ -132,6 +139,8 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
                     extraSplitTunnelPackages,
                     ArrayList(splitTunnelPackages),
                 )
+                putExtra(extraSocksUsername, socksUsername)
+                putExtra(extraSocksPassword, socksPassword)
             }
             ContextCompat.startForegroundService(context, intent)
         }
@@ -141,6 +150,18 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
                 action = actionStop
             }
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        // Stores the killswitch preference without ever waking the service.
+        // The service watches this SharedPreferences key while it is running
+        // and reads it on next start; if nothing is running, there is simply
+        // nothing to update beyond the persisted flag.
+        fun writeKillswitchPreference(context: Context, enabled: Boolean) {
+            context
+                .getSharedPreferences(killswitchPreferencesName, MODE_PRIVATE)
+                .edit()
+                .putBoolean(killswitchPreferenceKeyEnabled, enabled)
+                .apply()
         }
     }
 
@@ -172,9 +193,26 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
     private var currentDnsServers: List<String> = emptyList()
     private var currentSplitTunnelMode: String = splitTunnelModeOff
     private var currentSplitTunnelPackages: Set<String> = emptySet()
+    private var currentXraySocksUsername: String = ""
+    private var currentXraySocksPassword: String = ""
     private var defaultInterfaceListener: InterfaceUpdateListener? = null
     private var defaultNetwork: Network? = null
     private var defaultNetworkMonitorStarted = false
+    @Volatile
+    private var killswitchActive = false
+    private var killswitchTunFd: ParcelFileDescriptor? = null
+    private var killswitchDrainThread: Thread? = null
+    private val killswitchPreferences: SharedPreferences by lazy {
+        getSharedPreferences(killswitchPreferencesName, MODE_PRIVATE)
+    }
+    private val killswitchPreferenceListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+            if (key == killswitchPreferenceKeyEnabled) {
+                val enabled =
+                    prefs.getBoolean(killswitchPreferenceKeyEnabled, false)
+                dispatchRuntime { applyKillswitchPreference(enabled) }
+            }
+        }
     private val localDnsTransport =
         object : LocalDNSTransport {
             override fun raw(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
@@ -324,6 +362,11 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
                 EntropyVpnStartPayloadStore.load(this)?.language
                     ?: Locale.getDefault().language,
             )
+        killswitchActive = killswitchPreferences
+            .getBoolean(killswitchPreferenceKeyEnabled, false)
+        killswitchPreferences.registerOnSharedPreferenceChangeListener(
+            killswitchPreferenceListener,
+        )
         startForeground(notificationId, buildNotification(preparingNotificationText()))
     }
 
@@ -338,8 +381,14 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
     override fun onDestroy() {
         expectedStop = true
         runCatching {
+            killswitchPreferences.unregisterOnSharedPreferenceChangeListener(
+                killswitchPreferenceListener,
+            )
+        }
+        runCatching {
             stopActiveRuntime(waitForProcess = false)
         }
+        stopBlackholeTun()
         executor.shutdownNow()
         dnsResolverExecutor.shutdownNow()
         super.onDestroy()
@@ -381,11 +430,16 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
                 .orEmpty()
                 .mapNotNull { it.trim().takeIf(String::isNotEmpty) }
                 .toSet()
+        val socksUsername = intent.getStringExtra(extraSocksUsername).orEmpty()
+        val socksPassword = intent.getStringExtra(extraSocksPassword).orEmpty()
         startupTiming.addElapsed("read_start_intent", readStartNanos)
 
         expectedStop = false
         startupTiming.time("stop_existing_runtime") {
             stopActiveRuntime()
+        }
+        startupTiming.time("stop_blackhole_tun") {
+            stopBlackholeTun()
         }
 
         startupTiming.time("assign_runtime_state") {
@@ -399,6 +453,8 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
             currentDnsServers = dnsServers
             currentSplitTunnelMode = splitTunnelMode
             currentSplitTunnelPackages = splitTunnelPackages
+            currentXraySocksUsername = socksUsername
+            currentXraySocksPassword = socksPassword
         }
 
         startupTiming.time("reset_runtime_store") {
@@ -627,6 +683,11 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
             appendLine(" port: $xraySocksPort")
             appendLine(" address: $xraySocksHost")
             appendLine(" udp: 'udp'")
+            if (currentXraySocksUsername.isNotEmpty() && currentXraySocksPassword.isNotEmpty()) {
+                // Tokens are hex strings, so plain single-quoting is sufficient.
+                appendLine(" username: '$currentXraySocksUsername'")
+                appendLine(" password: '$currentXraySocksPassword'")
+            }
             appendLine("misc:")
             appendLine(" tcp-read-write-timeout: 300000")
             appendLine(" udp-read-write-timeout: 60000")
@@ -709,12 +770,120 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
         updateNotification(notificationText("Error", "Ошибка"))
         expectedStop = true
         stopActiveRuntime()
-        stopSelf()
+        if (killswitchActive) {
+            // Keep the service alive in blackhole mode so all non-EntropyVPN
+            // traffic stays blocked until the user reconnects or disables the
+            // killswitch.
+            installBlackholeTun()
+            updateNotification(killswitchNotificationText())
+        } else {
+            stopSelf()
+        }
     }
+
+    private fun applyKillswitchPreference(enabled: Boolean) {
+        val previous = killswitchActive
+        killswitchActive = enabled
+        if (previous == enabled) {
+            return
+        }
+        EntropyVpnRuntimeStore.addLog(
+            "[app] Killswitch preference set to ${if (enabled) "on" else "off"}.",
+        )
+        if (!enabled) {
+            // Preference flipped off: tear down any active blackhole and let
+            // the service shut down if there's nothing else keeping it alive.
+            val hadBlackhole = killswitchTunFd != null
+            stopBlackholeTun()
+            val realRuntimeRunning =
+                commandServer != null || process != null || hevTunnelStarted
+            if (!realRuntimeRunning && hadBlackhole) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
+        // Preference flipped on: nothing to install right now. The blackhole
+        // is created on demand by handleFailure when the real runtime dies.
+    }
+
+    private fun installBlackholeTun() {
+        if (killswitchTunFd != null) {
+            return
+        }
+        try {
+            val builder =
+                Builder()
+                    .setSession("EntropyVPN Killswitch")
+                    .setMtu(hevMtu)
+                    .addAddress("172.19.0.2", 30)
+                    .addAddress("fdfe:dcba:9876::2", 126)
+                    .addRoute("0.0.0.0", 0)
+                    .addRoute("::", 0)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                builder.setMetered(false)
+            }
+            // EntropyVPN itself must keep network access so the user can
+            // reconnect; everything else is captured by the tun and dropped.
+            addSelfBypass(builder)
+            val pfd =
+                builder.establish()
+                    ?: error("Android VpnService establish() returned null.")
+            killswitchTunFd = pfd
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Killswitch engaged: blackhole TUN installed.",
+            )
+            killswitchDrainThread =
+                thread(name = "killswitch-drain", isDaemon = true) {
+                    drainBlackholeTun(pfd)
+                }
+        } catch (error: Throwable) {
+            EntropyVpnRuntimeStore.addLog(
+                "[app] Killswitch could not install blackhole TUN: " +
+                    error.describeForUser("blackhole TUN failed"),
+            )
+            killswitchActive = false
+        }
+    }
+
+    private fun stopBlackholeTun() {
+        val pfd = killswitchTunFd ?: return
+        killswitchTunFd = null
+        runCatching { pfd.close() }
+        runCatching { killswitchDrainThread?.interrupt() }
+        killswitchDrainThread = null
+    }
+
+    private fun drainBlackholeTun(pfd: ParcelFileDescriptor) {
+        // Reading from the tun fd without writing anywhere quietly drops every
+        // packet the OS hands us. This is what makes the tun a blackhole.
+        val buffer = ByteArray(2048)
+        try {
+            java.io.FileInputStream(pfd.fileDescriptor).use { input ->
+                while (!Thread.currentThread().isInterrupted) {
+                    val read = input.read(buffer)
+                    if (read < 0) {
+                        break
+                    }
+                }
+            }
+        } catch (_: IOException) {
+        } catch (_: InterruptedException) {
+        }
+    }
+
+    private fun killswitchNotificationText(): String =
+        if (isRussianLanguage()) {
+            "Killswitch активен — трафик заблокирован"
+        } else {
+            "Killswitch active — internet blocked"
+        }
 
     private fun stopRuntime(clearError: Boolean) {
         val stopTiming = RuntimeTiming()
         expectedStop = true
+        // Note: killswitchActive is a long-lived user preference, not a
+        // per-connection flag, so we leave it alone here. It only changes via
+        // applyKillswitchPreference.
         stopTiming.time("mark_stopping") {
             EntropyVpnRuntimeStore.markStopping()
         }
@@ -724,6 +893,9 @@ class EntropyVpnService : VpnService(), PlatformInterface, CommandClientHandler 
                 closeTunFileDescriptor = true,
                 logTiming = true,
             )
+        }
+        stopTiming.time("stop_blackhole_tun") {
+            stopBlackholeTun()
         }
         stopTiming.stop()
         EntropyVpnRuntimeStore.addLog("[app] Stop timing: ${stopTiming.summary()}.")

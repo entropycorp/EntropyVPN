@@ -105,6 +105,14 @@ class MainActivity : FlutterActivity() {
                 EntropyVpnService.stop(this)
                 result.success(true)
             }
+            "setKillswitchPreference" -> {
+                val enabled = call.argument<Boolean>("enabled") ?: false
+                // Persists the flag to SharedPreferences. If the service is
+                // running it picks the change up via its preference listener;
+                // otherwise the flag just waits for the next service start.
+                EntropyVpnService.writeKillswitchPreference(this, enabled)
+                result.success(true)
+            }
             "getState" -> result.success(EntropyVpnRuntimeStore.snapshot())
             "getAppDataDirectory" -> result.success(filesDir.absolutePath)
             "listInstalledApps" -> listInstalledApps(result)
@@ -275,6 +283,8 @@ class MainActivity : FlutterActivity() {
             dnsServers = startPayload.dnsServers,
             splitTunnelMode = startPayload.splitTunnelMode,
             splitTunnelPackages = startPayload.splitTunnelPackages,
+            socksUsername = startPayload.socksUsername,
+            socksPassword = startPayload.socksPassword,
         )
         result.success(true)
     }
@@ -310,6 +320,8 @@ class MainActivity : FlutterActivity() {
                 .mapNotNull { item ->
                     item?.toString()?.trim()?.takeIf(String::isNotEmpty)
                 }
+        val socksUsername = call.argument<String>("socksUsername").orEmpty()
+        val socksPassword = call.argument<String>("socksPassword").orEmpty()
 
         if (core.isNullOrBlank() || config.isNullOrBlank()) {
             result.error("invalid_args", "Missing VPN runtime arguments.", null)
@@ -327,6 +339,8 @@ class MainActivity : FlutterActivity() {
             dnsServers = dnsServers,
             splitTunnelMode = splitTunnelMode,
             splitTunnelPackages = splitTunnelPackages,
+            socksUsername = socksUsername,
+            socksPassword = socksPassword,
         )
     }
 

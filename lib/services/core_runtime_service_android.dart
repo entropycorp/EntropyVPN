@@ -48,6 +48,8 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       tunIpMode: payload.tunIpMode,
       dnsServers: payload.dnsServers,
       splitTunnelSettings: payload.splitTunnelSettings,
+      socksUsername: payload.socksUsername,
+      socksPassword: payload.socksPassword,
     );
   }
 
@@ -88,6 +90,8 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       tunIpMode: payload.tunIpMode,
       dnsServers: payload.dnsServers,
       splitTunnelSettings: payload.splitTunnelSettings,
+      socksUsername: payload.socksUsername,
+      socksPassword: payload.socksPassword,
     );
   }
 
@@ -148,6 +152,13 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     final effectiveTrafficMode = core == CoreFlavor.singBox
         ? TrafficMode.tun
         : TrafficMode.systemProxy;
+    // Lock down the loopback SOCKS/HTTP inbound xray exposes on Android so
+    // other apps on the device cannot proxy through the VPN. See
+    // https://habr.com/ru/articles/1020080/ for the disclosed PoC.
+    final needsSocksAuth =
+        core == CoreFlavor.xray && effectiveTrafficMode == TrafficMode.systemProxy;
+    final socksUsername = needsSocksAuth ? _randomSocksToken() : null;
+    final socksPassword = needsSocksAuth ? _randomSocksToken() : null;
     final configJson = _configBuilder.buildJsonFor(
       core,
       profile,
@@ -155,6 +166,8 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       tunIpMode: tunIpMode,
       dnsSettings: effectiveDnsSettings,
       domainSplitTunnelSettings: domainSplitTunnelSettings,
+      socksUsername: socksUsername,
+      socksPassword: socksPassword,
     );
     return _AndroidStartPayload(
       core: core.name,
@@ -166,7 +179,17 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
       tunIpMode: tunIpMode,
       dnsServers: dnsServers,
       splitTunnelSettings: splitTunnelSettings.normalized,
+      socksUsername: socksUsername,
+      socksPassword: socksPassword,
     );
+  }
+
+  static String _randomSocksToken() {
+    final rng = Random.secure();
+    final bytes = List<int>.generate(16, (_) => rng.nextInt(256));
+    return bytes
+        .map((b) => b.toRadixString(16).padLeft(2, '0'))
+        .join();
   }
 
   Future<String?> _resolveAndroidServerCountryCode(
@@ -201,6 +224,20 @@ extension CoreRuntimeServiceAndroid on CoreRuntimeService {
     _androidBridge?.onLogUpdated = onLogUpdated;
     await _androidBridge?.stop();
   }
+
+  Future<void> _setKillswitchPreferenceOnAndroid(bool enabled) async {
+    final bridge = _androidBridge;
+    if (bridge == null) {
+      return;
+    }
+    try {
+      await bridge.setKillswitchPreference(enabled);
+    } catch (error) {
+      _rememberAppLog(
+        'Killswitch preference push failed: ${_describeError(error)}',
+      );
+    }
+  }
 }
 
 class _AndroidStartPayload {
@@ -214,6 +251,8 @@ class _AndroidStartPayload {
     required this.tunIpMode,
     required this.dnsServers,
     required this.splitTunnelSettings,
+    this.socksUsername,
+    this.socksPassword,
   });
 
   final String core;
@@ -225,4 +264,6 @@ class _AndroidStartPayload {
   final TunIpMode tunIpMode;
   final List<String> dnsServers;
   final SplitTunnelSettings splitTunnelSettings;
+  final String? socksUsername;
+  final String? socksPassword;
 }

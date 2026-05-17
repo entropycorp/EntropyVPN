@@ -20,11 +20,12 @@ class AppStrings {
 
   bool get _ru => language == AppLanguage.ru;
 
-  String get tcpPingAction => 'Ping';
+  String get tcpPingAction => _ru ? 'Пинг' : 'Ping';
 
   String get appSettingsCategoryLabel =>
       _ru ? 'Настройки приложения' : 'App settings';
   String get vpnSettingsCategoryLabel => _ru ? 'Настройки VPN' : 'VPN settings';
+  String get otherSettingsCategoryLabel => _ru ? 'Прочее' : 'Other';
   String get languageSettingsLabel => _ru ? 'Язык' : 'Language';
 
   String get trafficModeLabel => _ru ? 'Режим' : 'Mode';
@@ -86,6 +87,16 @@ class AppStrings {
   String get domainSplitTunnelTunHint => _ru
       ? 'Сплит-туннелинг доменов использует TUN-режим.'
       : 'Domain split tunneling uses TUN mode.';
+  String get killswitchLabel => _ru ? 'Killswitch' : 'Killswitch';
+  String get killswitchSubtitle => _ru
+      ? 'Блокирует интернет при внезапном обрыве VPN.'
+      : 'Blocks internet if the VPN drops unexpectedly.';
+  String get killswitchEngagedNotification => _ru
+      ? 'Killswitch активен — трафик заблокирован'
+      : 'Killswitch active — internet blocked';
+  String get killswitchUnsupportedMessage => _ru
+      ? 'Killswitch недоступен на этой платформе.'
+      : 'Killswitch is not available on this platform.';
   String get logsLabel => _ru ? 'Логи' : 'Logs';
   String get copyLogsAction => _ru ? 'Копировать логи' : 'Copy logs';
   String get noLogsYet => _ru ? 'Логи пока не появились.' : 'No logs yet.';
@@ -96,6 +107,10 @@ class AppStrings {
       _ru ? 'In-app update notifications' : 'In-app update notifications';
   String get androidUpdateNotificationsLabel =>
       _ru ? 'Push notifications for updates' : 'Push notifications for updates';
+  String get checkForUpdatesAction =>
+      _ru ? 'Проверить обновления' : 'Check for updates';
+  String get appUpdateUpToDateMessage =>
+      _ru ? 'У вас последняя версия.' : 'You are on the latest version.';
   String get appUpdateDialogTitle => _ru ? 'New update' : 'New update';
   String appUpdateAvailableMessage(String version) => _ru
       ? 'EntropyVPN $version is available'
@@ -152,6 +167,7 @@ class AppStrings {
       _ru ? 'до $date' : 'until $date';
   String get aboutSubscriptionAction => _ru ? 'О подписке' : 'About';
   String get aboutSubscriptionDialogTitle => _ru ? 'О подписке' : 'About';
+  String get aboutAppLabel => _ru ? 'О приложении' : 'About';
   String get subscriptionExpiresLabel => _ru ? 'Истекает' : 'Expires';
   String get closeAction => _ru ? 'Закрыть' : 'Close';
   String autoUpdateIntervalValue(Duration interval) {

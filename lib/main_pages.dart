@@ -204,6 +204,19 @@ class _SettingsRootPage extends StatelessWidget {
           child: TunIpModeSelector(controller: controller, strings: strings),
         ),
         SizedBox(height: gap),
+        if (controller.supportsKillswitch) ...<Widget>[
+          Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: horizontalPadding,
+              vertical: verticalPadding,
+            ),
+            child: KillswitchSettingsTile(
+              controller: controller,
+              strings: strings,
+            ),
+          ),
+          SizedBox(height: gap),
+        ],
         Padding(
           padding: EdgeInsets.symmetric(
             horizontal: horizontalPadding,
@@ -236,6 +249,19 @@ class _SettingsRootPage extends StatelessWidget {
           ),
           SizedBox(height: gap),
         ],
+        _SettingsSectionHeader(
+          title: strings.otherSettingsCategoryLabel,
+          horizontalPadding: horizontalPadding,
+          verticalPadding: verticalPadding,
+        ),
+        SizedBox(height: gap),
+        Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: horizontalPadding,
+            vertical: verticalPadding,
+          ),
+          child: AboutSettingsTile(strings: strings),
+        ),
         SizedBox(height: gap),
       ],
     );

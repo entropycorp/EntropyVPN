@@ -2,15 +2,17 @@ part of 'core_runtime_service.dart';
 
 extension CoreRuntimeServiceProcess on CoreRuntimeService {
   Future<String> _resolveBinary(CoreFlavor core) async {
-    final fileName = switch (core) {
-      CoreFlavor.xray => 'xray.exe',
-      CoreFlavor.singBox => 'sing-box.exe',
-    };
+    final fileNames = _platformBinaryNames(core);
 
     final candidates = <String>{};
     for (final root in _candidateRoots()) {
-      candidates.add(p.join(root, 'tools', 'cores', fileName));
-      candidates.add(p.join(root, 'cores', fileName));
+      for (final fileName in fileNames) {
+        candidates.add(p.join(root, 'tools', 'cores', fileName));
+        candidates.add(p.join(root, 'cores', fileName));
+        if (Platform.isLinux) {
+          candidates.add(p.join(root, 'tools', 'cores', 'linux', fileName));
+        }
+      }
     }
 
     for (final candidate in candidates) {
@@ -19,31 +21,49 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
       }
     }
 
-    ProcessResult? pathLookup;
-    try {
-      pathLookup = await _runTimedProcess(
-        'where:$fileName',
-        'where.exe',
-        <String>[fileName],
-      );
-    } on ProcessException {
-      pathLookup = null;
-    }
+    // Fall back to PATH lookup. Use `where` on Windows, `which` elsewhere.
+    final lookupTool = Platform.isWindows ? 'where.exe' : 'which';
+    for (final fileName in fileNames) {
+      ProcessResult? pathLookup;
+      try {
+        pathLookup = await _runTimedProcess(
+          '$lookupTool:$fileName',
+          lookupTool,
+          <String>[fileName],
+        );
+      } on ProcessException {
+        pathLookup = null;
+      }
 
-    if (pathLookup != null && pathLookup.exitCode == 0) {
-      final resolved = pathLookup.stdout
-          .toString()
-          .split(RegExp(r'[\r\n]+'))
-          .map((line) => line.trim())
-          .firstWhere((line) => line.isNotEmpty, orElse: () => '');
-      if (resolved.isNotEmpty) {
-        return resolved;
+      if (pathLookup != null && pathLookup.exitCode == 0) {
+        final resolved = pathLookup.stdout
+            .toString()
+            .split(RegExp(r'[\r\n]+'))
+            .map((line) => line.trim())
+            .firstWhere((line) => line.isNotEmpty, orElse: () => '');
+        if (resolved.isNotEmpty) {
+          return resolved;
+        }
       }
     }
 
     throw StateError(
-      'Binary $fileName was not found. Expected in tools/cores or next to the built application.',
+      'Binary ${fileNames.first} was not found. Expected in tools/cores or '
+      'next to the built application, or on PATH.',
     );
+  }
+
+  List<String> _platformBinaryNames(CoreFlavor core) {
+    if (Platform.isWindows) {
+      return switch (core) {
+        CoreFlavor.xray => const ['xray.exe'],
+        CoreFlavor.singBox => const ['sing-box.exe'],
+      };
+    }
+    return switch (core) {
+      CoreFlavor.xray => const ['xray'],
+      CoreFlavor.singBox => const ['sing-box'],
+    };
   }
 
   Iterable<String> _candidateRoots() sync* {

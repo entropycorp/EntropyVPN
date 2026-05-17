@@ -1,5 +1,6 @@
 #include "entropy_vpn_service_commands.h"
 
+#include "entropy_vpn_killswitch.h"
 #include "entropy_vpn_service_common.h"
 #include "entropy_vpn_service_tun.h"
 
@@ -291,6 +292,48 @@ std::string RunAllowedProcess(
   return BuildResponse(response);
 }
 
+std::string EngageKillswitchCommand(
+    const std::map<std::string, std::string>& fields) {
+  std::vector<std::wstring> permit_paths;
+  for (size_t i = 0; i < 8; ++i) {
+    const std::wstring path =
+        ReadDecodedWide(fields, "permitExe" + std::to_string(i));
+    if (!path.empty()) {
+      permit_paths.push_back(path);
+    }
+  }
+  std::string error_step;
+  const DWORD result = EngageKillswitch(permit_paths, &error_step);
+  if (result != NO_ERROR) {
+    return ErrorResponse(
+        "Killswitch engage failed at " +
+            (error_step.empty() ? std::string("unknown") : error_step) + ": " +
+            ErrorMessage(result),
+        result);
+  }
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"mode", "wfp"});
+  response.push_back(
+      {"permitCount", std::to_string(permit_paths.size())});
+  return BuildResponse(response);
+}
+
+std::string DisengageKillswitchCommand(
+    const std::map<std::string, std::string>& fields) {
+  (void)fields;
+  bool changed = false;
+  const DWORD result = DisengageKillswitch(&changed);
+  if (result != NO_ERROR) {
+    return ErrorResponse(
+        "Killswitch disengage failed: " + ErrorMessage(result), result);
+  }
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"changed", changed ? "1" : "0"});
+  return BuildResponse(response);
+}
+
 std::string HandleRequest(const std::string& request_text) {
   const auto fields = ParseFields(request_text);
   const auto command = fields.find("command");
@@ -326,6 +369,12 @@ std::string HandleRequest(const std::string& request_text) {
   }
   if (command->second == "release_tun_adapter") {
     return ReleaseTunAdapterNative(fields);
+  }
+  if (command->second == "engage_killswitch") {
+    return EngageKillswitchCommand(fields);
+  }
+  if (command->second == "disengage_killswitch") {
+    return DisengageKillswitchCommand(fields);
   }
   return ErrorResponse("Unknown service command.", ERROR_INVALID_PARAMETER);
 }

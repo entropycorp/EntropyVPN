@@ -42,6 +42,8 @@ class AndroidVpnBridge {
     required TunIpMode tunIpMode,
     required List<String> dnsServers,
     required SplitTunnelSettings splitTunnelSettings,
+    String? socksUsername,
+    String? socksPassword,
   }) async {
     await _ensureEventStream();
     if (_isRunning && _phase == 'connected') {
@@ -70,6 +72,8 @@ class AndroidVpnBridge {
         tunIpMode: tunIpMode,
         dnsServers: dnsServers,
         splitTunnelSettings: splitTunnelSettings,
+        socksUsername: socksUsername,
+        socksPassword: socksPassword,
       ),
     );
     if (accepted != true) {
@@ -87,6 +91,8 @@ class AndroidVpnBridge {
     required TunIpMode tunIpMode,
     required List<String> dnsServers,
     required SplitTunnelSettings splitTunnelSettings,
+    String? socksUsername,
+    String? socksPassword,
   }) async {
     await _controlChannel.invokeMethod<bool>(
       'saveVpnStartPayload',
@@ -100,6 +106,8 @@ class AndroidVpnBridge {
         tunIpMode: tunIpMode,
         dnsServers: dnsServers,
         splitTunnelSettings: splitTunnelSettings,
+        socksUsername: socksUsername,
+        socksPassword: socksPassword,
       ),
     );
   }
@@ -108,6 +116,14 @@ class AndroidVpnBridge {
     await _ensureEventStream();
     _stopRequested = true;
     await _controlChannel.invokeMethod<void>('stopVpn');
+  }
+
+  Future<void> setKillswitchPreference(bool enabled) async {
+    await _ensureEventStream();
+    await _controlChannel.invokeMethod<void>(
+      'setKillswitchPreference',
+      <String, Object?>{'enabled': enabled},
+    );
   }
 
   Future<void> dispose() async {
@@ -193,6 +209,8 @@ class AndroidVpnBridge {
     required TunIpMode tunIpMode,
     required List<String> dnsServers,
     required SplitTunnelSettings splitTunnelSettings,
+    String? socksUsername,
+    String? socksPassword,
   }) {
     final normalizedSplitTunnel = splitTunnelSettings.normalized;
     return <String, Object?>{
@@ -209,6 +227,8 @@ class AndroidVpnBridge {
           .map((app) => app.path.trim())
           .where((packageName) => packageName.isNotEmpty)
           .toList(growable: false),
+      'socksUsername': socksUsername,
+      'socksPassword': socksPassword,
     };
   }
 }
