@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:package_info_plus/package_info_plus.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:url_launcher/url_launcher.dart';
 
 const Duration appUpdateCheckInterval = Duration(hours: 1);
@@ -278,8 +278,17 @@ class AppUpdateService {
 
   Future<String?> loadCurrentVersion() async {
     try {
-      final info = await PackageInfo.fromPlatform();
-      return _nonEmptyString(info.version);
+      final pubspec = await rootBundle.loadString('pubspec.yaml');
+      final match = RegExp(
+        r'^version:\s*(\S+)',
+        multiLine: true,
+      ).firstMatch(pubspec);
+      if (match == null) {
+        return null;
+      }
+      final raw = match.group(1)!;
+      final plus = raw.indexOf('+');
+      return _nonEmptyString(plus < 0 ? raw : raw.substring(0, plus));
     } catch (_) {
       return null;
     }

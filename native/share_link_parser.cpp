@@ -26,6 +26,16 @@
 #endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
 #endif
 
 namespace {
@@ -1268,11 +1278,109 @@ int tcp_connect_latency_ms(const std::string& host, int port, int timeout_ms) {
                            std::to_string(last_error) + ".");
 }
 #else
+class PosixSocketHandle {
+ public:
+  explicit PosixSocketHandle(int fd) : fd_(fd) {}
+  ~PosixSocketHandle() {
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
+  }
+
+  PosixSocketHandle(const PosixSocketHandle&) = delete;
+  PosixSocketHandle& operator=(const PosixSocketHandle&) = delete;
+
+  int get() const { return fd_; }
+
+ private:
+  int fd_ = -1;
+};
+
 int tcp_connect_latency_ms(const std::string& host, int port, int timeout_ms) {
-  (void)host;
-  (void)port;
-  (void)timeout_ms;
-  throw std::runtime_error("Native TCP ping is only available on Windows.");
+  const auto started = std::chrono::steady_clock::now();
+  const auto deadline = started + std::chrono::milliseconds(timeout_ms);
+  addrinfo hints{};
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+
+  addrinfo* raw_addresses = nullptr;
+  const std::string port_text = std::to_string(port);
+  const int resolve_result =
+      getaddrinfo(host.c_str(), port_text.c_str(), &hints, &raw_addresses);
+  if (resolve_result != 0 || raw_addresses == nullptr) {
+    throw std::runtime_error("Could not resolve TCP ping target.");
+  }
+  std::unique_ptr<addrinfo, decltype(&freeaddrinfo)> addresses(raw_addresses,
+                                                               freeaddrinfo);
+
+  int last_error = 0;
+  for (addrinfo* address = addresses.get(); address != nullptr;
+       address = address->ai_next) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      last_error = ETIMEDOUT;
+      break;
+    }
+    const auto remaining_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
+            .count();
+    PosixSocketHandle socket(::socket(address->ai_family, address->ai_socktype,
+                                      address->ai_protocol));
+    if (socket.get() < 0) {
+      last_error = errno;
+      continue;
+    }
+
+    const int existing_flags = ::fcntl(socket.get(), F_GETFL, 0);
+    if (existing_flags < 0 ||
+        ::fcntl(socket.get(), F_SETFL, existing_flags | O_NONBLOCK) < 0) {
+      last_error = errno;
+      continue;
+    }
+
+    const int connect_result =
+        ::connect(socket.get(), address->ai_addr, address->ai_addrlen);
+    if (connect_result == 0) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started);
+      return elapsed.count() <= 0 ? 1 : static_cast<int>(elapsed.count());
+    }
+
+    if (errno != EINPROGRESS && errno != EALREADY && errno != EWOULDBLOCK) {
+      last_error = errno;
+      continue;
+    }
+
+    pollfd waiter{};
+    waiter.fd = socket.get();
+    waiter.events = POLLOUT;
+    int polled;
+    do {
+      polled = ::poll(&waiter, 1, static_cast<int>(remaining_ms));
+    } while (polled < 0 && errno == EINTR);
+    if (polled <= 0) {
+      last_error = polled == 0 ? ETIMEDOUT : errno;
+      continue;
+    }
+
+    int socket_error = 0;
+    socklen_t socket_error_size = sizeof(socket_error);
+    if (::getsockopt(socket.get(), SOL_SOCKET, SO_ERROR, &socket_error,
+                     &socket_error_size) != 0) {
+      last_error = errno;
+      continue;
+    }
+    if (socket_error == 0 && (waiter.revents & POLLOUT) != 0) {
+      const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - started);
+      return elapsed.count() <= 0 ? 1 : static_cast<int>(elapsed.count());
+    }
+    last_error = socket_error == 0 ? ECONNREFUSED : socket_error;
+  }
+
+  throw std::runtime_error("TCP ping failed with POSIX socket error " +
+                           std::to_string(last_error) + ".");
 }
 #endif
 
@@ -2486,9 +2594,13 @@ std::string xray_stream_json(const Profile& profile, const std::string& bind_int
     throw std::runtime_error("QUIC transport is not supported for Xray in this desktop wrapper yet.");
   }
   std::ostringstream json;
+  // Xray v26 removed the h2/http network entirely (returns RemovedFeatureError).
+  // Map legacy h2 share-link transports to xhttp so they remain runnable; sing-box
+  // keeps real H2 for those.
   const std::string network = profile.transport == "raw" ? "raw" :
       profile.transport == "http" ? "xhttp" :
       profile.transport == "httpUpgrade" ? "httpupgrade" :
+      profile.transport == "ws" ? "websocket" :
       profile.transport;
   const std::string security = profile.tls_mode == "reality" ? "reality" : (profile.tls_mode == "tls" ? "tls" : "none");
   json << "{\"network\":";
@@ -2525,7 +2637,7 @@ std::string xray_stream_json(const Profile& profile, const std::string& bind_int
   if (profile.transport == "ws") {
     json << ",\"wsSettings\":{\"path\":";
     write_string(json, profile.path.empty() ? "/" : profile.path);
-    if (!profile.host.empty()) { json << ",\"headers\":{\"Host\":"; write_string(json, profile.host); json << '}'; }
+    if (!profile.host.empty()) { json << ",\"host\":"; write_string(json, profile.host); }
     json << '}';
   } else if (profile.transport == "grpc") {
     json << ",\"grpcSettings\":{\"serviceName\":";
@@ -2541,7 +2653,7 @@ std::string xray_stream_json(const Profile& profile, const std::string& bind_int
     json << ",\"xhttpSettings\":{\"path\":";
     write_string(json, profile.path.empty() ? "/" : profile.path);
     if (!profile.host.empty()) { json << ",\"host\":"; write_string(json, profile.host); }
-    json << '}';
+    json << ",\"mode\":\"auto\"}";
   }
   json << '}';
   return json.str();
@@ -2577,13 +2689,13 @@ std::string xray_outbound_json(const Profile& profile, const ConfigOptions& opti
     json << ",\"level\":0}";
   } else if (profile.protocol == "shadowsocks") {
     if (!profile.plugin.empty()) throw std::runtime_error("Xray desktop wrapper does not support Shadowsocks plugins yet.");
-    json << ",\"protocol\":\"shadowsocks\",\"settings\":{\"servers\":[{\"address\":";
+    json << ",\"protocol\":\"shadowsocks\",\"settings\":{\"address\":";
     write_string(json, server);
     json << ",\"port\":" << profile.port << ",\"method\":";
     write_string(json, require_value(profile.method, "Shadowsocks method"));
     json << ",\"password\":";
     write_string(json, require_value(profile.password, "Shadowsocks password"));
-    json << "}]}";
+    json << ",\"level\":0}";
   } else {
     throw std::runtime_error(profile.protocol + " links must be run with sing-box.");
   }
@@ -2677,6 +2789,15 @@ std::string build_xray_config(const Profile& profile, const ConfigOptions& optio
     bool first = true;
     if (use_dns_routing) {
       json << "{\"type\":\"field\",\"inboundTag\":[\"" << (tun ? "tun-in" : "socks-in") << "\"],\"port\":\"53\",\"outboundTag\":\"dns-out\"}";
+      first = false;
+    }
+    if (tun) {
+      // Route xray's own DoH/classic DNS queries (tagged via dns.tag) through
+      // the proxy outbound so they tunnel through the VPN. Without this an
+      // explicit catch-all (e.g. domain whitelist mode) would swallow them
+      // and leak DNS out the physical interface.
+      if (!first) json << ',';
+      json << "{\"type\":\"field\",\"inboundTag\":[\"dns-query\"],\"outboundTag\":\"proxy\"}";
       first = false;
     }
     if (tun) {
@@ -2811,10 +2932,14 @@ const Json& xray_transport_settings(const Json& stream) {
   if (network == "ws" || network == "websocket") return stream.at("wsSettings");
   if (network == "grpc") return stream.at("grpcSettings");
   if (network == "http") return stream.at("httpSettings");
-  if (network == "xhttp" || network == "splithttp" || network == "split-http") return stream.at("xhttpSettings");
+  if (network == "xhttp" || network == "splithttp" || network == "split-http") {
+    return stream.contains("xhttpSettings") ? stream.at("xhttpSettings") : stream.at("splithttpSettings");
+  }
   if (network == "httpupgrade" || network == "http-upgrade") return stream.at("httpupgradeSettings");
   if (network == "quic") return stream.at("quicSettings");
-  return stream.at("tcpSettings");
+  // Xray v26+ canonicalised network "tcp" to "raw" and prefers rawSettings,
+  // but still accepts tcpSettings. Try the new key first, fall back to legacy.
+  return stream.contains("rawSettings") ? stream.at("rawSettings") : stream.at("tcpSettings");
 }
 
 std::string transport_host(const Json& transport) {

@@ -87,7 +87,12 @@ extension CoreRuntimeServiceWindows on CoreRuntimeService {
               ),
               'nativeConfigJson': nativePayload?.json,
               'workingDirectory': _resolveConfigWorkingDirectory(profile),
-              'dnsServers': dnsSettings.normalized.serversFor(tunIpMode),
+              // Adapter DNS must be plain IPs (Windows SetInterfaceDnsSettings
+              // rejects URLs). DoH/DoT is honored inside the core config via
+              // optionsJson below, not on the wintun adapter.
+              'dnsServers': dnsSettings.normalized.adapterDnsServersFor(
+                tunIpMode,
+              ),
               'profileIsNativeConfig': profile.isNativeConfig,
               'requiresTunPrerequisites': requiresTunPrerequisites,
               'skipValidation':

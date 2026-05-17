@@ -2,7 +2,7 @@ name: entropy_vpn
 description: "Windows VPN client for Xray-core and Sing-box."
 publish_to: 'none'
 
-version: 1.6.0+10
+version: 1.7.0+11
 
 environment:
   sdk: ^3.11.5
@@ -21,7 +21,6 @@ dependencies:
   pasteboard: ^0.5.0
   qr_code_dart_decoder: ^0.1.2
   ffi: ^2.2.0
-  package_info_plus: ^9.0.1
   url_launcher: ^6.3.2
   font_awesome_flutter: ^11.0.0
 
@@ -35,6 +34,7 @@ flutter:
   uses-material-design: true
 
   assets:
+    - pubspec.yaml
     - entropylogo.png
     - assets/flags/
 

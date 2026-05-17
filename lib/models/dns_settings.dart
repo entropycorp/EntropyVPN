@@ -63,15 +63,19 @@ class DnsSettings {
         InternetAddressType.IPv6,
         defaultIpv6Servers,
       ),
-      dohServers: _normalizeStringServers(
-        dohServers,
-        _isValidDohServer,
-        defaultDohServers,
+      dohServers: _firstOnly(
+        _normalizeStringServers(
+          dohServers,
+          _isValidDohServer,
+          defaultDohServers,
+        ),
       ),
-      dotServers: _normalizeStringServers(
-        dotServers,
-        _isValidDotServer,
-        defaultDotServers,
+      dotServers: _firstOnly(
+        _normalizeStringServers(
+          dotServers,
+          _isValidDotServer,
+          defaultDotServers,
+        ),
       ),
     );
   }
@@ -89,6 +93,22 @@ class DnsSettings {
       },
       DnsMode.doh => settings.dohServers,
       DnsMode.dot => settings.dotServers,
+    };
+  }
+
+  // Adapter/OS-level DNS configuration only accepts IP literals (e.g. Windows
+  // SetInterfaceDnsSettings, Android VpnService.Builder.addDnsServer). DoH/DoT
+  // is applied inside the core's config, so the adapter always gets the
+  // plain IPv4/IPv6 fallback list regardless of mode.
+  List<String> adapterDnsServersFor(TunIpMode tunIpMode) {
+    final settings = normalized;
+    return switch (tunIpMode) {
+      TunIpMode.ipv4 => settings.ipv4Servers,
+      TunIpMode.ipv6 => settings.ipv6Servers,
+      TunIpMode.dualStack => <String>[
+        ...settings.ipv4Servers,
+        ...settings.ipv6Servers,
+      ],
     };
   }
 
@@ -274,6 +294,13 @@ List<String> _normalizeIpServers(
     return List<String>.unmodifiable(fallback);
   }
   return List<String>.unmodifiable(servers);
+}
+
+List<String> _firstOnly(List<String> servers) {
+  if (servers.isEmpty) {
+    return const <String>[];
+  }
+  return List<String>.unmodifiable(<String>[servers.first]);
 }
 
 List<String> _normalizeStringServers(

@@ -126,7 +126,15 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
 
   Future<String?> probeCoreVersion(CoreFlavor core) async {
     if (Platform.isAndroid) {
-      return null;
+      final bridge = _androidBridge;
+      if (bridge == null) {
+        return null;
+      }
+      try {
+        return await bridge.getCoreVersion(core.name);
+      } catch (_) {
+        return null;
+      }
     }
     try {
       final binary = await _resolveBinary(core);

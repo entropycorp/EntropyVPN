@@ -166,6 +166,12 @@ class AppStrings {
       _ru ? 'до $date' : 'until $date';
   String get aboutSubscriptionAction => _ru ? 'О подписке' : 'About';
   String get aboutSubscriptionDialogTitle => _ru ? 'О подписке' : 'About';
+  String get profileInfoAction => _ru ? 'О конфигурации' : 'Config info';
+  String get profileInfoCoreLabel => _ru ? 'Ядро' : 'Core';
+  String get profileInfoProtocolLabel => _ru ? 'Протокол' : 'Protocol';
+  String get profileInfoTransportLabel => _ru ? 'Транспорт' : 'Transport';
+  String get profileInfoTlsLabel => _ru ? 'Шифрование' : 'Security';
+  String get profileInfoServerLabel => _ru ? 'Сервер' : 'Server';
   String get aboutAppLabel => _ru ? 'О приложении' : 'About';
   String get subscriptionExpiresLabel => _ru ? 'Истекает' : 'Expires';
   String get closeAction => _ru ? 'Закрыть' : 'Close';

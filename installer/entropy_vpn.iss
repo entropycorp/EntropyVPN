@@ -2,12 +2,44 @@
 #define MyAppExeName "entropy_vpn.exe"
 #define MyAppPublisher "EntropyVPN"
 
-#ifndef MyAppVersion
-  #define MyAppVersion "1.6.0"
-#endif
-
 #ifndef MySourceRoot
   #define MySourceRoot ".."
+#endif
+
+#ifndef MyAppVersion
+  #define PubspecPath AddBackslash(MySourceRoot) + "pubspec.yaml"
+  #if !FileExists(PubspecPath)
+    #error "pubspec.yaml not found; expected at " + PubspecPath
+  #endif
+
+  #define ExtractedVersion ""
+  #define PubspecHandle FileOpen(PubspecPath)
+
+  #sub ReadPubspecLine
+    #define public cur FileRead(PubspecHandle)
+    #if Pos("version:", cur) == 1
+      #define public raw Trim(Copy(cur, 9, Len(cur) - 8))
+      #if Pos("+", raw) > 0
+        #define public raw Copy(raw, 1, Pos("+", raw) - 1)
+      #endif
+      #if Len(ExtractedVersion) == 0
+        #define public ExtractedVersion raw
+      #endif
+    #endif
+  #endsub
+
+  #define i 0
+  #for {i = 0; i < 500; i++} ReadPubspecLine
+  #undef i
+
+  #expr FileClose(PubspecHandle)
+  #undef PubspecHandle
+
+  #if Len(ExtractedVersion) == 0
+    #error "Could not extract version from pubspec.yaml"
+  #endif
+
+  #define MyAppVersion ExtractedVersion
 #endif
 
 #define MyReleaseDir AddBackslash(MySourceRoot) + "build\windows\x64\runner\Release"

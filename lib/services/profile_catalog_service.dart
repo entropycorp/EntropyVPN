@@ -16,7 +16,7 @@ part 'profile_catalog_native_config.dart';
 part 'profile_catalog_payload_resolver.dart';
 part 'profile_catalog_subscription_headers.dart';
 
-const String _subscriptionUserAgent = 'EntropyVPN/1.6.0';
+const String _subscriptionUserAgent = 'EntropyVPN/1.7.0';
 
 class ResolvedProfileCatalog {
   ResolvedProfileCatalog({

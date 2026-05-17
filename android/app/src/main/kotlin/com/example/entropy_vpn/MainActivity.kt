@@ -22,8 +22,11 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import io.nekohasekai.libbox.Libbox
+import java.io.File
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class MainActivity : FlutterActivity() {
     companion object {
@@ -115,6 +118,7 @@ class MainActivity : FlutterActivity() {
             }
             "getState" -> result.success(EntropyVpnRuntimeStore.snapshot())
             "getAppDataDirectory" -> result.success(filesDir.absolutePath)
+            "getCoreVersions" -> getCoreVersions(result)
             "listInstalledApps" -> listInstalledApps(result)
             "showUpdateNotification" -> showUpdateNotification(call, result)
             else -> result.notImplemented()
@@ -342,6 +346,43 @@ class MainActivity : FlutterActivity() {
             socksUsername = socksUsername,
             socksPassword = socksPassword,
         )
+    }
+
+    private fun getCoreVersions(result: MethodChannel.Result) {
+        appCatalogExecutor.execute {
+            val versions = mutableMapOf<String, String?>(
+                "xray" to probeXrayVersion(),
+                "singBox" to probeSingBoxVersion(),
+            )
+            mainHandler.post { result.success(versions) }
+        }
+    }
+
+    private fun probeSingBoxVersion(): String? =
+        runCatching { Libbox.version().takeIf(String::isNotBlank) }.getOrNull()
+
+    private fun probeXrayVersion(): String? {
+        val binary = File(applicationInfo.nativeLibraryDir, "libxray.so")
+        if (!binary.canExecute()) {
+            return null
+        }
+        return runCatching {
+            val process = ProcessBuilder(binary.absolutePath, "version")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                return@runCatching null
+            }
+            if (process.exitValue() != 0) {
+                return@runCatching null
+            }
+            Regex("""\b(\d+\.\d+\.\d+(?:[-+][\w.]+)?)""")
+                .find(output)
+                ?.groupValues
+                ?.getOrNull(1)
+        }.getOrNull()
     }
 
     private fun listInstalledApps(result: MethodChannel.Result) {

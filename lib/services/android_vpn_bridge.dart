@@ -118,6 +118,18 @@ class AndroidVpnBridge {
     await _controlChannel.invokeMethod<void>('stopVpn');
   }
 
+  Future<String?> getCoreVersion(String core) async {
+    final versions = await _controlChannel.invokeMapMethod<String, dynamic>(
+      'getCoreVersions',
+    );
+    final value = versions?[core];
+    if (value == null) {
+      return null;
+    }
+    final text = value.toString().trim();
+    return text.isEmpty ? null : text;
+  }
+
   Future<void> setKillswitchPreference(bool enabled) async {
     await _ensureEventStream();
     await _controlChannel.invokeMethod<void>(

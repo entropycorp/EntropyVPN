@@ -659,9 +659,10 @@ void main() {
       final stream = outbound['streamSettings'] as Map<String, dynamic>;
 
       expect(outbound['protocol'], 'trojan');
-      expect(stream['network'], 'ws');
+      expect(stream['network'], 'websocket');
       expect(stream['security'], 'tls');
       expect((stream['wsSettings'] as Map<String, dynamic>)['path'], '/vpn');
+      expect((stream['wsSettings'] as Map<String, dynamic>)['host'], 'cdn.example.com');
     });
 
     test('builds Xray XHTTP config', () {
@@ -723,7 +724,8 @@ void main() {
       final routing = config['routing'] as Map<String, dynamic>;
       final rules = routing['rules'] as List<dynamic>;
       final dnsRule = rules.first as Map<String, dynamic>;
-      final quicRule = rules[1] as Map<String, dynamic>;
+      final dnsQueryRule = rules[1] as Map<String, dynamic>;
+      final quicRule = rules[2] as Map<String, dynamic>;
       final dnsOutbound = outbounds
           .whereType<Map<dynamic, dynamic>>()
           .firstWhere((item) => item['tag'] == 'dns-out');
@@ -758,6 +760,8 @@ void main() {
       expect(dnsRule['inboundTag'], <String>['tun-in']);
       expect(dnsRule['port'], '53');
       expect(dnsRule['outboundTag'], 'dns-out');
+      expect(dnsQueryRule['inboundTag'], <String>['dns-query']);
+      expect(dnsQueryRule['outboundTag'], 'proxy');
       expect(quicRule['network'], 'udp');
       expect(quicRule['port'], '443');
       expect(quicRule['outboundTag'], 'block');

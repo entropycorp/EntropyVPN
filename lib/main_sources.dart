@@ -12,7 +12,9 @@ import 'main_constants.dart';
 import 'main_flags.dart';
 import 'main_helpers.dart';
 import 'models/config_source.dart';
+import 'models/vpn_profile.dart';
 import 'services/config_source_export.dart';
+import 'services/geo_ip_service.dart';
 import 'services/vpn_controller.dart';
 
 class QuickSwitchPanel extends StatelessWidget {
@@ -1007,12 +1009,6 @@ class _MobileSubscriptionHeader extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: compactSourceActionGap),
-                _SourcePingButton(
-                  controller: controller,
-                  strings: strings,
-                  source: source,
-                ),
-                const SizedBox(width: compactSourceActionGap),
                 _SourceMenuButton(
                   controller: controller,
                   strings: strings,
@@ -1049,15 +1045,9 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final profile = source.profiles[profileIndex];
-    final core = controller.displayCoreForProfile(profile);
     final cardHeight = mobileProfileCardHeightFor(context);
     final title = profileChoiceTitle(profile);
-    final subtitle = sourceSubtitle(strings, core, profile);
     final titleStyle = configCardTitleStyle(theme);
-    final subtitleStyle = configCardSubtitleStyle(
-      theme,
-      scheme,
-    )?.copyWith(fontSize: mobileProfileSubtitleFontSize);
     final tcpPingLatency = source.tcpPingLatencyForProfile(profileIndex);
     final showPingResult = tcpPingLatency != null;
 
@@ -1088,21 +1078,28 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
             flagKey: ValueKey<String>(
               'mobile-profile-flag-${source.id}-$profileIndex',
             ),
-            flagOffset: const Offset(-3, -8),
             title: title,
-            subtitle: subtitle,
             titleStyle: titleStyle,
-            subtitleStyle: subtitleStyle,
-            subtitleMaxLines: 1,
             trailingGap: 12,
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 if (showPingResult) ...<Widget>[
                   _TcpPingResultLabel(milliseconds: tcpPingLatency),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 4),
                 ],
-                _SourceCardSelectionIndicator(selected: selected),
+                _ProfilePingButton(
+                  controller: controller,
+                  strings: strings,
+                  source: source,
+                  profileIndex: profileIndex,
+                ),
+                const SizedBox(width: 2),
+                _ProfileInfoButton(
+                  controller: controller,
+                  strings: strings,
+                  profile: profile,
+                ),
               ],
             ),
           ),
@@ -1118,44 +1115,31 @@ class _SourceCardPrimaryRow extends StatelessWidget {
     required this.server,
     required this.selected,
     required this.title,
-    required this.subtitle,
     required this.titleStyle,
-    required this.subtitleStyle,
-    required this.subtitleMaxLines,
     required this.trailing,
     this.flagKey,
-    this.flagOffset = Offset.zero,
     this.trailingGap = 14,
     this.titleMetrics,
-    this.subtitleMetrics,
   });
 
   final double height;
   final String server;
   final bool selected;
   final String title;
-  final String subtitle;
   final TextStyle? titleStyle;
-  final TextStyle? subtitleStyle;
-  final int subtitleMaxLines;
   final Widget trailing;
   final Key? flagKey;
-  final Offset flagOffset;
   final double trailingGap;
   final MeasuredTextVisualMetrics? titleMetrics;
-  final MeasuredTextVisualMetrics? subtitleMetrics;
 
   @override
   Widget build(BuildContext context) {
-    Widget flag = ServerFlagBadge(
+    final flag = ServerFlagBadge(
       key: flagKey,
       server: server,
       selected: selected,
       size: configCardFlagSize,
     );
-    if (flagOffset != Offset.zero) {
-      flag = Transform.translate(offset: flagOffset, child: flag);
-    }
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
@@ -1166,12 +1150,8 @@ class _SourceCardPrimaryRow extends StatelessWidget {
           child: _SourceCardTextStack(
             height: height,
             title: title,
-            subtitle: subtitle,
             titleStyle: titleStyle,
-            subtitleStyle: subtitleStyle,
-            subtitleMaxLines: subtitleMaxLines,
             titleMetrics: titleMetrics,
-            subtitleMetrics: subtitleMetrics,
           ),
         ),
         SizedBox(width: trailingGap),
@@ -1185,37 +1165,27 @@ class _SourceCardTextStack extends StatelessWidget {
   const _SourceCardTextStack({
     required this.height,
     required this.title,
-    required this.subtitle,
     required this.titleStyle,
-    required this.subtitleStyle,
-    required this.subtitleMaxLines,
     this.titleMetrics,
-    this.subtitleMetrics,
   });
 
   final double height;
   final String title;
-  final String subtitle;
   final TextStyle? titleStyle;
-  final TextStyle? subtitleStyle;
-  final int subtitleMaxLines;
   final MeasuredTextVisualMetrics? titleMetrics;
-  final MeasuredTextVisualMetrics? subtitleMetrics;
 
   @override
   Widget build(BuildContext context) {
     final titleMetrics = this.titleMetrics;
-    final subtitleMetrics = this.subtitleMetrics;
-    if (titleMetrics != null && subtitleMetrics != null) {
-      return _buildPositionedText(titleMetrics, subtitleMetrics);
+    if (titleMetrics != null) {
+      return _buildTitleOnly(titleMetrics);
     }
-
     return LayoutBuilder(
       builder: (context, constraints) {
         final textWidth = constraints.maxWidth
             .clamp(64.0, double.infinity)
             .toDouble();
-        final titleMetrics = measuredTextVisualMetrics(
+        final measured = measuredTextVisualMetrics(
           context,
           title,
           titleStyle,
@@ -1223,26 +1193,12 @@ class _SourceCardTextStack extends StatelessWidget {
           maxLines: 1,
           textHeightBehavior: configCardTextHeightBehavior,
         );
-        final subtitleMetrics = measuredTextVisualMetrics(
-          context,
-          subtitle,
-          subtitleStyle,
-          maxWidth: textWidth,
-          maxLines: subtitleMaxLines,
-          textHeightBehavior: configCardTextHeightBehavior,
-        );
-        return _buildPositionedText(titleMetrics, subtitleMetrics);
+        return _buildTitleOnly(measured);
       },
     );
   }
 
-  Widget _buildPositionedText(
-    MeasuredTextVisualMetrics titleMetrics,
-    MeasuredTextVisualMetrics subtitleMetrics,
-  ) {
-    final titleCenterY = height / 3;
-    final subtitleCenterY = height * 2 / 3;
-
+  Widget _buildTitleOnly(MeasuredTextVisualMetrics titleMetrics) {
     return SizedBox(
       height: height,
       child: Stack(
@@ -1250,25 +1206,13 @@ class _SourceCardTextStack extends StatelessWidget {
         children: <Widget>[
           Positioned(
             left: 0,
-            top: titleCenterY - titleMetrics.visualCenterY,
+            top: height / 2 - titleMetrics.visualCenterY,
             right: 0,
             child: Text(
               title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: titleStyle,
-              textHeightBehavior: configCardTextHeightBehavior,
-            ),
-          ),
-          Positioned(
-            left: 0,
-            top: subtitleCenterY - subtitleMetrics.visualCenterY,
-            right: 0,
-            child: Text(
-              subtitle,
-              maxLines: subtitleMaxLines,
-              overflow: TextOverflow.ellipsis,
-              style: subtitleStyle,
               textHeightBehavior: configCardTextHeightBehavior,
             ),
           ),
@@ -1564,26 +1508,30 @@ class _SourceMenuController {
   }
 }
 
-class _SourcePingButton extends StatelessWidget {
-  const _SourcePingButton({
+class _ProfilePingButton extends StatelessWidget {
+  const _ProfilePingButton({
     required this.controller,
     required this.strings,
     required this.source,
+    required this.profileIndex,
   });
 
   final VpnController controller;
   final AppStrings strings;
   final ConfigSource source;
+  final int profileIndex;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final isPingingThis =
+        source.isPinging && source.tcpPingProfileIndex == profileIndex;
 
     return SizedBox(
       width: compactSourceActionSize,
       height: compactSourceActionSize,
       child: Center(
-        child: source.isPinging
+        child: isPingingThis
             ? SizedBox(
                 width: 18,
                 height: 18,
@@ -1593,17 +1541,87 @@ class _SourcePingButton extends StatelessWidget {
                 ),
               )
             : IconButton(
-                onPressed: controller.canPingSource(source.id)
-                    ? () => unawaited(controller.pingSource(source.id))
+                onPressed: controller.canPingProfile(source.id, profileIndex)
+                    ? () => unawaited(
+                        controller.pingProfile(source.id, profileIndex),
+                      )
                     : null,
                 tooltip: strings.tcpPingAction,
-                icon: const Icon(Icons.rss_feed_rounded),
+                icon: const _SignalBarsIcon(),
                 iconSize: 21,
                 style: _compactSourceIconButtonStyle(scheme),
               ),
       ),
     );
   }
+}
+
+class _SignalBarsIcon extends StatelessWidget {
+  const _SignalBarsIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    final iconTheme = IconTheme.of(context);
+    final size = iconTheme.size ?? 24.0;
+    final color =
+        iconTheme.color ?? Theme.of(context).colorScheme.onSurfaceVariant;
+    final opacity = iconTheme.opacity ?? 1.0;
+    return SizedBox(
+      width: size,
+      height: size,
+      child: CustomPaint(
+        painter: _SignalBarsPainter(
+          color: opacity < 1.0 ? color.withValues(alpha: opacity) : color,
+        ),
+      ),
+    );
+  }
+}
+
+class _SignalBarsPainter extends CustomPainter {
+  const _SignalBarsPainter({required this.color});
+
+  final Color color;
+
+  static const int _bars = 4;
+  static const double _gapRatio = 0.45;
+  static const double _minHeightRatio = 0.32;
+  // Material icons render visual content inside ~75-80% of their bounding box.
+  static const double _insetX = 0.06;
+  static const double _insetY = 0.18;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final insetX = size.width * _insetX;
+    final insetY = size.height * _insetY;
+    final usableWidth = size.width - insetX * 2;
+    final usableHeight = size.height - insetY * 2;
+    final totalUnits = _bars + (_bars - 1) * _gapRatio;
+    final barWidth = usableWidth / totalUnits;
+    final gap = barWidth * _gapRatio;
+    // Full pill shape on each bar — corners as round as they can go.
+    final radius = Radius.circular(barWidth * 0.5);
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill
+      ..isAntiAlias = true;
+    for (var i = 0; i < _bars; i += 1) {
+      final t = _minHeightRatio +
+          (1.0 - _minHeightRatio) * (i / (_bars - 1));
+      final h = usableHeight * t;
+      final x = insetX + i * (barWidth + gap);
+      final y = insetY + (usableHeight - h);
+      final rect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(x, y, barWidth, h),
+        radius,
+      );
+      canvas.drawRRect(rect, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SignalBarsPainter oldDelegate) =>
+      oldDelegate.color != color;
 }
 
 ButtonStyle _compactSourceIconButtonStyle(ColorScheme scheme) {
@@ -1684,19 +1702,15 @@ class _QuickSourceTile extends StatelessWidget {
     );
     final showPingResult = tcpPingLatency != null;
     final showAbout = sourceHasAboutInfo(source);
+    final showProfileInfo = profile != null;
     final actionRowWidth =
         34.0 +
         (showSourceState ? 40.0 : 0.0) +
         (showPingResult ? 72.0 : 0.0) +
+        (showProfileInfo ? 40.0 : 0.0) +
         (showAbout ? 40.0 : 0.0);
     final title = sourceHeadline(source, profile);
-    final subtitle = sourceSubtitle(
-      strings,
-      controller.displayCoreForProfile(profile),
-      profile,
-    );
     final titleStyle = configCardTitleStyle(theme);
-    final subtitleStyle = configCardSubtitleStyle(theme, scheme);
     final minPrimaryHeight = isMobile
         ? mobileConfigCardMinHeight
         : desktopConfigCardMinHeight;
@@ -1727,18 +1741,10 @@ class _QuickSourceTile extends StatelessWidget {
           maxLines: 1,
           textHeightBehavior: configCardTextHeightBehavior,
         );
-        final subtitleMetrics = measuredTextVisualMetrics(
-          context,
-          subtitle,
-          subtitleStyle,
-          maxWidth: textWidth,
-          maxLines: 2,
-          textHeightBehavior: configCardTextHeightBehavior,
-        );
         final primaryHeight = configCardPrimaryHeight(
           minHeight: minPrimaryHeight,
           titleHeight: titleMetrics.visualHeight,
-          subtitleHeight: subtitleMetrics.visualHeight,
+          subtitleHeight: 0,
         );
         final hasTrafficUsage =
             source.isSubscription &&
@@ -1762,12 +1768,8 @@ class _QuickSourceTile extends StatelessWidget {
                 server: source.serverAddress,
                 selected: selected,
                 title: title,
-                subtitle: subtitle,
                 titleStyle: titleStyle,
-                subtitleStyle: subtitleStyle,
-                subtitleMaxLines: 2,
                 titleMetrics: titleMetrics,
-                subtitleMetrics: subtitleMetrics,
                 trailing: SizedBox(
                   width: actionRowWidth,
                   height: 34,
@@ -1782,6 +1784,14 @@ class _QuickSourceTile extends StatelessWidget {
                         _SourceCardSelectionIndicator(
                           selected: selected,
                           updating: source.isUpdating,
+                        ),
+                        const SizedBox(width: 6),
+                      ],
+                      if (showProfileInfo) ...<Widget>[
+                        _ProfileInfoButton(
+                          controller: controller,
+                          strings: strings,
+                          profile: profile,
                         ),
                         const SizedBox(width: 6),
                       ],
@@ -2040,6 +2050,185 @@ Future<void> _showAboutSubscriptionDialog(
     builder: (context) =>
         _AboutSubscriptionDialog(strings: strings, source: source),
   );
+}
+
+class _ProfileInfoButton extends StatelessWidget {
+  const _ProfileInfoButton({
+    required this.controller,
+    required this.strings,
+    required this.profile,
+  });
+
+  final VpnController controller;
+  final AppStrings strings;
+  final ParsedVpnProfile profile;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return IconButton(
+      onPressed: () => unawaited(
+        _showProfileInfoDialog(
+          context,
+          controller: controller,
+          strings: strings,
+          profile: profile,
+        ),
+      ),
+      tooltip: strings.profileInfoAction,
+      icon: const Icon(Icons.info_outline_rounded),
+      iconSize: 21,
+      style: _compactSourceIconButtonStyle(scheme),
+    );
+  }
+}
+
+Future<void> _showProfileInfoDialog(
+  BuildContext context, {
+  required VpnController controller,
+  required AppStrings strings,
+  required ParsedVpnProfile profile,
+}) {
+  return showDialog<void>(
+    context: context,
+    builder: (context) => _ProfileInfoDialog(
+      controller: controller,
+      strings: strings,
+      profile: profile,
+    ),
+  );
+}
+
+class _ProfileInfoDialog extends StatefulWidget {
+  const _ProfileInfoDialog({
+    required this.controller,
+    required this.strings,
+    required this.profile,
+  });
+
+  final VpnController controller;
+  final AppStrings strings;
+  final ParsedVpnProfile profile;
+
+  @override
+  State<_ProfileInfoDialog> createState() => _ProfileInfoDialogState();
+}
+
+class _ProfileInfoDialogState extends State<_ProfileInfoDialog> {
+  GeoIpInfo? _geoInfo;
+
+  @override
+  void initState() {
+    super.initState();
+    final server = widget.profile.server.trim();
+    if (server.isNotEmpty) {
+      unawaited(_resolveServer(server));
+    }
+  }
+
+  Future<void> _resolveServer(String server) async {
+    final info = await GeoIpService.shared.resolveServer(server);
+    if (!mounted) {
+      return;
+    }
+    setState(() => _geoInfo = info);
+  }
+
+  String _serverDisplay() {
+    final resolvedIp = _geoInfo?.resolvedIp.trim();
+    if (resolvedIp != null && resolvedIp.isNotEmpty) {
+      return resolvedIp;
+    }
+    return widget.profile.endpointLabel.trim();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final strings = widget.strings;
+    final profile = widget.profile;
+    final core = widget.controller.displayCoreForProfile(profile);
+    final entries = <MapEntry<String, String>>[];
+
+    if (core != null) {
+      entries.add(MapEntry(strings.profileInfoCoreLabel, strings.coreName(core)));
+    }
+
+    final protocolLabel = _profileProtocolDisplay(strings, profile);
+    if (protocolLabel != null) {
+      entries.add(MapEntry(strings.profileInfoProtocolLabel, protocolLabel));
+    }
+
+    entries.add(
+      MapEntry(strings.profileInfoTlsLabel, strings.tlsName(profile.tlsMode)),
+    );
+    entries.add(
+      MapEntry(
+        strings.profileInfoTransportLabel,
+        strings.transportName(profile.transport),
+      ),
+    );
+
+    final serverLabel = _serverDisplay();
+    if (serverLabel.isNotEmpty) {
+      entries.add(MapEntry(strings.profileInfoServerLabel, serverLabel));
+    }
+
+    final labelStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: scheme.onSurfaceVariant,
+      fontWeight: FontWeight.w500,
+    );
+    final valueStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: scheme.onSurface,
+      fontWeight: FontWeight.w600,
+    );
+
+    return AlertDialog(
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          for (final entry in entries)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(entry.key, style: labelStyle),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      entry.value,
+                      style: valueStyle,
+                      textAlign: TextAlign.end,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+String? _profileProtocolDisplay(AppStrings strings, ParsedVpnProfile profile) {
+  if (profile.isSingBoxConfig) {
+    final outboundType = profile.singBoxOutboundType?.trim();
+    if (outboundType != null && outboundType.isNotEmpty) {
+      return singBoxProtocolLabel(strings, profile);
+    }
+    return null;
+  }
+  if (profile.isXrayConfig) {
+    final outboundProtocol = profile.xrayOutboundProtocol?.trim();
+    if (outboundProtocol != null && outboundProtocol.isNotEmpty) {
+      return xrayProtocolLabel(strings, profile);
+    }
+    return null;
+  }
+  return strings.protocolName(profile.protocol);
 }
 
 class _AboutSubscriptionDialog extends StatelessWidget {

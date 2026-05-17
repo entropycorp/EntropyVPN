@@ -127,6 +127,7 @@ class VpnController extends ChangeNotifier {
   AppLanguage get language => _language;
   ValueListenable<AppLanguage> get languageListenable => _languageNotifier;
   ValueListenable<int> get logsListenable => _logsRevisionNotifier;
+  Future<void> get hydration => _hydration;
   TrafficMode get trafficMode => _trafficMode;
   TunIpMode get tunIpMode => _tunIpMode;
   DnsSettings get dnsSettings => _dnsSettings.normalized;
@@ -187,6 +188,15 @@ class VpnController extends ChangeNotifier {
       supportsTrafficModeSelection && !isBusy && !isConnected;
   bool get canChangeTunIpMode => !isBusy && !isConnected;
   bool get canChangeDnsSettings => !isBusy && !isConnected;
+  // Xray-core has no native DNS-over-TLS scheme (`tls://...`); only DoH/DoQ/TCP.
+  // Hide DoT when the resolved core for the previewed profile would be Xray.
+  bool get activeCoreSupportsDoT {
+    final profile = previewProfile;
+    if (profile == null) {
+      return true;
+    }
+    return _resolveCore(profile) != CoreFlavor.xray;
+  }
   bool get supportsSplitTunneling => Platform.isWindows || Platform.isAndroid;
   bool get canChangeSplitTunnel =>
       supportsSplitTunneling && !isBusy && !isConnected;
@@ -265,6 +275,21 @@ class VpnController extends ChangeNotifier {
     _setRuntimeError(null);
     _queuePersistState();
     notifyListeners();
+  }
+
+  // If the previewed profile resolves to Xray and the user is currently on DoT,
+  // fall back to DoH (closest encrypted equivalent Xray supports). Caller is
+  // responsible for any notifyListeners() — we just mutate and persist.
+  bool _coerceDnsModeForActiveCore() {
+    if (_dnsSettings.mode != DnsMode.dot) {
+      return false;
+    }
+    if (activeCoreSupportsDoT) {
+      return false;
+    }
+    _dnsSettings = _dnsSettings.copyWith(mode: DnsMode.doh).normalized;
+    _queuePersistState();
+    return true;
   }
 
   void setShowInAppUpdateNotifications(bool enabled) {
@@ -555,6 +580,7 @@ class VpnController extends ChangeNotifier {
       _upsertSource(nextSource);
       if (shouldSelectAddedSource) {
         _selectedSourceId = nextSource.id;
+        _coerceDnsModeForActiveCore();
       }
       _rawInput = '';
       _setInputError(null);
@@ -588,6 +614,7 @@ class VpnController extends ChangeNotifier {
       return;
     }
     _selectedSourceId = sourceId;
+    _coerceDnsModeForActiveCore();
     _setRuntimeError(null);
     _queuePersistState();
     notifyListeners();
@@ -609,6 +636,7 @@ class VpnController extends ChangeNotifier {
     _lastAutoUpdateAttemptAt.remove(sourceId);
     if (_selectedSourceId == sourceId) {
       _selectedSourceId = _sources.isEmpty ? null : _sources.first.id;
+      _coerceDnsModeForActiveCore();
     }
     _setInputError(null);
     _setRuntimeError(null);
@@ -629,6 +657,7 @@ class VpnController extends ChangeNotifier {
     }
 
     _replaceSource(source.copyWith(selectedProfileIndex: index));
+    _coerceDnsModeForActiveCore();
     _queuePersistState();
     notifyListeners();
   }
@@ -736,6 +765,104 @@ class VpnController extends ChangeNotifier {
           clearTcpPingLatency: true,
         ),
       );
+      _setRuntimeError('TCP ping failed: $message');
+      notifyListeners();
+    }
+  }
+
+  bool canPingProfile(String sourceId, int profileIndex) {
+    final source = _sourceById(sourceId);
+    if (source == null) {
+      return false;
+    }
+    if (profileIndex < 0 || profileIndex >= source.profiles.length) {
+      return false;
+    }
+    return !isBusy &&
+        !source.isUpdating &&
+        !source.isPinging &&
+        hasTcpPingEndpoint(source.profiles[profileIndex]);
+  }
+
+  Future<void> pingProfile(String sourceId, int profileIndex) async {
+    await _hydration;
+
+    final source = _sourceById(sourceId);
+    if (source == null ||
+        source.isUpdating ||
+        source.isPinging ||
+        isBusy ||
+        profileIndex < 0 ||
+        profileIndex >= source.profiles.length) {
+      return;
+    }
+
+    final profile = source.profiles[profileIndex];
+    if (!hasTcpPingEndpoint(profile)) {
+      _setRuntimeError('TCP ping needs a host and port.');
+      notifyListeners();
+      return;
+    }
+
+    final target = TcpPingTarget(
+      profileIndex: profileIndex,
+      profileKey: _profileKey(profile),
+      profile: profile,
+    );
+
+    _replaceSource(
+      source.copyWith(
+        isPinging: true,
+        tcpPingProfileIndex: profileIndex,
+      ),
+    );
+    _setRuntimeError(null);
+    notifyListeners();
+
+    try {
+      final measurements = await _runtimeService
+          .withTcpPingBypassRoutes<List<TcpPingMeasurement>>(
+            profiles: <ParsedVpnProfile>[profile],
+            trafficMode: _trafficMode,
+            tunIpMode: _tunIpMode,
+            action: () => measureTcpPingTargets(<TcpPingTarget>[target]),
+          );
+      final current = _sourceById(sourceId);
+      if (current == null) {
+        return;
+      }
+
+      final updatedLatencies = Map<int, int>.from(current.tcpPingLatenciesMs);
+      int? measuredLatency;
+      if (measurements.isNotEmpty &&
+          _profileKey(current.profiles[profileIndex]) ==
+              measurements.first.profileKey) {
+        measuredLatency = measurements.first.latencyMs;
+        updatedLatencies[profileIndex] = measuredLatency;
+      } else {
+        updatedLatencies.remove(profileIndex);
+      }
+
+      _replaceSource(
+        current.copyWith(
+          isPinging: false,
+          tcpPingLatenciesMs: Map<int, int>.unmodifiable(updatedLatencies),
+          tcpPingLatencyMs: profileIndex == current.selectedProfileIndex
+              ? measuredLatency
+              : current.tcpPingLatencyMs,
+          tcpPingProfileIndex: profileIndex == current.selectedProfileIndex
+              ? profileIndex
+              : current.tcpPingProfileIndex,
+        ),
+      );
+      notifyListeners();
+    } catch (error) {
+      final current = _sourceById(sourceId);
+      if (current == null) {
+        return;
+      }
+      final message = _renderError(error);
+      _replaceSource(current.copyWith(isPinging: false));
       _setRuntimeError('TCP ping failed: $message');
       notifyListeners();
     }
@@ -1167,6 +1294,9 @@ class VpnController extends ChangeNotifier {
           clearTcpPing: true,
         ),
       );
+      if (selectedSource?.id == sourceId) {
+        _coerceDnsModeForActiveCore();
+      }
     } catch (error) {
       final message = _renderError(error);
       _replaceSource(
@@ -1448,6 +1578,7 @@ class VpnController extends ChangeNotifier {
       _selectedSourceId = hasSelectedSource
           ? state.selectedSourceId
           : (state.sources.isEmpty ? null : state.sources.first.id);
+      _coerceDnsModeForActiveCore();
 
       notifyListeners();
     } catch (_) {

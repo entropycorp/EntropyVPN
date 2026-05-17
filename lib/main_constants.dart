@@ -33,7 +33,7 @@ const double mobileSourcePagerHeaderHeight =
     mobileSourcePagerDotHeight + mobileSourcePagerDotGap;
 const double mobileSourcePagerSwipeDistanceThreshold = 56;
 const double mobileSourcePagerSwipeVelocityThreshold = 500;
-const double mobileProfileCardHeight = 72;
+const double mobileProfileCardHeight = 56;
 const double mobileProfileCardSpacing = 10;
 const double mobileSubscriptionPanelPadding = 8;
 const double mobileSubscriptionHeaderLeftPadding = 0;
@@ -48,10 +48,10 @@ const double mobileSubscriptionHeaderGap = 6;
 const double mobileSubscriptionTrafficTopGap = 5;
 const double mobileSubscriptionTrafficProfileGap = 11;
 const double mobileConfigCardVerticalPadding = 12;
-const double mobileConfigCardMinHeight = 72;
-const double desktopConfigCardMinHeight = 74;
+const double mobileConfigCardMinHeight = 60;
+const double desktopConfigCardMinHeight = 62;
 const double configCardMinSegmentGap = 4;
-const double configCardFlagSize = 32;
+const double configCardFlagSize = 28;
 const double configCardFlagWidth = configCardFlagSize * defaultFlagAspectRatio;
 const double configCardFlagGap = 10;
 const TextHeightBehavior configCardTextHeightBehavior = TextHeightBehavior(
@@ -63,6 +63,6 @@ const double compactSourceActionSize = 34;
 const double compactSourceActionGap = 3;
 
 double mobileSubscriptionHeaderActionsWidth({required bool hasAbout}) {
-  final buttons = hasAbout ? 4 : 3;
+  final buttons = hasAbout ? 3 : 2;
   return compactSourceActionSize * buttons + compactSourceActionGap * (buttons - 1);
 }

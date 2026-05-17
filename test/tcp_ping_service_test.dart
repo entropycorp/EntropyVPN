@@ -53,19 +53,17 @@ void main() {
     }
   });
 
-  test(
-    'Windows TCP ping batch uses native FFI without Dart socket fallback',
-    () async {
-      final source = await File(
-        'lib/services/tcp_ping_service.dart',
-      ).readAsString();
+  test('TCP ping uses native FFI on every supported platform', () async {
+    final source = await File(
+      'lib/services/tcp_ping_service.dart',
+    ).readAsString();
 
-      expect(source, contains('entropy_measure_tcp_pings'));
-      expect(source, contains('Isolate.run'));
-      expect(source, isNot(contains('_measureTcpPingTargetsWithDartSockets')));
-      expect(source, isNot(contains('Socket.connect')));
-    },
-  );
+    expect(source, contains('entropy_measure_tcp_pings'));
+    expect(source, contains('Isolate.run'));
+    expect(source, contains('entropy_vpn_native.dll'));
+    expect(source, contains('libentropy_vpn_native.so'));
+    expect(source, isNot(contains('Socket.connect')));
+  });
 }
 
 ParsedVpnProfile _tcpProfile(int port) {

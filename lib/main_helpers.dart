@@ -280,9 +280,10 @@ double mobileSourcePageHeight(
   final theme = Theme.of(context);
   final profile = source.selectedProfile;
   final showSourceState = source.isUpdating || !source.hasMultipleProfiles;
-  final actionRowWidth = showSourceState ? 74.0 : 34.0;
+  final showProfileInfo = profile != null;
+  final actionRowWidth =
+      34.0 + (showSourceState ? 40.0 : 0.0) + (showProfileInfo ? 40.0 : 0.0);
   final titleStyle = configCardTitleStyle(theme);
-  final subtitleStyle = configCardSubtitleStyle(theme, theme.colorScheme);
   const flagWidth = configCardFlagWidth;
   final textWidth =
       (maxWidth - 18 - configCardFlagGap - flagWidth - 14 - 14 - actionRowWidth)
@@ -296,19 +297,11 @@ double mobileSourcePageHeight(
     maxLines: 1,
     textHeightBehavior: configCardTextHeightBehavior,
   );
-  final subtitleMetrics = measuredTextVisualMetrics(
-    context,
-    sourceSubtitle(strings, controller.displayCoreForProfile(profile), profile),
-    subtitleStyle,
-    maxWidth: textWidth,
-    maxLines: 2,
-    textHeightBehavior: configCardTextHeightBehavior,
-  );
 
   var primaryHeight = configCardPrimaryHeight(
     minHeight: mobileConfigCardMinHeight,
     titleHeight: titleMetrics.visualHeight,
-    subtitleHeight: subtitleMetrics.visualHeight,
+    subtitleHeight: 0,
   );
 
   final usage = source.trafficUsage;
@@ -371,7 +364,7 @@ double mobileProfileCardHeightFor(BuildContext context) {
   final scaledBodySize = MediaQuery.textScalerOf(context).scale(14);
   final extraHeight = math.max(0.0, scaledBodySize - 14) * 2.2;
   return (mobileProfileCardHeight + extraHeight)
-      .clamp(mobileProfileCardHeight, 124.0)
+      .clamp(mobileProfileCardHeight, 96.0)
       .toDouble();
 }
 

@@ -77,9 +77,6 @@ Future<List<TcpPingMeasurement>> measureTcpPingTargets(
   if (targets.isEmpty) {
     return const <TcpPingMeasurement>[];
   }
-  if (!Platform.isWindows) {
-    throw UnsupportedError('Native TCP ping is only available on Windows.');
-  }
 
   final nativeTargets = targets
       .map(
@@ -145,6 +142,9 @@ class _NativeTcpPingBatch {
   static ffi.DynamicLibrary _openLibrary() {
     if (Platform.isWindows) {
       return ffi.DynamicLibrary.open('entropy_vpn_native.dll');
+    }
+    if (Platform.isAndroid) {
+      return ffi.DynamicLibrary.open('libentropy_vpn_native.so');
     }
     throw UnsupportedError('Native TCP ping is unavailable.');
   }

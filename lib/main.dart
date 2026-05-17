@@ -86,7 +86,15 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
 
   @override
   Widget build(BuildContext context) {
-    final home = VpnHomePage(controller: _controller);
+    final home = FutureBuilder<void>(
+      future: _controller.hydration,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done) {
+          return const ColoredBox(color: appBackgroundColor);
+        }
+        return VpnHomePage(controller: _controller);
+      },
+    );
     return ValueListenableBuilder<AppLanguage>(
       valueListenable: _controller.languageListenable,
       builder: (context, language, child) {

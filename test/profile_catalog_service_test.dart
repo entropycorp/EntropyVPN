@@ -411,7 +411,7 @@ void main() {
       );
 
       expect(catalog.profiles, hasLength(1));
-      expect(userAgent, 'EntropyVPN/1.6.0');
+      expect(userAgent, 'EntropyVPN/1.7.0');
       expect(hwid, 'entropyvpn-test-device');
       expect(deviceOs, isNotEmpty);
     });
