@@ -2,6 +2,10 @@ import 'dart:io';
 
 import 'vpn_profile.dart';
 
+final RegExp _kDnsLabelPattern = RegExp(
+  r'^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$',
+);
+
 enum DnsMode {
   classic,
   doh,
@@ -393,9 +397,8 @@ bool _isValidDnsHost(String host) {
   if (labels.isEmpty) {
     return false;
   }
-  final labelPattern = RegExp(r'^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$');
   for (final label in labels) {
-    if (!labelPattern.hasMatch(label)) {
+    if (!_kDnsLabelPattern.hasMatch(label)) {
       return false;
     }
   }

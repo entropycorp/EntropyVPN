@@ -28,12 +28,6 @@ extension CoreRuntimeServiceWindowsService on CoreRuntimeService {
     if (!Platform.isWindows) {
       return false;
     }
-    if (tunIpMode != TunIpMode.ipv4) {
-      _rememberAppLog(
-        'EntropyVPN Service helper currently supports automatic non-elevated Windows TUN startup for IPv4 mode; falling back to elevation for ${tunIpMode.name}.',
-      );
-      return false;
-    }
     if (await _pingWindowsTunService()) {
       _windowsTunServiceReady = true;
       _rememberAppLog(

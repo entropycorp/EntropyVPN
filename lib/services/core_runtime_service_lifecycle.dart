@@ -11,16 +11,29 @@ extension CoreRuntimeServiceLifecycle on CoreRuntimeService {
     await cleanup;
   }
 
-  void _disposeRuntime() {
-    unawaited(_androidBridge?.dispose() ?? Future<void>.value());
-    if (!Platform.isAndroid) {
-      unawaited(
-        stop().whenComplete(() async {
-          await _windowsNativeRuntimeEventsSubscription?.cancel();
-          _windowsNativeRuntimeEventsSubscription = null;
-        }),
-      );
+  Future<void> shutdown() async {
+    final bridge = _androidBridge;
+    if (bridge != null) {
+      try {
+        await bridge.dispose();
+      } catch (_) {
+        // Best-effort: the bridge may already be torn down.
+      }
     }
+    if (!Platform.isAndroid) {
+      try {
+        await stop(waitForCleanup: true);
+      } finally {
+        await _windowsNativeRuntimeEventsSubscription?.cancel();
+        _windowsNativeRuntimeEventsSubscription = null;
+      }
+    }
+  }
+
+  void _disposeRuntime() {
+    // Best-effort fallback for callers that can't await (e.g. Flutter's sync
+    // dispose chain when shutdownForExit wasn't reached). Prefer shutdown().
+    unawaited(shutdown());
   }
 
 }

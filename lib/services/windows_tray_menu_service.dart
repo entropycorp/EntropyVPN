@@ -13,6 +13,8 @@ import '../models/vpn_profile.dart';
 import 'geo_ip_service.dart';
 import 'vpn_controller.dart';
 
+final RegExp _kCountryCodePattern = RegExp(r'^[A-Z]{2}$');
+
 class WindowsTrayMenuService {
   WindowsTrayMenuService(this._controller);
 
@@ -245,7 +247,7 @@ class WindowsTrayMenuService {
   String? _normalizeCountryCode(String? countryCode) {
     final normalizedCode = countryCode?.trim().toUpperCase();
     if (normalizedCode == null ||
-        !RegExp(r'^[A-Z]{2}$').hasMatch(normalizedCode)) {
+        !_kCountryCodePattern.hasMatch(normalizedCode)) {
       return null;
     }
     return normalizedCode;

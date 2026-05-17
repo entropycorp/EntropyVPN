@@ -41,24 +41,33 @@ class _SplitTunnelDialog extends StatefulWidget {
 }
 
 class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
-  late Future<List<SplitTunnelApp>> _appsFuture;
+  late Future<List<_IndexedSplitTunnelApp>> _appsFuture;
   late final TextEditingController _searchController;
+  late final FocusNode _searchFocusNode;
 
   @override
   void initState() {
     super.initState();
-    _searchController = TextEditingController()
-      ..addListener(() {
-        if (mounted) {
-          setState(() {});
-        }
-      });
-    _appsFuture = widget.controller.loadSplitTunnelAppCatalog();
+    _searchController = TextEditingController();
+    _searchFocusNode = FocusNode();
+    _appsFuture = _loadIndexedAppCatalog();
+  }
+
+  Future<List<_IndexedSplitTunnelApp>> _loadIndexedAppCatalog({
+    bool refresh = false,
+  }) async {
+    final apps = await widget.controller.loadSplitTunnelAppCatalog(
+      refresh: refresh,
+    );
+    return apps
+        .map(_IndexedSplitTunnelApp.fromApp)
+        .toList(growable: false);
   }
 
   @override
   void dispose() {
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -71,13 +80,10 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
     final selectedAppIds = <String>{for (final app in selectedApps) app.id};
     final splitTunnelEnabled =
         controller.splitTunnelMode != SplitTunnelMode.off;
-    final dialogContentSize = _splitTunnelDialogContentSize(
+    final dialogWidth = _splitTunnelDialogWidth(
       context,
       minWidth: 360,
       maxWidth: 720,
-      minHeight: 420,
-      maxHeight: 580,
-      heightFactor: 0.72,
     );
 
     return AlertDialog(
@@ -93,9 +99,9 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
         ],
       ),
       content: SizedBox(
-        width: dialogContentSize.width,
-        height: dialogContentSize.height,
+        width: dialogWidth,
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             _SplitTunnelModePicker(
@@ -106,10 +112,16 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
             ),
             if (splitTunnelEnabled) ...<Widget>[
               const SizedBox(height: 14),
-              TextField(
-                controller: _searchController,
-                decoration: InputDecoration(
-                  hintText: strings.splitTunnelSearchHint,
+              ListenableBuilder(
+                listenable: _searchFocusNode,
+                builder: (context, _) => TextField(
+                  controller: _searchController,
+                  focusNode: _searchFocusNode,
+                  decoration: InputDecoration(
+                    hintText: _searchFocusNode.hasFocus
+                        ? null
+                        : strings.splitTunnelSearchHint,
+                  ),
                 ),
               ),
               const SizedBox(height: 14),
@@ -120,63 +132,79 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
                 ),
               ),
               const SizedBox(height: 8),
-              Expanded(
-                child: FutureBuilder<List<SplitTunnelApp>>(
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 320),
+                child: FutureBuilder<List<_IndexedSplitTunnelApp>>(
                   future: _appsFuture,
                   builder: (context, snapshot) {
-                    final apps = _filterApps(
-                      _mergeApps(
-                        snapshot.data ?? const <SplitTunnelApp>[],
-                        selectedApps,
-                        selectedAppIds,
-                      ),
+                    final merged = _mergeIndexedApps(
+                      snapshot.data ?? const <_IndexedSplitTunnelApp>[],
+                      selectedApps,
+                      selectedAppIds,
                     );
+                    final isWaiting =
+                        snapshot.connectionState == ConnectionState.waiting;
 
-                    if (snapshot.connectionState == ConnectionState.waiting &&
-                        apps.isEmpty) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
+                    return ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _searchController,
+                      builder: (context, value, _) {
+                        final apps = _filterIndexedApps(merged, value.text);
 
-                    if (apps.isEmpty) {
-                      return _SplitTunnelEmptyState(
-                        message: strings.splitTunnelNoAppsFound,
-                      );
-                    }
+                        if (isWaiting && apps.isEmpty) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 24),
+                            child: Center(child: CircularProgressIndicator()),
+                          );
+                        }
 
-                    return ListView.separated(
-                      itemCount: apps.length,
-                      separatorBuilder: (context, index) =>
-                          const SizedBox(height: 2),
-                      itemBuilder: (context, index) {
-                        final app = apps[index];
-                        final selected = selectedAppIds.contains(app.id);
-                        final enabled =
-                            controller.canChangeSplitTunnel &&
-                            controller.splitTunnelMode != SplitTunnelMode.off;
-                        return CheckboxListTile(
-                          value: selected,
-                          enabled: enabled,
-                          dense: true,
-                          visualDensity: VisualDensity.compact,
-                          onChanged: enabled
-                              ? (_) {
-                                  setState(() {
-                                    controller.toggleSplitTunnelApp(app);
-                                  });
-                                }
-                              : null,
-                          title: Text(
-                            app.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontSize: 15.5,
+                        if (apps.isEmpty) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 24),
+                            child: _SplitTunnelEmptyState(
+                              message: strings.splitTunnelNoAppsFound,
                             ),
-                          ),
-                          controlAffinity: ListTileControlAffinity.leading,
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                          ),
+                          );
+                        }
+
+                        return ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: apps.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 2),
+                          itemBuilder: (context, index) {
+                            final app = apps[index].app;
+                            final selected = selectedAppIds.contains(app.id);
+                            final enabled =
+                                controller.canChangeSplitTunnel &&
+                                controller.splitTunnelMode !=
+                                    SplitTunnelMode.off;
+                            return CheckboxListTile(
+                              value: selected,
+                              enabled: enabled,
+                              dense: true,
+                              visualDensity: VisualDensity.compact,
+                              onChanged: enabled
+                                  ? (_) {
+                                      setState(() {
+                                        controller.toggleSplitTunnelApp(app);
+                                      });
+                                    }
+                                  : null,
+                              title: Text(
+                                app.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  fontSize: 15.5,
+                                ),
+                              ),
+                              controlAffinity:
+                                  ListTileControlAffinity.leading,
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                              ),
+                            );
+                          },
                         );
                       },
                     );
@@ -187,12 +215,6 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
           ],
         ),
       ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text(MaterialLocalizations.of(context).closeButtonLabel),
-        ),
-      ],
     );
   }
 
@@ -212,59 +234,83 @@ class _SplitTunnelDialogState extends State<_SplitTunnelDialog> {
 
   void _reloadApps() {
     setState(() {
-      _appsFuture = widget.controller.loadSplitTunnelAppCatalog(refresh: true);
+      _appsFuture = _loadIndexedAppCatalog(refresh: true);
     });
   }
 
-  List<SplitTunnelApp> _mergeApps(
-    List<SplitTunnelApp> catalogApps,
+  List<_IndexedSplitTunnelApp> _mergeIndexedApps(
+    List<_IndexedSplitTunnelApp> catalogApps,
     List<SplitTunnelApp> selectedApps,
     Set<String> selectedAppIds,
   ) {
-    final appsById = <String, SplitTunnelApp>{
-      for (final app in selectedApps) app.id: app,
+    final appsById = <String, _IndexedSplitTunnelApp>{
+      for (final app in selectedApps)
+        app.id: _IndexedSplitTunnelApp.fromApp(app),
     };
-    for (final app in catalogApps) {
-      appsById[app.id] = app;
+    for (final indexed in catalogApps) {
+      appsById[indexed.app.id] = indexed;
     }
     final apps = appsById.values.toList(growable: false);
     apps.sort(
-      (left, right) => _compareSplitTunnelApps(left, right, selectedAppIds),
+      (left, right) => _compareIndexedApps(left, right, selectedAppIds),
     );
     return apps;
   }
 
-  int _compareSplitTunnelApps(
-    SplitTunnelApp left,
-    SplitTunnelApp right,
+  int _compareIndexedApps(
+    _IndexedSplitTunnelApp left,
+    _IndexedSplitTunnelApp right,
     Set<String> selectedAppIds,
   ) {
-    final leftSelected = selectedAppIds.contains(left.id);
-    final rightSelected = selectedAppIds.contains(right.id);
+    final leftSelected = selectedAppIds.contains(left.app.id);
+    final rightSelected = selectedAppIds.contains(right.app.id);
     if (leftSelected != rightSelected) {
       return leftSelected ? -1 : 1;
     }
 
-    final byName = left.name.toLowerCase().compareTo(right.name.toLowerCase());
+    final byName = left.nameLower.compareTo(right.nameLower);
     if (byName != 0) {
       return byName;
     }
-    return left.path.toLowerCase().compareTo(right.path.toLowerCase());
+    return left.pathLower.compareTo(right.pathLower);
   }
 
-  List<SplitTunnelApp> _filterApps(List<SplitTunnelApp> apps) {
-    final query = _searchController.text.trim().toLowerCase();
+  List<_IndexedSplitTunnelApp> _filterIndexedApps(
+    List<_IndexedSplitTunnelApp> apps,
+    String rawQuery,
+  ) {
+    final query = rawQuery.trim().toLowerCase();
     if (query.isEmpty) {
       return apps;
     }
     return apps
         .where(
-          (app) =>
-              app.name.toLowerCase().contains(query) ||
-              app.path.toLowerCase().contains(query),
+          (indexed) =>
+              indexed.nameLower.contains(query) ||
+              indexed.pathLower.contains(query),
         )
         .toList(growable: false);
   }
+}
+
+class _IndexedSplitTunnelApp {
+  const _IndexedSplitTunnelApp({
+    required this.app,
+    required this.nameLower,
+    required this.pathLower,
+  });
+
+  factory _IndexedSplitTunnelApp.fromApp(SplitTunnelApp app) {
+    return _IndexedSplitTunnelApp(
+      app: app,
+      nameLower: app.name.toLowerCase(),
+      pathLower: app.path.toLowerCase(),
+    );
+  }
+
+  final SplitTunnelApp app;
+  final String nameLower;
+  final String pathLower;
 }
 
 class DomainSplitTunnelSettingsTile extends StatelessWidget {
@@ -313,21 +359,19 @@ class _DomainSplitTunnelDialog extends StatefulWidget {
 
 class _DomainSplitTunnelDialogState extends State<_DomainSplitTunnelDialog> {
   late final TextEditingController _domainController;
+  late final FocusNode _domainFocusNode;
 
   @override
   void initState() {
     super.initState();
-    _domainController = TextEditingController()
-      ..addListener(() {
-        if (mounted) {
-          setState(() {});
-        }
-      });
+    _domainController = TextEditingController();
+    _domainFocusNode = FocusNode();
   }
 
   @override
   void dispose() {
     _domainController.dispose();
+    _domainFocusNode.dispose();
     super.dispose();
   }
 
@@ -338,26 +382,21 @@ class _DomainSplitTunnelDialogState extends State<_DomainSplitTunnelDialog> {
     final domains = controller.domainSplitTunnelDomains;
     final domainSplitTunnelEnabled =
         controller.domainSplitTunnelMode != SplitTunnelMode.off;
-    final dialogContentSize = _splitTunnelDialogContentSize(
+    final dialogWidth = _splitTunnelDialogWidth(
       context,
       minWidth: 360,
       maxWidth: 640,
-      minHeight: 360,
-      maxHeight: 520,
-      heightFactor: 0.62,
     );
     final canEditDomains =
         controller.canChangeSplitTunnel &&
         controller.domainSplitTunnelMode != SplitTunnelMode.off;
-    final canAddDomain =
-        canEditDomains && _domainController.text.trim().isNotEmpty;
 
     return AlertDialog(
       title: Text(strings.domainSplitTunnelLabel),
       content: SizedBox(
-        width: dialogContentSize.width,
-        height: dialogContentSize.height,
+        width: dialogWidth,
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             _SplitTunnelModePicker(
@@ -371,20 +410,34 @@ class _DomainSplitTunnelDialogState extends State<_DomainSplitTunnelDialog> {
               Row(
                 children: <Widget>[
                   Expanded(
-                    child: TextField(
-                      controller: _domainController,
-                      enabled: canEditDomains,
-                      decoration: InputDecoration(
-                        hintText: strings.domainSplitTunnelInputHint,
+                    child: ListenableBuilder(
+                      listenable: _domainFocusNode,
+                      builder: (context, _) => TextField(
+                        controller: _domainController,
+                        focusNode: _domainFocusNode,
+                        enabled: canEditDomains,
+                        decoration: InputDecoration(
+                          hintText: _domainFocusNode.hasFocus
+                              ? null
+                              : strings.domainSplitTunnelInputHint,
+                        ),
+                        onSubmitted:
+                            canEditDomains ? (_) => _addDomain() : null,
                       ),
-                      onSubmitted: canEditDomains ? (_) => _addDomain() : null,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  IconButton.filledTonal(
-                    tooltip: strings.domainSplitTunnelAddTooltip,
-                    onPressed: canAddDomain ? _addDomain : null,
-                    icon: const Icon(Icons.add_rounded),
+                  ValueListenableBuilder<TextEditingValue>(
+                    valueListenable: _domainController,
+                    builder: (context, value, _) {
+                      final canAddDomain =
+                          canEditDomains && value.text.trim().isNotEmpty;
+                      return IconButton.filledTonal(
+                        tooltip: strings.domainSplitTunnelAddTooltip,
+                        onPressed: canAddDomain ? _addDomain : null,
+                        icon: const Icon(Icons.add_rounded),
+                      );
+                    },
                   ),
                 ],
               ),
@@ -396,59 +449,58 @@ class _DomainSplitTunnelDialogState extends State<_DomainSplitTunnelDialog> {
                 ),
               ),
               const SizedBox(height: 8),
-              Expanded(
-                child: domains.isEmpty
-                    ? _SplitTunnelEmptyState(
-                        message: strings.domainSplitTunnelNoDomains,
-                      )
-                    : ListView.separated(
-                        itemCount: domains.length,
-                        separatorBuilder: (context, index) =>
-                            const SizedBox(height: 6),
-                        itemBuilder: (context, index) {
-                          final domain = domains[index];
-                          return ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 4,
-                            ),
-                            leading: const Icon(Icons.language_rounded),
-                            title: Text(
-                              domain.value,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              domain.matchSuffix,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: IconButton(
-                              onPressed: controller.canChangeSplitTunnel
-                                  ? () {
-                                      setState(() {
-                                        controller
-                                            .removeDomainSplitTunnelDomain(
-                                              domain,
-                                            );
-                                      });
-                                    }
-                                  : null,
-                              icon: const Icon(Icons.close_rounded),
-                            ),
-                          );
-                        },
-                      ),
-              ),
+              if (domains.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: _SplitTunnelEmptyState(
+                    message: strings.domainSplitTunnelNoDomains,
+                  ),
+                )
+              else
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 260),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    itemCount: domains.length,
+                    separatorBuilder: (context, index) =>
+                        const SizedBox(height: 6),
+                    itemBuilder: (context, index) {
+                      final domain = domains[index];
+                      return ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                        ),
+                        leading: const Icon(Icons.language_rounded),
+                        title: Text(
+                          domain.value,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          domain.matchSuffix,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: IconButton(
+                          onPressed: controller.canChangeSplitTunnel
+                              ? () {
+                                  setState(() {
+                                    controller.removeDomainSplitTunnelDomain(
+                                      domain,
+                                    );
+                                  });
+                                }
+                              : null,
+                          icon: const Icon(Icons.close_rounded),
+                        ),
+                      );
+                    },
+                  ),
+                ),
             ],
           ],
         ),
       ),
-      actions: <Widget>[
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text(MaterialLocalizations.of(context).closeButtonLabel),
-        ),
-      ],
     );
   }
 

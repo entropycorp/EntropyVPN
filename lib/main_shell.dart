@@ -112,9 +112,6 @@ class _VpnHomePageState extends State<VpnHomePage> {
       });
       return;
     }
-    if (mounted) {
-      setState(() {});
-    }
   }
 
   void _scheduleUpdateNotificationIfNeeded() {
@@ -208,20 +205,26 @@ class _VpnHomePageState extends State<VpnHomePage> {
                     ? 20.0
                     : 16.0;
                 if (constraints.maxWidth < mobileShellBreakpoint) {
-                  return _MobileShell(
-                    selected: _section,
-                    controller: controller,
-                    strings: strings,
-                    onChanged: _setSection,
-                    textController: _textController,
+                  return ListenableBuilder(
+                    listenable: controller,
+                    builder: (context, _) => _MobileShell(
+                      selected: _section,
+                      controller: controller,
+                      strings: strings,
+                      onChanged: _setSection,
+                      textController: _textController,
+                    ),
                   );
                 }
 
-                final sectionContent = _SectionContentSwitcher(
-                  section: _section,
-                  controller: controller,
-                  strings: strings,
-                  textController: _textController,
+                final sectionContent = ListenableBuilder(
+                  listenable: controller,
+                  builder: (context, _) => _SectionContentSwitcher(
+                    section: _section,
+                    controller: controller,
+                    strings: strings,
+                    textController: _textController,
+                  ),
                 );
 
                 return Padding(

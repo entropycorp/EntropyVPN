@@ -89,31 +89,27 @@ class _SettingsSubPageHeader extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
 
-    return Material(
-      color: scheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(18),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-        child: Row(
-          children: <Widget>[
-            IconButton(
-              tooltip: MaterialLocalizations.of(context).backButtonTooltip,
-              onPressed: onBack,
-              icon: const Icon(Icons.arrow_back_rounded),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+      child: Row(
+        children: <Widget>[
+          IconButton(
+            tooltip: MaterialLocalizations.of(context).backButtonTooltip,
+            onPressed: onBack,
+            icon: const Icon(Icons.arrow_back_rounded),
+          ),
+          const SizedBox(width: 4),
+          Icon(icon, color: scheme.primary),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall,
             ),
-            const SizedBox(width: 4),
-            Icon(icon, color: scheme.primary),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(
-                title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.titleSmall,
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -155,20 +151,14 @@ class _SettingsCheckboxTile extends StatelessWidget {
   }
 }
 
-Size _splitTunnelDialogContentSize(
+double _splitTunnelDialogWidth(
   BuildContext context, {
   required double minWidth,
   required double maxWidth,
-  required double minHeight,
-  required double maxHeight,
   double widthFactor = 0.82,
-  required double heightFactor,
 }) {
   final dialogSize = MediaQuery.sizeOf(context);
-  return Size(
-    (dialogSize.width * widthFactor).clamp(minWidth, maxWidth).toDouble(),
-    (dialogSize.height * heightFactor).clamp(minHeight, maxHeight).toDouble(),
-  );
+  return (dialogSize.width * widthFactor).clamp(minWidth, maxWidth).toDouble();
 }
 
 double _settingsDialogWidth(BuildContext context) {

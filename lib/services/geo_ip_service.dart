@@ -5,6 +5,8 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
+final RegExp _kCountryCodePattern = RegExp(r'^[A-Z]{2}$');
+
 class GeoIpInfo {
   const GeoIpInfo({
     required this.countryCode,
@@ -540,7 +542,7 @@ String? flagEmojiFromCountryCode(String? countryCode) {
 
 String? _normalizeCountryCode(String? countryCode) {
   final code = countryCode?.trim().toUpperCase();
-  if (code == null || !RegExp(r'^[A-Z]{2}$').hasMatch(code)) {
+  if (code == null || !_kCountryCodePattern.hasMatch(code)) {
     return null;
   }
   return code;

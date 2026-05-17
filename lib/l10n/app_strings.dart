@@ -59,12 +59,11 @@ class AppStrings {
       _ru ? 'Поиск приложения' : 'Search applications';
   String get splitTunnelRefreshTooltip =>
       _ru ? 'Обновить список приложений' : 'Refresh application list';
-  String get splitTunnelOffModeLabel =>
-      _ru ? 'Без сплита' : 'No split tunneling';
+  String get splitTunnelOffModeLabel => _ru ? 'Отключено' : 'Disabled';
   String get splitTunnelWhitelistModeLabel =>
-      _ru ? 'Whitelist туннеля' : 'Tunnel whitelist';
+      _ru ? 'Whitelist режим' : 'Whitelist mode';
   String get splitTunnelBlacklistModeLabel =>
-      _ru ? 'Blacklist туннеля' : 'Tunnel blacklist';
+      _ru ? 'Blacklist режим' : 'Blacklist mode';
   String splitTunnelSelectedCount(int count) =>
       _ru ? 'Выбрано: $count' : 'Selected: $count';
   String get splitTunnelNoAppsFound =>
@@ -89,8 +88,8 @@ class AppStrings {
       : 'Domain split tunneling uses TUN mode.';
   String get killswitchLabel => _ru ? 'Killswitch' : 'Killswitch';
   String get killswitchSubtitle => _ru
-      ? 'Блокирует интернет при внезапном обрыве VPN.'
-      : 'Blocks internet if the VPN drops unexpectedly.';
+      ? 'Блокирует интернет при внезапном обрыве VPN'
+      : 'Blocks internet if the VPN drops unexpectedly';
   String get killswitchEngagedNotification => _ru
       ? 'Killswitch активен — трафик заблокирован'
       : 'Killswitch active — internet blocked';

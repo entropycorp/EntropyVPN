@@ -78,7 +78,7 @@ class ProfileCatalogService {
     }
     final localFile = _resolveLocalConfigFile(rawInput);
     if (localFile != null) {
-      final payload = localFile.readAsStringSync();
+      final payload = await localFile.readAsString();
       final exportedSource = ConfigSourceExport.tryParse(payload);
       if (exportedSource != null) {
         return _catalogFromExportedSource(exportedSource);

@@ -2,6 +2,10 @@ import 'dart:io';
 
 import 'package:path/path.dart' as p;
 
+final RegExp _kLeadingTrailingDotsPattern = RegExp(r'^\.+|\.+$');
+final RegExp _kForbiddenDomainCharsPattern = RegExp(r'[\s/:?#@\[\]]');
+final RegExp _kPortNumberPattern = RegExp(r'^\d+$');
+
 enum SplitTunnelMode { off, whitelist, blacklist }
 
 class SplitTunnelApp {
@@ -271,11 +275,11 @@ _ParsedDomainInput _parseDomainInput(String input) {
     }
   }
 
-  value = value.replaceAll(RegExp(r'^\.+|\.+$'), '');
+  value = value.replaceAll(_kLeadingTrailingDotsPattern, '');
   if (value.isEmpty || value.contains('..')) {
     throw const FormatException('Domain is invalid.');
   }
-  if (RegExp(r'[\s/:?#@\[\]]').hasMatch(value)) {
+  if (_kForbiddenDomainCharsPattern.hasMatch(value)) {
     throw const FormatException('Domain is invalid.');
   }
   if (InternetAddress.tryParse(value) != null) {
@@ -315,7 +319,7 @@ String _stripPort(String value) {
   if (colonCount == 1) {
     final colonIndex = value.lastIndexOf(':');
     final port = value.substring(colonIndex + 1);
-    if (RegExp(r'^\d+$').hasMatch(port)) {
+    if (_kPortNumberPattern.hasMatch(port)) {
       return value.substring(0, colonIndex);
     }
   }

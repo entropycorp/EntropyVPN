@@ -18,6 +18,10 @@ import 'share_link_parser.dart';
 import 'tcp_ping_service.dart';
 import 'windows_app_catalog_service.dart';
 
+final RegExp _kLineSeparatorPattern = RegExp(r'[\r\n]+');
+final RegExp _kDomainSeparatorPattern = RegExp(r'[\s,;]+');
+final RegExp _kSubscriptionIdInvalidCharPattern = RegExp(r'[^A-Za-z0-9._:-]');
+
 enum AddSourceSuccessTarget { add, paste, qr, json }
 
 class VpnController extends ChangeNotifier {
@@ -41,6 +45,7 @@ class VpnController extends ChangeNotifier {
            androidUpdateNotificationService ??
            AndroidUpdateNotificationService() {
     _language = detectAppLanguage(Platform.localeName);
+    _languageNotifier = ValueNotifier<AppLanguage>(_language);
     _runtimeService.onProcessExit = _handleUnexpectedExit;
     _runtimeService.onLogUpdated = _handleRuntimeLogUpdated;
     // Create the Windows TUN adapter at launch so it is already settled by
@@ -76,6 +81,7 @@ class VpnController extends ChangeNotifier {
 
   late final Future<void> _hydration;
   late AppLanguage _language;
+  late final ValueNotifier<AppLanguage> _languageNotifier;
   TrafficMode _trafficMode = Platform.isAndroid
       ? TrafficMode.tun
       : TrafficMode.systemProxy;
@@ -102,6 +108,11 @@ class VpnController extends ChangeNotifier {
   Timer? _autoUpdateTimer;
   Timer? _appUpdateTimer;
   Timer? _recentAddSuccessTimer;
+  Timer? _logsCoalesceTimer;
+  final ValueNotifier<int> _logsRevisionNotifier = ValueNotifier<int>(0);
+  Completer<void>? _pendingConnect;
+  bool _connectCancelled = false;
+  Future<void>? _shutdownForExitFuture;
   StreamSubscription<String>? _incomingLinkSubscription;
   Future<void> _incomingLinkImportQueue = Future<void>.value();
   DateTime? _appUpdateLastCheckedAt;
@@ -114,6 +125,8 @@ class VpnController extends ChangeNotifier {
   bool _killswitchEnabled = false;
 
   AppLanguage get language => _language;
+  ValueListenable<AppLanguage> get languageListenable => _languageNotifier;
+  ValueListenable<int> get logsListenable => _logsRevisionNotifier;
   TrafficMode get trafficMode => _trafficMode;
   TunIpMode get tunIpMode => _tunIpMode;
   DnsSettings get dnsSettings => _dnsSettings.normalized;
@@ -198,6 +211,7 @@ class VpnController extends ChangeNotifier {
       return;
     }
     _language = language;
+    _languageNotifier.value = language;
     _queuePersistState();
     notifyListeners();
   }
@@ -756,6 +770,9 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<String?> probeCoreVersion(CoreFlavor core) =>
+      _runtimeService.probeCoreVersion(core);
+
   Future<void> checkForAppUpdate({bool force = false}) async {
     await _hydration;
 
@@ -885,46 +902,70 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
+    _connectCancelled = false;
     _phase = ConnectionPhase.connecting;
     _activeSourceId = source.id;
     _connectedAt = null;
     _setRuntimeError(null);
     notifyListeners();
 
+    final completer = Completer<void>();
+    _pendingConnect = completer;
     try {
-      await _runtimeService.start(
-        core: _resolveCore(profile),
-        profile: profile,
-        language: _language,
-        trafficMode: _trafficMode,
-        tunIpMode: _tunIpMode,
-        dnsSettings: dnsSettings,
-        splitTunnelSettings: splitTunnelSettings,
-        domainSplitTunnelSettings: domainSplitTunnelSettings,
-      );
-      _activeSourceId = source.id;
-      _connectedAt = DateTime.now();
-      _phase = ConnectionPhase.connected;
-    } on WindowsTunPrivilegeDeniedException {
-      _activeSourceId = null;
-      _connectedAt = null;
-      _phase = ConnectionPhase.disconnected;
-      _setRuntimeError(null);
-    } catch (error) {
-      _activeSourceId = null;
-      _connectedAt = null;
-      _phase = ConnectionPhase.error;
-      _setRuntimeError(_renderError(error));
+      try {
+        await _runtimeService.start(
+          core: _resolveCore(profile),
+          profile: profile,
+          language: _language,
+          trafficMode: _trafficMode,
+          tunIpMode: _tunIpMode,
+          dnsSettings: dnsSettings,
+          splitTunnelSettings: splitTunnelSettings,
+          domainSplitTunnelSettings: domainSplitTunnelSettings,
+        );
+        if (!_connectCancelled) {
+          _activeSourceId = source.id;
+          _connectedAt = DateTime.now();
+          _phase = ConnectionPhase.connected;
+        }
+      } on WindowsTunPrivilegeDeniedException {
+        if (!_connectCancelled) {
+          _activeSourceId = null;
+          _connectedAt = null;
+          _phase = ConnectionPhase.disconnected;
+          _setRuntimeError(null);
+        }
+      } catch (error) {
+        if (!_connectCancelled) {
+          _activeSourceId = null;
+          _connectedAt = null;
+          _phase = ConnectionPhase.error;
+          _setRuntimeError(_renderError(error));
+        }
+      }
+    } finally {
+      if (identical(_pendingConnect, completer)) {
+        _pendingConnect = null;
+      }
+      completer.complete();
     }
 
-    notifyListeners();
+    if (!_connectCancelled) {
+      notifyListeners();
+    }
   }
 
   Future<void> disconnect({bool waitForCleanup = false}) async {
-    if (isBusy || !isConnected && _phase != ConnectionPhase.error) {
-      if (_phase == ConnectionPhase.disconnected) {
-        return;
-      }
+    if (_phase == ConnectionPhase.disconnected ||
+        _phase == ConnectionPhase.disconnecting) {
+      return;
+    }
+
+    final pendingConnect = _pendingConnect;
+    if (pendingConnect != null) {
+      // Tell the in-flight connect() not to write its own terminal state;
+      // disconnect now owns the outcome.
+      _connectCancelled = true;
     }
 
     _phase = ConnectionPhase.disconnecting;
@@ -933,6 +974,14 @@ class VpnController extends ChangeNotifier {
     try {
       await _runtimeService.stop(waitForCleanup: waitForCleanup);
     } finally {
+      if (pendingConnect != null) {
+        try {
+          await pendingConnect.future;
+        } catch (_) {
+          // connect() owns its own error handling; we only wait for its
+          // microtasks to drain before writing the terminal state.
+        }
+      }
       _activeSourceId = null;
       _connectedAt = null;
       _phase = ConnectionPhase.disconnected;
@@ -941,15 +990,20 @@ class VpnController extends ChangeNotifier {
     }
   }
 
-  Future<void> shutdownForExit() async {
+  Future<void> shutdownForExit() {
+    return _shutdownForExitFuture ??= _runShutdownForExit();
+  }
+
+  Future<void> _runShutdownForExit() async {
     _autoUpdateTimer?.cancel();
     _appUpdateTimer?.cancel();
     _recentAddSuccessTimer?.cancel();
     _inputErrorTimer?.cancel();
     _runtimeErrorTimer?.cancel();
+    _logsCoalesceTimer?.cancel();
 
     try {
-      await _runtimeService.stop(waitForCleanup: true);
+      await _runtimeService.shutdown();
     } finally {
       _activeSourceId = null;
       _connectedAt = null;
@@ -965,10 +1019,13 @@ class VpnController extends ChangeNotifier {
     _recentAddSuccessTimer?.cancel();
     _inputErrorTimer?.cancel();
     _runtimeErrorTimer?.cancel();
+    _logsCoalesceTimer?.cancel();
     unawaited(_incomingLinkSubscription?.cancel());
     _runtimeService.onLogUpdated = null;
     _runtimeService.onProcessExit = null;
     _runtimeService.dispose();
+    _languageNotifier.dispose();
+    _logsRevisionNotifier.dispose();
     super.dispose();
   }
 
@@ -1033,7 +1090,7 @@ class VpnController extends ChangeNotifier {
   String _primaryInputLine(String rawInput) {
     return rawInput
         .replaceAll('\uFEFF', '')
-        .split(RegExp(r'[\r\n]+'))
+        .split(_kLineSeparatorPattern)
         .map((line) => line.trim())
         .firstWhere((line) => line.isNotEmpty, orElse: () => '');
   }
@@ -1041,7 +1098,7 @@ class VpnController extends ChangeNotifier {
   List<String> _splitDomainInput(String rawInput) {
     return rawInput
         .replaceAll('\uFEFF', '')
-        .split(RegExp(r'[\s,;]+'))
+        .split(_kDomainSeparatorPattern)
         .map((item) => item.trim())
         .where((item) => item.isNotEmpty)
         .toList(growable: false);
@@ -1293,9 +1350,24 @@ class VpnController extends ChangeNotifier {
 
   void _handleRuntimeLogUpdated() {
     if (Platform.isAndroid) {
+      final previousPhase = _phase;
+      final previousError = _runtimeError;
       _applyAndroidRuntimeSnapshot();
+      if (_phase != previousPhase || _runtimeError != previousError) {
+        notifyListeners();
+      }
     }
-    notifyListeners();
+    _scheduleLogsRevisionTick();
+  }
+
+  void _scheduleLogsRevisionTick() {
+    if (_logsCoalesceTimer?.isActive == true) {
+      return;
+    }
+    _logsCoalesceTimer = Timer(const Duration(milliseconds: 16), () {
+      _logsCoalesceTimer = null;
+      _logsRevisionNotifier.value = _logsRevisionNotifier.value + 1;
+    });
   }
 
   void _applyAndroidRuntimeSnapshot() {
@@ -1341,6 +1413,7 @@ class VpnController extends ChangeNotifier {
       }
 
       _language = state.language;
+      _languageNotifier.value = state.language;
       _trafficMode = Platform.isAndroid ? TrafficMode.tun : state.trafficMode;
       _tunIpMode = state.tunIpMode;
       _dnsSettings = state.dnsSettings.normalized;
@@ -1492,7 +1565,9 @@ class VpnController extends ChangeNotifier {
       return;
     }
 
-    final ready = await _runtimeService.ensureWindowsTunPrivileges();
+    final ready = await _runtimeService.ensureWindowsTunPrivileges(
+      tunIpMode: _tunIpMode,
+    );
     if (ready) {
       return;
     }
@@ -1603,7 +1678,10 @@ String? _normalizeSubscriptionDeviceId(String? value) {
     return null;
   }
 
-  final normalized = trimmed.replaceAll(RegExp(r'[^A-Za-z0-9._:-]'), '');
+  final normalized = trimmed.replaceAll(
+    _kSubscriptionIdInvalidCharPattern,
+    '',
+  );
   return normalized.isEmpty ? null : normalized;
 }
 

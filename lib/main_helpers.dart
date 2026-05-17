@@ -9,6 +9,10 @@ import 'models/config_source.dart';
 import 'models/vpn_profile.dart';
 import 'services/vpn_controller.dart';
 
+final RegExp _kWhitespaceRunPattern = RegExp(r'\s+');
+final RegExp _kDashRunPattern = RegExp('-+');
+final RegExp _kEdgePunctuationPattern = RegExp(r'^[. -]+|[. -]+$');
+
 class ProgrammaticPageSwipePhysics extends ScrollPhysics {
   const ProgrammaticPageSwipePhysics({super.parent});
 
@@ -567,15 +571,15 @@ String sanitizeFileStem(String value) {
 
   final compact = buffer
       .toString()
-      .replaceAll(RegExp(r'\s+'), ' ')
-      .replaceAll(RegExp('-+'), '-')
+      .replaceAll(_kWhitespaceRunPattern, ' ')
+      .replaceAll(_kDashRunPattern, '-')
       .trim()
-      .replaceAll(RegExp(r'^[. -]+|[. -]+$'), '');
+      .replaceAll(_kEdgePunctuationPattern, '');
   if (compact.isEmpty) {
     return 'entropyvpn-config';
   }
   final clipped = compact.length <= 72 ? compact : compact.substring(0, 72);
-  final cleaned = clipped.trim().replaceAll(RegExp(r'^[. -]+|[. -]+$'), '');
+  final cleaned = clipped.trim().replaceAll(_kEdgePunctuationPattern, '');
   return cleaned.isEmpty ? 'entropyvpn-config' : cleaned;
 }
 

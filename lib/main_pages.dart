@@ -260,7 +260,7 @@ class _SettingsRootPage extends StatelessWidget {
             horizontal: horizontalPadding,
             vertical: verticalPadding,
           ),
-          child: AboutSettingsTile(strings: strings),
+          child: AboutSettingsTile(controller: controller, strings: strings),
         ),
         SizedBox(height: gap),
       ],
@@ -445,8 +445,6 @@ class _RuntimeLogsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
-    final logs = controller.runtimeLogs;
-    final canCopyLogs = logs.isNotEmpty;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
@@ -466,7 +464,12 @@ class _RuntimeLogsPanel extends StatelessWidget {
                 color: scheme.outlineVariant.withValues(alpha: 0.24),
               ),
             ),
-            child: Stack(
+            child: ListenableBuilder(
+              listenable: controller.logsListenable,
+              builder: (context, _) {
+                final logs = controller.runtimeLogs;
+                final canCopyLogs = logs.isNotEmpty;
+                return Stack(
               children: <Widget>[
                 Positioned.fill(
                   child: Padding(
@@ -542,6 +545,8 @@ class _RuntimeLogsPanel extends StatelessWidget {
                   ),
                 ),
               ],
+                );
+              },
             ),
           ),
         ],

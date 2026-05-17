@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -40,12 +41,18 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
   );
 
   late final VpnController _controller;
+  late final ThemeData _theme;
+  late final AppLifecycleListener _lifecycleListener;
   WindowsTrayMenuService? _windowsTrayMenuService;
 
   @override
   void initState() {
     super.initState();
     _controller = VpnController();
+    _theme = _buildTheme();
+    _lifecycleListener = AppLifecycleListener(
+      onExitRequested: _handleExitRequested,
+    );
     if (Platform.isWindows) {
       _windowsLifecycleChannel.setMethodCallHandler(_handleWindowsLifecycle);
       _windowsTrayMenuService = WindowsTrayMenuService(_controller)..start();
@@ -54,12 +61,18 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
 
   @override
   void dispose() {
+    _lifecycleListener.dispose();
     if (Platform.isWindows) {
       _windowsTrayMenuService?.dispose();
       _windowsLifecycleChannel.setMethodCallHandler(null);
     }
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<AppExitResponse> _handleExitRequested() async {
+    await _controller.shutdownForExit();
+    return AppExitResponse.exit;
   }
 
   Future<Object?> _handleWindowsLifecycle(MethodCall call) async {
@@ -73,13 +86,14 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: _controller,
-      builder: (context, _) {
+    final home = VpnHomePage(controller: _controller);
+    return ValueListenableBuilder<AppLanguage>(
+      valueListenable: _controller.languageListenable,
+      builder: (context, language, child) {
         return MaterialApp(
           debugShowCheckedModeBanner: false,
           title: 'EntropyVPN',
-          locale: _controller.language.locale,
+          locale: language.locale,
           supportedLocales: AppStrings.supportedLocales,
           localizationsDelegates: const <LocalizationsDelegate<dynamic>>[
             AppStrings.delegate,
@@ -87,10 +101,11 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
             GlobalWidgetsLocalizations.delegate,
             GlobalCupertinoLocalizations.delegate,
           ],
-          theme: _buildTheme(),
-          home: VpnHomePage(controller: _controller),
+          theme: _theme,
+          home: child,
         );
       },
+      child: home,
     );
   }
 

@@ -124,4 +124,28 @@ extension CoreRuntimeServiceProcess on CoreRuntimeService {
     }
   }
 
+  Future<String?> probeCoreVersion(CoreFlavor core) async {
+    if (Platform.isAndroid) {
+      return null;
+    }
+    try {
+      final binary = await _resolveBinary(core);
+      final result = await _runTimedProcess(
+        'probeVersion:${core.name}',
+        binary,
+        const <String>['version'],
+        timeout: const Duration(seconds: 5),
+      );
+      if (result.exitCode != 0) {
+        return null;
+      }
+      final output = '${result.stdout}\n${result.stderr}';
+      final match = RegExp(
+        r'\b(\d+\.\d+\.\d+(?:[-+][\w.]+)?)',
+      ).firstMatch(output);
+      return match?.group(1);
+    } catch (_) {
+      return null;
+    }
+  }
 }
