@@ -153,6 +153,7 @@ class _EntropyVpnAppState extends State<EntropyVpnApp> {
       colorScheme: scheme,
       scaffoldBackgroundColor: appBackgroundColor,
       fontFamily: 'GolosText',
+      fontFamilyFallback: const <String>['TwemojiMozilla'],
     );
 
     final textTheme = base.textTheme

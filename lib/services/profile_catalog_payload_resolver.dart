@@ -153,10 +153,36 @@ String? _decodeHeaderLabel(String? value) {
     return null;
   }
 
+  final base64Decoded = _tryDecodeBase64PrefixedLabel(trimmed);
+  if (base64Decoded != null) {
+    return base64Decoded;
+  }
+
   try {
     return _nonEmpty(Uri.decodeFull(trimmed)) ?? trimmed;
   } on FormatException {
     return trimmed;
+  }
+}
+
+String? _tryDecodeBase64PrefixedLabel(String value) {
+  const prefix = 'base64:';
+  if (value.length <= prefix.length ||
+      value.substring(0, prefix.length).toLowerCase() != prefix) {
+    return null;
+  }
+  final payload = value.substring(prefix.length).trim();
+  if (payload.isEmpty) {
+    return null;
+  }
+  try {
+    final normalized = base64.normalize(
+      payload.replaceAll('-', '+').replaceAll('_', '/'),
+    );
+    final bytes = base64.decode(normalized);
+    return _nonEmpty(utf8.decode(bytes));
+  } catch (_) {
+    return null;
   }
 }
 

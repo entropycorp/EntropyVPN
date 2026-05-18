@@ -87,7 +87,6 @@ class _AboutAppDialogState extends State<_AboutAppDialog> {
     final scheme = theme.colorScheme;
 
     return AlertDialog(
-      title: Text(widget.strings.aboutAppLabel),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,

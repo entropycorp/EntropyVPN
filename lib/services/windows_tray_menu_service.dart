@@ -3,9 +3,7 @@ import 'dart:convert';
 import 'dart:io' show Directory, File, Platform;
 import 'dart:ui' as ui;
 
-import 'package:flutter/painting.dart';
 import 'package:flutter/services.dart';
-import 'package:jovial_svg/jovial_svg.dart';
 
 import '../main_helpers.dart';
 import '../models/config_source.dart';
@@ -269,13 +267,16 @@ class WindowsTrayMenuService {
       return output.path;
     }
 
-    final image = await ScalableImageSource.fromSvg(
-      rootBundle,
-      '$_flagAssetDirectory/$lowerCode.svg',
-      warnF: (_) {},
-    ).createSI();
+    final assetData =
+        await rootBundle.load('$_flagAssetDirectory/$lowerCode.png');
+    final assetBytes = assetData.buffer.asUint8List(
+      assetData.offsetInBytes,
+      assetData.lengthInBytes,
+    );
+    final codec = await ui.instantiateImageCodec(assetBytes);
+    final frame = await codec.getNextFrame();
+    final sourceImage = frame.image;
 
-    await image.prepareImages();
     try {
       final recorder = ui.PictureRecorder();
       final canvas = ui.Canvas(recorder);
@@ -287,13 +288,17 @@ class WindowsTrayMenuService {
           const ui.Radius.circular(_flagPngCornerRadius),
         ),
       );
-      ScalingTransform(
-        containerSize: size,
-        siViewport: image.viewport,
-        fit: BoxFit.fill,
-        alignment: Alignment.center,
-      ).applyToCanvas(canvas);
-      image.paint(canvas);
+      canvas.drawImageRect(
+        sourceImage,
+        ui.Rect.fromLTWH(
+          0,
+          0,
+          sourceImage.width.toDouble(),
+          sourceImage.height.toDouble(),
+        ),
+        bounds,
+        ui.Paint()..filterQuality = ui.FilterQuality.medium,
+      );
 
       final picture = recorder.endRecording();
       try {
@@ -314,7 +319,8 @@ class WindowsTrayMenuService {
         picture.dispose();
       }
     } finally {
-      image.unprepareImages();
+      sourceImage.dispose();
+      codec.dispose();
     }
 
     return output.path;

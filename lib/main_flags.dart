@@ -1,8 +1,6 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:jovial_svg/jovial_svg.dart';
 
 import 'l10n/app_strings.dart';
 import 'models/vpn_profile.dart';
@@ -164,8 +162,6 @@ class _CountryFlagAssetImage extends StatelessWidget {
     required this.errorChild,
   });
 
-  static final ScalableImageCache _cache = ScalableImageCache(size: 80);
-
   final String countryCode;
   final double borderRadius;
   final Widget errorChild;
@@ -176,16 +172,11 @@ class _CountryFlagAssetImage extends StatelessWidget {
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(borderRadius),
-      child: ScalableImageWidget.fromSISource(
-        si: ScalableImageSource.fromSvg(
-          rootBundle,
-          '$_flagAssetDirectory/$flagCode.svg',
-          warnF: (_) {},
-        ),
+      child: Image.asset(
+        '$_flagAssetDirectory/$flagCode.png',
         fit: BoxFit.fill,
-        cache: _cache,
-        onLoading: (_) => errorChild,
-        onError: (_) => errorChild,
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (_, _, _) => errorChild,
       ),
     );
   }

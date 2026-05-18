@@ -2,7 +2,6 @@ import 'package:entropy_vpn/utils/flag_aspect_ratio.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter/widgets.dart';
-import 'package:jovial_svg/jovial_svg.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -39,7 +38,7 @@ void main() {
     expect(RegExp(r'9 27-23-17h28l-23 17z').allMatches(svg), hasLength(50));
   });
 
-  testWidgets('renders Lipis 4:3 Kazakhstan SVG without falling back', (
+  testWidgets('renders Lipis 4:3 Kazakhstan PNG without falling back', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
@@ -48,14 +47,10 @@ void main() {
         child: SizedBox(
           width: 56,
           height: 42,
-          child: ScalableImageWidget.fromSISource(
-            si: ScalableImageSource.fromSvg(
-              rootBundle,
-              'assets/flags/kz.svg',
-              warnF: (_) {},
-            ),
+          child: Image.asset(
+            'assets/flags/kz.png',
             fit: BoxFit.fill,
-            onError: (_) => const Text('flag-error'),
+            errorBuilder: (_, _, _) => const Text('flag-error'),
           ),
         ),
       ),
@@ -65,7 +60,7 @@ void main() {
     expect(find.text('flag-error'), findsNothing);
   });
 
-  testWidgets('renders Lipis 4:3 USA SVG without falling back', (
+  testWidgets('renders Lipis 4:3 USA PNG without falling back', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
@@ -74,14 +69,10 @@ void main() {
         child: SizedBox(
           width: 56,
           height: 42,
-          child: ScalableImageWidget.fromSISource(
-            si: ScalableImageSource.fromSvg(
-              rootBundle,
-              'assets/flags/us.svg',
-              warnF: (_) {},
-            ),
+          child: Image.asset(
+            'assets/flags/us.png',
             fit: BoxFit.fill,
-            onError: (_) => const Text('flag-error'),
+            errorBuilder: (_, _, _) => const Text('flag-error'),
           ),
         ),
       ),
