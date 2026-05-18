@@ -37,6 +37,7 @@ flutter:
     - pubspec.yaml
     - entropylogo.png
     - assets/flags/
+    - assets/fonts/GolosText-Regular.ttf
 
   fonts:
     - family: GolosText

@@ -74,6 +74,9 @@ class _SourcePagerSelection {
     final selectedId = controller.selectedSource?.id;
     if (selectedId != _lastSelectedSourceId) {
       _lastSelectedSourceId = selectedId;
+      if (!controller.selectionShouldMoveVisiblePage) {
+        return null;
+      }
       return selectedSourceIndex(controller);
     }
 

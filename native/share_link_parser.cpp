@@ -940,9 +940,27 @@ Profile parse_profile(const char* raw_input) {
 
 std::string to_json(const Profile& profile);
 
-bool is_share_link_scheme(const std::string& scheme) {
-  return scheme == "hysteria2" || scheme == "hysteria" || scheme == "vless" ||
-      scheme == "vmess" || scheme == "trojan" || scheme == "hy2" || scheme == "ss";
+bool is_share_link_scheme(std::string_view scheme) {
+  static constexpr std::string_view kSchemes[] = {
+      "hysteria2", "hysteria", "vless", "vmess", "trojan", "hy2", "ss"};
+  for (const auto candidate : kSchemes) {
+    if (scheme.size() != candidate.size()) {
+      continue;
+    }
+    bool match = true;
+    for (size_t i = 0; i < scheme.size(); ++i) {
+      const auto ch =
+          static_cast<char>(std::tolower(static_cast<unsigned char>(scheme[i])));
+      if (ch != candidate[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool is_likely_share_link_boundary(const std::string& text, size_t start) {
@@ -988,20 +1006,20 @@ std::vector<std::string> extract_share_links(const char* raw_input) {
     return {};
   }
   const auto normalized = without_utf8_bom_markers(std::string(raw_input));
-  const auto lowered = lower(normalized);
   std::vector<size_t> starts;
   size_t search = 0;
   while (true) {
-    const size_t separator = lowered.find("://", search);
+    const size_t separator = normalized.find("://", search);
     if (separator == std::string::npos) {
       break;
     }
     size_t scheme_start = separator;
     while (scheme_start > 0 &&
-           is_scheme_char(static_cast<unsigned char>(lowered[scheme_start - 1]))) {
+           is_scheme_char(static_cast<unsigned char>(normalized[scheme_start - 1]))) {
       --scheme_start;
     }
-    const auto scheme = lowered.substr(scheme_start, separator - scheme_start);
+    const std::string_view scheme(normalized.data() + scheme_start,
+                                  separator - scheme_start);
     if (is_share_link_scheme(scheme) &&
         is_likely_share_link_boundary(normalized, scheme_start)) {
       starts.push_back(scheme_start);
@@ -1009,6 +1027,7 @@ std::vector<std::string> extract_share_links(const char* raw_input) {
     search = separator + 3;
   }
   std::vector<std::string> links;
+  links.reserve(starts.size());
   for (size_t i = 0; i < starts.size(); ++i) {
     const size_t start = starts[i];
     const size_t end = i + 1 < starts.size() ? starts[i + 1] : normalized.size();
@@ -1044,38 +1063,37 @@ std::string parse_share_links_json(const char* raw_input) {
   return json.str();
 }
 
-std::string json_escape(const std::string& value) {
-  std::string out;
-  out.reserve(value.size() + 2);
+void json_escape_to(std::ostream& out, std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
   for (const char ch : value) {
     switch (ch) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\b': out += "\\b"; break;
-      case '\f': out += "\\f"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
+      case '"': out << "\\\""; break;
+      case '\\': out << "\\\\"; break;
+      case '\b': out << "\\b"; break;
+      case '\f': out << "\\f"; break;
+      case '\n': out << "\\n"; break;
+      case '\r': out << "\\r"; break;
+      case '\t': out << "\\t"; break;
       default:
         if (static_cast<unsigned char>(ch) < 0x20) {
-          out += "\\u00";
-          const char* hex = "0123456789abcdef";
-          out.push_back(hex[(ch >> 4) & 0xF]);
-          out.push_back(hex[ch & 0xF]);
+          out << "\\u00";
+          out.put(kHex[(ch >> 4) & 0xF]);
+          out.put(kHex[ch & 0xF]);
         } else {
-          out.push_back(ch);
+          out.put(ch);
         }
         break;
     }
   }
-  return out;
 }
 
 void add_string(std::ostringstream& json, bool& first, const char* key, const std::string& value) {
   if (value.empty()) return;
   if (!first) json << ',';
   first = false;
-  json << '"' << key << "\":\"" << json_escape(value) << '"';
+  json << '"' << key << "\":\"";
+  json_escape_to(json, value);
+  json << '"';
 }
 
 void add_int(std::ostringstream& json, bool& first, const char* key, int value, bool omit_zero = true) {
@@ -1099,7 +1117,9 @@ void add_string_array(std::ostringstream& json, bool& first, const char* key, co
   json << '"' << key << "\":[";
   for (size_t i = 0; i < values.size(); ++i) {
     if (i > 0) json << ',';
-    json << '"' << json_escape(values[i]) << '"';
+    json << '"';
+    json_escape_to(json, values[i]);
+    json << '"';
   }
   json << ']';
 }
@@ -1567,7 +1587,9 @@ ConfigOptions options_from_json(const std::string& json) {
 }
 
 void write_string(std::ostringstream& json, const std::string& value) {
-  json << '"' << json_escape(value) << '"';
+  json << '"';
+  json_escape_to(json, value);
+  json << '"';
 }
 
 void write_string_array(std::ostringstream& json, const std::vector<std::string>& values) {
@@ -2116,7 +2138,9 @@ void serialize_json(std::ostringstream& out, const Json& json) {
     for (const auto& entry : json.object()) {
       if (!first) out << ',';
       first = false;
-      out << '"' << json_escape(entry.first) << "\":";
+      out << '"';
+      json_escape_to(out, entry.first);
+      out << "\":";
       serialize_json(out, entry.second);
     }
     out << '}';
@@ -2129,7 +2153,9 @@ void serialize_json(std::ostringstream& out, const Json& json) {
     }
     out << ']';
   } else if (json.is_string()) {
-    out << '"' << json_escape(json.string_value()) << '"';
+    out << '"';
+    json_escape_to(out, json.string_value());
+    out << '"';
   } else if (json.is_bool()) {
     out << (json.bool_value() ? "true" : "false");
   } else if (json.is_number()) {

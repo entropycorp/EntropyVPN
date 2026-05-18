@@ -6,7 +6,12 @@
 #include <flutter/standard_method_codec.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cwchar>
+#include <d2d1.h>
+#include <dwmapi.h>
+#include <dwrite.h>
+#include <dwrite_3.h>
 #include <optional>
 #include <shellapi.h>
 #include <string>
@@ -49,9 +54,11 @@ constexpr int kTrayMenuFontPointSize = 9;
 constexpr int kTrayMenuScrollMargin = 12;
 constexpr int kTrayMenuMinVisibleHeight = 96;
 constexpr wchar_t kTrayMenuFontFamily[] = L"Golos Text";
-constexpr wchar_t kTrayMenuFallbackFontFamily[] = L"Segoe UI";
 constexpr wchar_t kTrayMenuFontAssetPath[] =
-    L"data\\flutter_assets\\assets\\fonts\\GolosText-Variable.ttf";
+    L"data\\flutter_assets\\assets\\fonts\\GolosText-Regular.ttf";
+constexpr wchar_t kTrayMenuEmojiFontFamily[] = L"Twemoji Mozilla";
+constexpr wchar_t kTrayMenuEmojiFontAssetPath[] =
+    L"data\\flutter_assets\\assets\\fonts\\Twemoji.Mozilla.ttf";
 const COLORREF kTrayMenuBackgroundColor = RGB(0, 0, 0);
 const COLORREF kTrayMenuSelectedColor = RGB(32, 32, 32);
 const COLORREF kTrayMenuCheckedColor = RGB(18, 18, 18);
@@ -85,6 +92,14 @@ std::wstring GetTrayMenuFontPath() {
     return L"";
   }
   return directory + L"\\" + kTrayMenuFontAssetPath;
+}
+
+std::wstring GetTrayMenuEmojiFontPath() {
+  std::wstring directory = GetExecutableDirectory();
+  if (directory.empty()) {
+    return L"";
+  }
+  return directory + L"\\" + kTrayMenuEmojiFontAssetPath;
 }
 
 std::wstring WideFromUtf8(const std::string& value) {
@@ -172,6 +187,17 @@ void SetTrayMenuArrowCursor() {
   if (cursor != nullptr) {
     SetCursor(cursor);
   }
+}
+
+bool ApplyTrayMenuDwmRoundedCorners(HWND hwnd) {
+  // DWMWA_WINDOW_CORNER_PREFERENCE (33) + DWMWCP_ROUND (2) — Windows 11+ only.
+  // The DWM compositor rounds the corners with GPU antialiasing, replacing
+  // the aliased region-based clip used on older OS versions.
+  constexpr DWORD kDwmwaWindowCornerPreference = 33;
+  constexpr DWORD kDwmwcpRound = 2;
+  const DWORD preference = kDwmwcpRound;
+  return SUCCEEDED(DwmSetWindowAttribute(
+      hwnd, kDwmwaWindowCornerPreference, &preference, sizeof(preference)));
 }
 
 }  // namespace
@@ -335,44 +361,256 @@ void FlutterWindow::RemoveTrayIcon() {
   tray_icon_added_ = false;
 }
 
-HFONT FlutterWindow::GetTrayMenuFont() {
-  if (!tray_menu_font_resource_initialized_) {
-    tray_menu_font_resource_initialized_ = true;
-    const std::wstring font_path = GetTrayMenuFontPath();
-    if (!font_path.empty() &&
-        GetFileAttributesW(font_path.c_str()) != INVALID_FILE_ATTRIBUTES &&
-        AddFontResourceExW(font_path.c_str(), FR_PRIVATE, nullptr) > 0) {
-      tray_menu_font_resource_path_ = font_path;
+bool FlutterWindow::EnsureTrayDirectWrite() {
+  if (tray_dwrite_init_failed_) {
+    return false;
+  }
+  if (tray_d2d_factory_ != nullptr && tray_dwrite_factory_ != nullptr &&
+      tray_dwrite_collection_ != nullptr) {
+    return true;
+  }
+
+  if (tray_d2d_factory_ == nullptr) {
+    HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                                   __uuidof(ID2D1Factory),
+                                   reinterpret_cast<void**>(&tray_d2d_factory_));
+    if (FAILED(hr)) {
+      tray_dwrite_init_failed_ = true;
+      return false;
     }
   }
 
+  if (tray_dwrite_factory_ == nullptr) {
+    HRESULT hr = DWriteCreateFactory(
+        DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+        reinterpret_cast<IUnknown**>(&tray_dwrite_factory_));
+    if (FAILED(hr)) {
+      tray_dwrite_init_failed_ = true;
+      return false;
+    }
+  }
+
+  if (tray_dwrite_collection_ != nullptr) {
+    return true;
+  }
+
+  IDWriteFactory3* factory3 = nullptr;
+  if (FAILED(tray_dwrite_factory_->QueryInterface(
+          __uuidof(IDWriteFactory3), reinterpret_cast<void**>(&factory3)))) {
+    tray_dwrite_init_failed_ = true;
+    return false;
+  }
+
+  bool succeeded = false;
+  do {
+    IDWriteFontSetBuilder* builder = nullptr;
+    if (FAILED(factory3->CreateFontSetBuilder(&builder))) {
+      break;
+    }
+
+    const std::wstring font_paths[] = {GetTrayMenuFontPath(),
+                                       GetTrayMenuEmojiFontPath()};
+    bool added_any = false;
+    for (const std::wstring& font_path : font_paths) {
+      if (font_path.empty() ||
+          GetFileAttributesW(font_path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        continue;
+      }
+
+      IDWriteFontFile* font_file = nullptr;
+      if (FAILED(factory3->CreateFontFileReference(font_path.c_str(), nullptr,
+                                                    &font_file))) {
+        continue;
+      }
+
+      BOOL is_supported = FALSE;
+      DWRITE_FONT_FILE_TYPE file_type = DWRITE_FONT_FILE_TYPE_UNKNOWN;
+      DWRITE_FONT_FACE_TYPE face_type = DWRITE_FONT_FACE_TYPE_UNKNOWN;
+      UINT32 face_count = 0;
+      if (FAILED(font_file->Analyze(&is_supported, &file_type, &face_type,
+                                     &face_count)) ||
+          !is_supported || face_count == 0) {
+        font_file->Release();
+        continue;
+      }
+
+      for (UINT32 i = 0; i < face_count; ++i) {
+        IDWriteFontFaceReference* face_ref = nullptr;
+        if (SUCCEEDED(factory3->CreateFontFaceReference(
+                font_file, i, DWRITE_FONT_SIMULATIONS_NONE, &face_ref))) {
+          if (SUCCEEDED(builder->AddFontFaceReference(face_ref))) {
+            added_any = true;
+          }
+          face_ref->Release();
+        }
+      }
+      font_file->Release();
+    }
+
+    if (!added_any) {
+      builder->Release();
+      break;
+    }
+
+    IDWriteFontSet* font_set = nullptr;
+    HRESULT hr = builder->CreateFontSet(&font_set);
+    builder->Release();
+    if (FAILED(hr)) {
+      break;
+    }
+
+    IDWriteFontCollection1* collection1 = nullptr;
+    hr = factory3->CreateFontCollectionFromFontSet(font_set, &collection1);
+    font_set->Release();
+    if (FAILED(hr)) {
+      break;
+    }
+
+    tray_dwrite_collection_ = collection1;
+    succeeded = true;
+  } while (false);
+
+  if (succeeded && tray_dwrite_fallback_ == nullptr) {
+    IDWriteFactory2* factory2 = nullptr;
+    if (SUCCEEDED(factory3->QueryInterface(
+            __uuidof(IDWriteFactory2), reinterpret_cast<void**>(&factory2)))) {
+      IDWriteFontFallbackBuilder* fb_builder = nullptr;
+      if (SUCCEEDED(factory2->CreateFontFallbackBuilder(&fb_builder))) {
+        static const DWRITE_UNICODE_RANGE kEmojiRanges[] = {
+            {0x00A9, 0x00A9}, {0x00AE, 0x00AE}, {0x200D, 0x200D},
+            {0x203C, 0x203C}, {0x2049, 0x2049}, {0x20E3, 0x20E3},
+            {0x2122, 0x2122}, {0x2139, 0x2139}, {0x2194, 0x2199},
+            {0x21A9, 0x21AA}, {0x231A, 0x231B}, {0x2328, 0x2328},
+            {0x23CF, 0x23CF}, {0x23E9, 0x23F3}, {0x23F8, 0x23FA},
+            {0x24C2, 0x24C2}, {0x25AA, 0x25AB}, {0x25B6, 0x25B6},
+            {0x25C0, 0x25C0}, {0x25FB, 0x25FE}, {0x2600, 0x27BF},
+            {0x2934, 0x2935}, {0x2B00, 0x2BFF}, {0x3030, 0x3030},
+            {0x303D, 0x303D}, {0x3297, 0x3297}, {0x3299, 0x3299},
+            {0xFE0F, 0xFE0F}, {0x1F000, 0x1F02F}, {0x1F0A0, 0x1F0FF},
+            {0x1F100, 0x1F64F}, {0x1F680, 0x1F6FF}, {0x1F700, 0x1F77F},
+            {0x1F780, 0x1F7FF}, {0x1F800, 0x1F8FF}, {0x1F900, 0x1F9FF},
+            {0x1FA00, 0x1FAFF}, {0x1FB00, 0x1FBFF},
+        };
+        const WCHAR* target_families[] = {kTrayMenuEmojiFontFamily};
+        fb_builder->AddMapping(
+            kEmojiRanges,
+            static_cast<UINT32>(sizeof(kEmojiRanges) / sizeof(kEmojiRanges[0])),
+            target_families, 1, tray_dwrite_collection_, nullptr, nullptr,
+            1.0f);
+
+        IDWriteFontFallback* system_fallback = nullptr;
+        if (SUCCEEDED(factory2->GetSystemFontFallback(&system_fallback)) &&
+            system_fallback != nullptr) {
+          fb_builder->AddMappings(system_fallback);
+          system_fallback->Release();
+        }
+
+        fb_builder->CreateFontFallback(&tray_dwrite_fallback_);
+        fb_builder->Release();
+      }
+      factory2->Release();
+    }
+  }
+
+  factory3->Release();
+  if (!succeeded) {
+    tray_dwrite_init_failed_ = true;
+    return false;
+  }
+  return true;
+}
+
+IDWriteTextFormat* FlutterWindow::GetTrayMenuTextFormat() {
+  if (tray_dwrite_factory_ == nullptr || tray_dwrite_collection_ == nullptr) {
+    return nullptr;
+  }
+
   const UINT dpi = GetTrayMenuDpi();
-  if (tray_menu_font_ != nullptr && tray_menu_font_dpi_ == dpi) {
-    return tray_menu_font_;
+  if (tray_dwrite_text_format_ != nullptr && tray_dwrite_text_format_dpi_ == dpi) {
+    return tray_dwrite_text_format_;
   }
 
-  if (tray_menu_font_ != nullptr) {
-    DeleteObject(tray_menu_font_);
-    tray_menu_font_ = nullptr;
+  if (tray_dwrite_text_format_ != nullptr) {
+    tray_dwrite_text_format_->Release();
+    tray_dwrite_text_format_ = nullptr;
+  }
+  tray_dwrite_text_format_dpi_ = dpi;
+
+  const float font_size =
+      static_cast<float>(MulDiv(kTrayMenuFontPointSize, static_cast<int>(dpi), 72));
+  IDWriteTextFormat* format = nullptr;
+  HRESULT hr = tray_dwrite_factory_->CreateTextFormat(
+      kTrayMenuFontFamily, tray_dwrite_collection_, DWRITE_FONT_WEIGHT_NORMAL,
+      DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, font_size, L"en-us",
+      &format);
+  if (FAILED(hr) || format == nullptr) {
+    return nullptr;
   }
 
-  tray_menu_font_dpi_ = dpi;
-  const int font_height =
-      -MulDiv(kTrayMenuFontPointSize, static_cast<int>(dpi), 72);
-  tray_menu_font_ =
-      CreateFontW(font_height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                  kTrayMenuFontFamily);
-  if (tray_menu_font_ == nullptr) {
-    tray_menu_font_ =
-        CreateFontW(font_height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                    CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
-                    kTrayMenuFallbackFontFamily);
+  format->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+  format->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+  format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
+  IDWriteInlineObject* ellipsis_sign = nullptr;
+  if (SUCCEEDED(tray_dwrite_factory_->CreateEllipsisTrimmingSign(
+          format, &ellipsis_sign)) &&
+      ellipsis_sign != nullptr) {
+    DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+    format->SetTrimming(&trimming, ellipsis_sign);
+    ellipsis_sign->Release();
   }
 
-  return tray_menu_font_;
+  if (tray_dwrite_fallback_ != nullptr) {
+    IDWriteTextFormat1* format1 = nullptr;
+    if (SUCCEEDED(format->QueryInterface(
+            __uuidof(IDWriteTextFormat1),
+            reinterpret_cast<void**>(&format1)))) {
+      format1->SetFontFallback(tray_dwrite_fallback_);
+      format1->Release();
+    }
+  }
+
+  tray_dwrite_text_format_ = format;
+  return format;
+}
+
+bool FlutterWindow::EnsureTrayDCRenderTarget() {
+  if (tray_dc_render_target_ != nullptr) {
+    return true;
+  }
+  if (tray_d2d_factory_ == nullptr) {
+    return false;
+  }
+
+  D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+      D2D1_RENDER_TARGET_TYPE_DEFAULT,
+      D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), 0,
+      0, D2D1_RENDER_TARGET_USAGE_NONE, D2D1_FEATURE_LEVEL_DEFAULT);
+
+  HRESULT hr = tray_d2d_factory_->CreateDCRenderTarget(&props,
+                                                       &tray_dc_render_target_);
+  if (FAILED(hr) || tray_dc_render_target_ == nullptr) {
+    return false;
+  }
+
+  tray_dc_render_target_->SetTextAntialiasMode(
+      D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE);
+  return true;
+}
+
+void FlutterWindow::ReleaseTrayDCRenderTargetResources() {
+  if (tray_text_brush_enabled_ != nullptr) {
+    tray_text_brush_enabled_->Release();
+    tray_text_brush_enabled_ = nullptr;
+  }
+  if (tray_text_brush_disabled_ != nullptr) {
+    tray_text_brush_disabled_->Release();
+    tray_text_brush_disabled_ = nullptr;
+  }
+  if (tray_dc_render_target_ != nullptr) {
+    tray_dc_render_target_->Release();
+    tray_dc_render_target_ = nullptr;
+  }
 }
 
 UINT FlutterWindow::GetTrayMenuDpi() {
@@ -494,8 +732,53 @@ void FlutterWindow::UpdateTraySwitchItems(
   }
 
   tray_switch_items_ = std::move(next_items);
+
+  const auto same_shape = [](const std::vector<TrayMenuItem>& a,
+                             const std::vector<TrayMenuItem>& b) {
+    if (a.size() != b.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (a[i].separator != b[i].separator ||
+          a[i].command_id != b[i].command_id ||
+          a[i].children.empty() != b[i].children.empty()) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  std::vector<TrayMenuItem> previous_menu_items;
+  if (tray_menu_window_ != nullptr) {
+    previous_menu_items = tray_menu_items_;
+  }
+
   RebuildTrayMenuItems();
-  HideTrayMenu();
+
+  if (tray_menu_window_ == nullptr) {
+    return;
+  }
+
+  if (!same_shape(previous_menu_items, tray_menu_items_)) {
+    HideTrayMenu();
+    return;
+  }
+
+  InvalidateRect(tray_menu_window_, nullptr, FALSE);
+
+  if (tray_submenu_window_ != nullptr) {
+    const int parent = tray_submenu_parent_index_;
+    if (parent < 0 ||
+        parent >= static_cast<int>(tray_menu_items_.size()) ||
+        tray_menu_items_[parent].children.empty() ||
+        !same_shape(tray_submenu_items_,
+                    tray_menu_items_[parent].children)) {
+      HideTraySubmenu();
+    } else {
+      tray_submenu_items_ = tray_menu_items_[parent].children;
+      InvalidateRect(tray_submenu_window_, nullptr, FALSE);
+    }
+  }
 }
 
 void FlutterWindow::RebuildTrayMenuItems() {
@@ -593,12 +876,8 @@ SIZE FlutterWindow::GetTrayMenuSize(const std::vector<TrayMenuItem>& items) {
   menu_size.cx = ScaleTrayMenuMetric(kTrayMenuMinWidth);
   menu_size.cy = ScaleTrayMenuMetric(kTrayMenuVerticalPadding * 2);
 
-  HDC hdc = GetDC(GetHandle());
-  HFONT font = GetTrayMenuFont();
-  HGDIOBJ old_font = nullptr;
-  if (hdc != nullptr && font != nullptr) {
-    old_font = SelectObject(hdc, font);
-  }
+  IDWriteTextFormat* format =
+      EnsureTrayDirectWrite() ? GetTrayMenuTextFormat() : nullptr;
 
   for (const TrayMenuItem& item : items) {
     if (item.separator) {
@@ -607,39 +886,43 @@ SIZE FlutterWindow::GetTrayMenuSize(const std::vector<TrayMenuItem>& items) {
     }
 
     menu_size.cy += ScaleTrayMenuMetric(kTrayMenuItemHeight);
-    if (hdc == nullptr || item.label.empty()) {
+    if (format == nullptr || item.label.empty()) {
       continue;
     }
 
-    SIZE text_size{};
-    if (GetTextExtentPoint32W(hdc, item.label.c_str(),
-                              static_cast<int>(item.label.size()),
-                              &text_size)) {
-      const int flag_width = item.flag_path.empty()
-                                 ? 0
-                                 : ScaleTrayMenuMetric(kTrayMenuFlagWidth +
-                                                       kTrayMenuFlagGap);
-      const int submenu_width =
-          item.children.empty()
-              ? 0
-              : ScaleTrayMenuMetric(kTrayMenuSubmenuArrowWidth +
-                                    kTrayMenuSubmenuArrowGap);
-      menu_size.cx =
-          std::max(menu_size.cx,
-                   static_cast<LONG>(
-                       static_cast<int>(text_size.cx) + flag_width +
-                       submenu_width +
-                       ScaleTrayMenuMetric(kTrayMenuHorizontalPadding * 2 +
-                                           item.indent)));
+    IDWriteTextLayout* layout = nullptr;
+    if (FAILED(tray_dwrite_factory_->CreateTextLayout(
+            item.label.c_str(), static_cast<UINT32>(item.label.size()), format,
+            FLT_MAX, FLT_MAX, &layout)) ||
+        layout == nullptr) {
+      continue;
     }
+    DWRITE_TEXT_METRICS metrics{};
+    HRESULT hr = layout->GetMetrics(&metrics);
+    layout->Release();
+    if (FAILED(hr)) {
+      continue;
+    }
+
+    const int text_width = static_cast<int>(
+        std::ceil(metrics.widthIncludingTrailingWhitespace));
+    const int flag_width =
+        item.flag_path.empty()
+            ? 0
+            : ScaleTrayMenuMetric(kTrayMenuFlagWidth + kTrayMenuFlagGap);
+    const int submenu_width =
+        item.children.empty()
+            ? 0
+            : ScaleTrayMenuMetric(kTrayMenuSubmenuArrowWidth +
+                                  kTrayMenuSubmenuArrowGap);
+    menu_size.cx =
+        std::max(menu_size.cx,
+                 static_cast<LONG>(
+                     text_width + flag_width + submenu_width +
+                     ScaleTrayMenuMetric(kTrayMenuHorizontalPadding * 2 +
+                                         item.indent)));
   }
 
-  if (old_font != nullptr) {
-    SelectObject(hdc, old_font);
-  }
-  if (hdc != nullptr) {
-    ReleaseDC(GetHandle(), hdc);
-  }
   return menu_size;
 }
 
@@ -788,13 +1071,15 @@ void FlutterWindow::ShowTraySubmenu(int parent_index) {
   tray_submenu_content_height_ = content_size.cy;
   tray_submenu_window_height_ = window_size.cy;
 
-  const int corner_diameter = ScaleTrayMenuMetric(kTrayMenuCornerRadius * 2);
-  HRGN submenu_region =
-      CreateRoundRectRgn(0, 0, window_size.cx + 1, window_size.cy + 1,
-                         corner_diameter, corner_diameter);
-  if (submenu_region != nullptr &&
-      SetWindowRgn(submenu_window, submenu_region, FALSE) == 0) {
-    DeleteObject(submenu_region);
+  if (!ApplyTrayMenuDwmRoundedCorners(submenu_window)) {
+    const int corner_diameter = ScaleTrayMenuMetric(kTrayMenuCornerRadius * 2);
+    HRGN submenu_region =
+        CreateRoundRectRgn(0, 0, window_size.cx + 1, window_size.cy + 1,
+                           corner_diameter, corner_diameter);
+    if (submenu_region != nullptr &&
+        SetWindowRgn(submenu_window, submenu_region, FALSE) == 0) {
+      DeleteObject(submenu_region);
+    }
   }
 
   ShowWindow(submenu_window, SW_SHOWNOACTIVATE);
@@ -919,18 +1204,60 @@ void FlutterWindow::PaintTrayMenu(HWND menu_window,
     DeleteObject(background_brush);
   }
 
-  HFONT font = GetTrayMenuFont();
-  HGDIOBJ old_font = nullptr;
-  if (font != nullptr) {
-    old_font = SelectObject(hdc, font);
-  }
-  const int old_background_mode = SetBkMode(hdc, TRANSPARENT);
-  const COLORREF old_text_color = GetTextColor(hdc);
   const SIZE content_size{client_rect.right - client_rect.left,
                           content_height > 0
                               ? content_height
                               : client_rect.bottom - client_rect.top};
   std::unique_ptr<Gdiplus::Graphics> graphics;
+
+  struct TrayMenuTextDraw {
+    RECT rect;
+    std::wstring label;
+    bool enabled;
+  };
+  struct TrayMenuArrowDraw {
+    D2D1_POINT_2F top;
+    D2D1_POINT_2F tip;
+    D2D1_POINT_2F bottom;
+  };
+  std::vector<TrayMenuTextDraw> text_commands;
+  std::vector<TrayMenuArrowDraw> arrow_commands;
+  text_commands.reserve(items.size());
+
+  const int separator_half_strip =
+      ScaleTrayMenuMetric(kTrayMenuSeparatorHeight) / 2;
+
+  for (int index = 0; index < static_cast<int>(items.size()); ++index) {
+    const TrayMenuItem& item = items[index];
+    if (item.separator || (!item.selected && index != hover_index)) {
+      continue;
+    }
+    RECT item_rect = GetTrayMenuItemRect(items, index, content_size);
+    OffsetRect(&item_rect, 0, -scroll_offset);
+    if (item_rect.bottom < client_rect.top ||
+        item_rect.top > client_rect.bottom) {
+      continue;
+    }
+
+    const COLORREF row_color = index == hover_index ? kTrayMenuSelectedColor
+                                                    : kTrayMenuCheckedColor;
+    HBRUSH row_brush = CreateSolidBrush(row_color);
+    if (row_brush == nullptr) {
+      continue;
+    }
+    RECT fill_rect = item_rect;
+    if (index > 0 && items[index - 1].separator) {
+      fill_rect.top -= separator_half_strip;
+    }
+    if (index + 1 < static_cast<int>(items.size()) &&
+        items[index + 1].separator) {
+      fill_rect.bottom += separator_half_strip;
+    }
+    fill_rect.right += ScaleTrayMenuMetric(1);
+    fill_rect.bottom += ScaleTrayMenuMetric(1);
+    FillRect(hdc, &fill_rect, row_brush);
+    DeleteObject(row_brush);
+  }
 
   for (int index = 0; index < static_cast<int>(items.size()); ++index) {
     const TrayMenuItem& item = items[index];
@@ -938,20 +1265,6 @@ void FlutterWindow::PaintTrayMenu(HWND menu_window,
     OffsetRect(&item_rect, 0, -scroll_offset);
     if (item_rect.bottom < client_rect.top || item_rect.top > client_rect.bottom) {
       continue;
-    }
-
-    if (!item.separator && (item.selected || index == hover_index)) {
-      const COLORREF row_color =
-          index == hover_index ? kTrayMenuSelectedColor
-                               : kTrayMenuCheckedColor;
-      HBRUSH row_brush = CreateSolidBrush(row_color);
-      if (row_brush != nullptr) {
-        RECT fill_rect = item_rect;
-        fill_rect.right += ScaleTrayMenuMetric(1);
-        fill_rect.bottom += ScaleTrayMenuMetric(1);
-        FillRect(hdc, &fill_rect, row_brush);
-        DeleteObject(row_brush);
-      }
     }
 
     if (item.separator) {
@@ -1002,42 +1315,88 @@ void FlutterWindow::PaintTrayMenu(HWND menu_window,
       text_rect.left += flag_width + flag_gap;
     }
 
-    SetTextColor(hdc, item.enabled ? kTrayMenuTextColor
-                                   : kTrayMenuDisabledTextColor);
-    DrawTextW(hdc, item.label.c_str(), -1, &text_rect,
-              DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOPREFIX |
-                  DT_END_ELLIPSIS);
+    text_commands.push_back({text_rect, item.label, item.enabled});
 
     if (!item.children.empty()) {
       const int arrow_width = ScaleTrayMenuMetric(kTrayMenuSubmenuArrowWidth);
       const int arrow_height = ScaleTrayMenuMetric(kTrayMenuSubmenuArrowWidth);
-      const int arrow_center_x =
-          item_rect.right - horizontal_padding - arrow_width / 2;
-      const int arrow_center_y =
-          item_rect.top + (item_rect.bottom - item_rect.top) / 2;
-      HPEN arrow_pen =
-          CreatePen(PS_SOLID, ScaleTrayMenuMetric(1), kTrayMenuTextColor);
-      if (arrow_pen != nullptr) {
-        HGDIOBJ old_pen = SelectObject(hdc, arrow_pen);
-        MoveToEx(hdc, arrow_center_x - arrow_width / 2,
-                 arrow_center_y - arrow_height / 2, nullptr);
-        LineTo(hdc, arrow_center_x + arrow_width / 2, arrow_center_y);
-        LineTo(hdc, arrow_center_x - arrow_width / 2,
-               arrow_center_y + arrow_height / 2);
-        if (old_pen != nullptr) {
-          SelectObject(hdc, old_pen);
-        }
-        DeleteObject(arrow_pen);
-      }
+      const float half_w = static_cast<float>(arrow_width) / 2.0f;
+      const float half_h = static_cast<float>(arrow_height) / 2.0f;
+      const float arrow_center_x = static_cast<float>(
+          item_rect.right - horizontal_padding) - half_w;
+      const float arrow_center_y = static_cast<float>(
+          item_rect.top + (item_rect.bottom - item_rect.top) / 2);
+      arrow_commands.push_back(TrayMenuArrowDraw{
+          D2D1::Point2F(arrow_center_x - half_w, arrow_center_y - half_h),
+          D2D1::Point2F(arrow_center_x + half_w, arrow_center_y),
+          D2D1::Point2F(arrow_center_x - half_w, arrow_center_y + half_h)});
     }
   }
 
   graphics.reset();
-  SetTextColor(hdc, old_text_color);
-  SetBkMode(hdc, old_background_mode);
-  if (old_font != nullptr) {
-    SelectObject(hdc, old_font);
+
+  if ((!text_commands.empty() || !arrow_commands.empty()) &&
+      EnsureTrayDirectWrite() && EnsureTrayDCRenderTarget()) {
+    IDWriteTextFormat* format = GetTrayMenuTextFormat();
+    if (format != nullptr) {
+      const RECT bind_rect{0, 0, client_width, client_height};
+      if (SUCCEEDED(tray_dc_render_target_->BindDC(hdc, &bind_rect))) {
+        const auto color_to_d2d = [](COLORREF c) {
+          return D2D1::ColorF(
+              static_cast<int>(GetRValue(c)) / 255.0f,
+              static_cast<int>(GetGValue(c)) / 255.0f,
+              static_cast<int>(GetBValue(c)) / 255.0f, 1.0f);
+        };
+        if (tray_text_brush_enabled_ == nullptr) {
+          tray_dc_render_target_->CreateSolidColorBrush(
+              color_to_d2d(kTrayMenuTextColor), &tray_text_brush_enabled_);
+        }
+        if (tray_text_brush_disabled_ == nullptr) {
+          tray_dc_render_target_->CreateSolidColorBrush(
+              color_to_d2d(kTrayMenuDisabledTextColor),
+              &tray_text_brush_disabled_);
+        }
+
+        if (tray_text_brush_enabled_ != nullptr &&
+            tray_text_brush_disabled_ != nullptr) {
+          tray_dc_render_target_->BeginDraw();
+          tray_dc_render_target_->SetTransform(D2D1::Matrix3x2F::Identity());
+
+          for (const TrayMenuTextDraw& cmd : text_commands) {
+            const D2D1_RECT_F layout_rect = D2D1::RectF(
+                static_cast<float>(cmd.rect.left),
+                static_cast<float>(cmd.rect.top),
+                static_cast<float>(cmd.rect.right),
+                static_cast<float>(cmd.rect.bottom));
+            ID2D1SolidColorBrush* brush = cmd.enabled
+                                              ? tray_text_brush_enabled_
+                                              : tray_text_brush_disabled_;
+            tray_dc_render_target_->DrawTextW(
+                cmd.label.c_str(), static_cast<UINT32>(cmd.label.size()),
+                format, layout_rect, brush,
+                D2D1_DRAW_TEXT_OPTIONS_CLIP |
+                    D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+          }
+
+          const float arrow_stroke =
+              static_cast<float>(ScaleTrayMenuMetric(1));
+          for (const TrayMenuArrowDraw& arrow : arrow_commands) {
+            tray_dc_render_target_->DrawLine(arrow.top, arrow.tip,
+                                             tray_text_brush_enabled_,
+                                             arrow_stroke);
+            tray_dc_render_target_->DrawLine(arrow.tip, arrow.bottom,
+                                             tray_text_brush_enabled_,
+                                             arrow_stroke);
+          }
+
+          if (tray_dc_render_target_->EndDraw() == D2DERR_RECREATE_TARGET) {
+            ReleaseTrayDCRenderTargetResources();
+          }
+        }
+      }
+    }
   }
+
   if (buffer_hdc != nullptr && buffer_bitmap != nullptr) {
     BitBlt(window_hdc, 0, 0, client_width, client_height, buffer_hdc, 0, 0,
            SRCCOPY);
@@ -1177,7 +1536,12 @@ LRESULT FlutterWindow::TrayMenuMessageHandler(HWND window, UINT const message,
       SetTrayMenuArrowCursor();
       TrayMenuItem item;
       const bool has_item = GetTrayMenuItemAtCursor(&item);
-      HideTrayMenu();
+      const bool dismiss_menu = !has_item ||
+                                item.command_id == kTrayOpenCommand ||
+                                item.command_id == kTrayQuitCommand;
+      if (dismiss_menu) {
+        HideTrayMenu();
+      }
       if (has_item && (item.command_id != 0 || !item.token.empty())) {
         InvokeTrayMenuItem(item);
       }
@@ -1205,7 +1569,11 @@ LRESULT FlutterWindow::TrayMenuMessageHandler(HWND window, UINT const message,
             tray_submenu_hover_index_ >= 0
                 ? tray_submenu_items_[tray_submenu_hover_index_]
                 : tray_menu_items_[tray_menu_hover_index_];
-        HideTrayMenu();
+        const bool dismiss_menu = item.command_id == kTrayOpenCommand ||
+                                  item.command_id == kTrayQuitCommand;
+        if (dismiss_menu) {
+          HideTrayMenu();
+        }
         if (item.command_id != 0 || !item.token.empty()) {
           InvokeTrayMenuItem(item);
         }
@@ -1269,24 +1637,35 @@ LRESULT CALLBACK FlutterWindow::TrayMenuWindowProc(
 void FlutterWindow::ReleaseTrayMenuResources() {
   HideTrayMenu();
 
+  ReleaseTrayDCRenderTargetResources();
+  if (tray_dwrite_text_format_ != nullptr) {
+    tray_dwrite_text_format_->Release();
+    tray_dwrite_text_format_ = nullptr;
+  }
+  tray_dwrite_text_format_dpi_ = 0;
+  if (tray_dwrite_fallback_ != nullptr) {
+    tray_dwrite_fallback_->Release();
+    tray_dwrite_fallback_ = nullptr;
+  }
+  if (tray_dwrite_collection_ != nullptr) {
+    tray_dwrite_collection_->Release();
+    tray_dwrite_collection_ = nullptr;
+  }
+  if (tray_dwrite_factory_ != nullptr) {
+    tray_dwrite_factory_->Release();
+    tray_dwrite_factory_ = nullptr;
+  }
+  if (tray_d2d_factory_ != nullptr) {
+    tray_d2d_factory_->Release();
+    tray_d2d_factory_ = nullptr;
+  }
+  tray_dwrite_init_failed_ = false;
+
   tray_flag_images_.clear();
   if (tray_gdiplus_token_ != 0) {
     Gdiplus::GdiplusShutdown(tray_gdiplus_token_);
     tray_gdiplus_token_ = 0;
   }
-
-  if (tray_menu_font_ != nullptr) {
-    DeleteObject(tray_menu_font_);
-    tray_menu_font_ = nullptr;
-  }
-  tray_menu_font_dpi_ = 0;
-
-  if (!tray_menu_font_resource_path_.empty()) {
-    RemoveFontResourceExW(tray_menu_font_resource_path_.c_str(), FR_PRIVATE,
-                          nullptr);
-    tray_menu_font_resource_path_.clear();
-  }
-  tray_menu_font_resource_initialized_ = false;
 }
 
 void FlutterWindow::ShowTrayMenu() {
@@ -1352,13 +1731,15 @@ void FlutterWindow::ShowTrayMenu() {
   tray_menu_content_height_ = content_size.cy;
   tray_menu_window_height_ = window_size.cy;
 
-  const int corner_diameter = ScaleTrayMenuMetric(kTrayMenuCornerRadius * 2);
-  HRGN menu_region =
-      CreateRoundRectRgn(0, 0, window_size.cx + 1, window_size.cy + 1,
-                         corner_diameter, corner_diameter);
-  if (menu_region != nullptr &&
-      SetWindowRgn(menu_window, menu_region, FALSE) == 0) {
-    DeleteObject(menu_region);
+  if (!ApplyTrayMenuDwmRoundedCorners(menu_window)) {
+    const int corner_diameter = ScaleTrayMenuMetric(kTrayMenuCornerRadius * 2);
+    HRGN menu_region =
+        CreateRoundRectRgn(0, 0, window_size.cx + 1, window_size.cy + 1,
+                           corner_diameter, corner_diameter);
+    if (menu_region != nullptr &&
+        SetWindowRgn(menu_window, menu_region, FALSE) == 0) {
+      DeleteObject(menu_region);
+    }
   }
 
   ShowWindow(menu_window, SW_SHOWNORMAL);

@@ -9,6 +9,8 @@
 
 #include "win32_window.h"
 
+#include <d2d1.h>
+#include <dwrite_3.h>
 #include <gdiplus.h>
 #include <map>
 #include <memory>
@@ -49,7 +51,6 @@ class FlutterWindow : public Win32Window {
   void HideWindowToTray();
   void QuitFromTray();
   void FinishQuit();
-  HFONT GetTrayMenuFont();
   UINT GetTrayMenuDpi();
   int ScaleTrayMenuMetric(int value);
   void ConfigureTrayChannel();
@@ -70,6 +71,10 @@ class FlutterWindow : public Win32Window {
                                   POINT point, int scroll_offset);
   void PaintTrayMenu(HWND menu_window, const std::vector<TrayMenuItem>& items,
                      int hover_index, int scroll_offset, int content_height);
+  bool EnsureTrayDirectWrite();
+  bool EnsureTrayDCRenderTarget();
+  IDWriteTextFormat* GetTrayMenuTextFormat();
+  void ReleaseTrayDCRenderTargetResources();
   bool EnsureTrayGdiplus();
   Gdiplus::Image* GetTrayFlagImage(const std::wstring& flag_path);
   void InvokeTrayMenuItem(const TrayMenuItem& item);
@@ -99,10 +104,16 @@ class FlutterWindow : public Win32Window {
       tray_channel_;
   std::vector<TrayMenuItem> tray_switch_items_;
   std::vector<TrayMenuItem> tray_menu_items_;
-  HFONT tray_menu_font_ = nullptr;
-  UINT tray_menu_font_dpi_ = 0;
-  bool tray_menu_font_resource_initialized_ = false;
-  std::wstring tray_menu_font_resource_path_;
+  ID2D1Factory* tray_d2d_factory_ = nullptr;
+  IDWriteFactory* tray_dwrite_factory_ = nullptr;
+  IDWriteFontCollection* tray_dwrite_collection_ = nullptr;
+  IDWriteFontFallback* tray_dwrite_fallback_ = nullptr;
+  IDWriteTextFormat* tray_dwrite_text_format_ = nullptr;
+  UINT tray_dwrite_text_format_dpi_ = 0;
+  ID2D1DCRenderTarget* tray_dc_render_target_ = nullptr;
+  ID2D1SolidColorBrush* tray_text_brush_enabled_ = nullptr;
+  ID2D1SolidColorBrush* tray_text_brush_disabled_ = nullptr;
+  bool tray_dwrite_init_failed_ = false;
   ULONG_PTR tray_gdiplus_token_ = 0;
   std::map<std::wstring, std::unique_ptr<Gdiplus::Image>> tray_flag_images_;
   HWND tray_menu_window_ = nullptr;

@@ -120,7 +120,7 @@ class WindowsTrayMenuService {
         'flagPath': hasProfileSubmenu
             ? null
             : _flagPathForProfile(source.selectedProfile),
-        'selected': selected && !hasProfileSubmenu,
+        'selected': selected,
         'enabled': canSwitch,
         'indent': 0,
         'children': hasProfileSubmenu
@@ -342,7 +342,7 @@ class WindowsTrayMenuService {
 
     if (token.startsWith('source:')) {
       final sourceId = Uri.decodeComponent(token.substring('source:'.length));
-      _controller.selectSource(sourceId);
+      _controller.selectSource(sourceId, moveVisiblePage: false);
       return;
     }
 
@@ -362,7 +362,7 @@ class WindowsTrayMenuService {
       return;
     }
 
-    _controller.selectSource(sourceId);
+    _controller.selectSource(sourceId, moveVisiblePage: false);
     _controller.setSelectedProfileIndex(profileIndex);
   }
 }

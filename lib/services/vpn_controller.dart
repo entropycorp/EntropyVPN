@@ -93,6 +93,7 @@ class VpnController extends ChangeNotifier {
   ConnectionPhase _phase = ConnectionPhase.disconnected;
   String _rawInput = '';
   String? _selectedSourceId;
+  bool _selectionShouldMoveVisiblePage = true;
   String? _activeSourceId;
   DateTime? _connectedAt;
   String? _inputError;
@@ -109,6 +110,8 @@ class VpnController extends ChangeNotifier {
   Timer? _appUpdateTimer;
   Timer? _recentAddSuccessTimer;
   Timer? _logsCoalesceTimer;
+  Timer? _persistDebounceTimer;
+  static const Duration _persistDebounceWindow = Duration(milliseconds: 250);
   final ValueNotifier<int> _logsRevisionNotifier = ValueNotifier<int>(0);
   Completer<void>? _pendingConnect;
   bool _connectCancelled = false;
@@ -579,7 +582,7 @@ class VpnController extends ChangeNotifier {
       final shouldSelectAddedSource = !isConnected;
       _upsertSource(nextSource);
       if (shouldSelectAddedSource) {
-        _selectedSourceId = nextSource.id;
+        _setSelectedSourceId(nextSource.id);
         _coerceDnsModeForActiveCore();
       }
       _rawInput = '';
@@ -606,14 +609,21 @@ class VpnController extends ChangeNotifier {
     }
   }
 
-  void selectSource(String sourceId) {
+  bool get selectionShouldMoveVisiblePage => _selectionShouldMoveVisiblePage;
+
+  void _setSelectedSourceId(String? sourceId, {bool moveVisiblePage = true}) {
+    _selectedSourceId = sourceId;
+    _selectionShouldMoveVisiblePage = moveVisiblePage;
+  }
+
+  void selectSource(String sourceId, {bool moveVisiblePage = true}) {
     if (!canEditSources) {
       return;
     }
     if (_selectedSourceId == sourceId) {
       return;
     }
-    _selectedSourceId = sourceId;
+    _setSelectedSourceId(sourceId, moveVisiblePage: moveVisiblePage);
     _coerceDnsModeForActiveCore();
     _setRuntimeError(null);
     _queuePersistState();
@@ -635,7 +645,7 @@ class VpnController extends ChangeNotifier {
     _sources.removeAt(index);
     _lastAutoUpdateAttemptAt.remove(sourceId);
     if (_selectedSourceId == sourceId) {
-      _selectedSourceId = _sources.isEmpty ? null : _sources.first.id;
+      _setSelectedSourceId(_sources.isEmpty ? null : _sources.first.id);
       _coerceDnsModeForActiveCore();
     }
     _setInputError(null);
@@ -877,8 +887,13 @@ class VpnController extends ChangeNotifier {
         .toList(growable: false);
     for (final source in dueSources) {
       _lastAutoUpdateAttemptAt[source.id] = now;
-      await _refreshSource(source.id, automatic: true);
     }
+    await Future.wait(
+      dueSources.map(
+        (source) => _refreshSource(source.id, automatic: true),
+      ),
+      eagerError: false,
+    );
   }
 
   void setSourceAutoUpdateInterval(String sourceId, Duration interval) {
@@ -1129,6 +1144,16 @@ class VpnController extends ChangeNotifier {
     _runtimeErrorTimer?.cancel();
     _logsCoalesceTimer?.cancel();
 
+    final hadPendingPersist = _persistDebounceTimer?.isActive == true;
+    _persistDebounceTimer?.cancel();
+    _persistDebounceTimer = null;
+    if (hadPendingPersist) {
+      try {
+        await _persistStateAfterHydration();
+      } catch (_) {
+      }
+    }
+
     try {
       await _runtimeService.shutdown();
     } finally {
@@ -1147,6 +1172,13 @@ class VpnController extends ChangeNotifier {
     _inputErrorTimer?.cancel();
     _runtimeErrorTimer?.cancel();
     _logsCoalesceTimer?.cancel();
+    if (_persistDebounceTimer?.isActive == true) {
+      _persistDebounceTimer?.cancel();
+      unawaited(_persistStateAfterHydration());
+    } else {
+      _persistDebounceTimer?.cancel();
+    }
+    _persistDebounceTimer = null;
     unawaited(_incomingLinkSubscription?.cancel());
     _runtimeService.onLogUpdated = null;
     _runtimeService.onProcessExit = null;
@@ -1575,9 +1607,11 @@ class VpnController extends ChangeNotifier {
       final hasSelectedSource =
           state.selectedSourceId != null &&
           state.sources.any((source) => source.id == state.selectedSourceId);
-      _selectedSourceId = hasSelectedSource
-          ? state.selectedSourceId
-          : (state.sources.isEmpty ? null : state.sources.first.id);
+      _setSelectedSourceId(
+        hasSelectedSource
+            ? state.selectedSourceId
+            : (state.sources.isEmpty ? null : state.sources.first.id),
+      );
       _coerceDnsModeForActiveCore();
 
       notifyListeners();
@@ -1587,10 +1621,16 @@ class VpnController extends ChangeNotifier {
   }
 
   void _queuePersistState() {
-    unawaited(_persistStateAfterHydration());
+    _persistDebounceTimer?.cancel();
+    _persistDebounceTimer = Timer(_persistDebounceWindow, () {
+      _persistDebounceTimer = null;
+      unawaited(_persistStateAfterHydration());
+    });
   }
 
   Future<void> _persistStateAfterHydration() async {
+    _persistDebounceTimer?.cancel();
+    _persistDebounceTimer = null;
     await _hydration;
     await _appStateStore.save(
       PersistedAppState(
