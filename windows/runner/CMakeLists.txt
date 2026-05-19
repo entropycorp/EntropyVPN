@@ -7,6 +7,7 @@ project(runner LANGUAGES CXX)
 
 
 add_executable(${BINARY_NAME} WIN32
+  "entropy_vpn_service_setup.cpp"
   "flutter_window.cpp"
   "main.cpp"
   "utils.cpp"
