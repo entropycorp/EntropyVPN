@@ -252,4 +252,64 @@ extension CoreRuntimeServiceWindowsService on CoreRuntimeService {
       return '';
     }
   }
+
+  // --- In-app updater IPC ---------------------------------------------------
+
+  Future<bool> _ensureWindowsServiceRunningForUpdate() async {
+    if (!Platform.isWindows) {
+      return false;
+    }
+    if (await _pingWindowsTunService()) {
+      return true;
+    }
+    await _startWindowsTunService();
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (DateTime.now().isBefore(deadline)) {
+      if (await _pingWindowsTunService()) {
+        return true;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    return false;
+  }
+
+  /// Asks the privileged service to check for and download an update. Returns
+  /// false when the service could not be reached.
+  Future<bool> windowsUpdateCheckNow({bool force = false}) async {
+    if (!await _ensureWindowsServiceRunningForUpdate()) {
+      return false;
+    }
+    await _runWindowsServiceHelper(<String>[
+      'update-check-now',
+      '--force',
+      force ? '1' : '0',
+    ], timeout: const Duration(seconds: 20));
+    return true;
+  }
+
+  /// Polls the current updater state from the service.
+  Future<WindowsUpdateStatus> windowsUpdateStatus() async {
+    final fields = await _runWindowsServiceHelper(<String>[
+      'update-status',
+    ], timeout: const Duration(seconds: 10));
+    final available = _decodeWindowsServiceText(fields, 'availableVersionB64');
+    final installed = _decodeWindowsServiceText(fields, 'installedVersionB64');
+    final error = _decodeWindowsServiceText(fields, 'errorB64');
+    return WindowsUpdateStatus(
+      state: windowsUpdateStateFromName(fields['state'] ?? 'idle'),
+      availableVersion: available.isEmpty ? null : available,
+      installedVersion: installed.isEmpty ? null : installed,
+      progressBytes: int.tryParse(fields['progressBytes'] ?? '') ?? 0,
+      totalBytes: int.tryParse(fields['totalBytes'] ?? '') ?? 0,
+      error: error.isEmpty ? null : error,
+    );
+  }
+
+  /// Asks the service to apply the staged update. The service then closes the
+  /// running UI to swap its files, so the caller should exit shortly after.
+  Future<void> windowsUpdateApply() async {
+    await _runWindowsServiceHelper(<String>[
+      'update-apply',
+    ], timeout: const Duration(seconds: 15));
+  }
 }

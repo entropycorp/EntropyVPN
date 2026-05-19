@@ -8,7 +8,7 @@ import 'main_input.dart';
 import 'main_settings.dart';
 import 'services/vpn_controller.dart';
 
-enum _SettingsPage { root, notifications }
+enum _SettingsPage { root, notifications, updates }
 
 class SettingsPageBody extends StatefulWidget {
   const SettingsPageBody({
@@ -61,25 +61,36 @@ class _SettingsPageBodyState extends State<SettingsPageBody> {
             pageStorageKey: PageStorageKey<String>(switch (_page) {
               _SettingsPage.root => 'settings-scroll',
               _SettingsPage.notifications => 'settings-notifications-scroll',
+              _SettingsPage.updates => 'settings-updates-scroll',
             }),
             panelMaxWidth: panelMaxWidth,
-            child: _page == _SettingsPage.notifications
-                ? NotificationSettingsSubPage(
-                    controller: widget.controller,
-                    strings: widget.strings,
-                    onBack: _showRootSettings,
-                    horizontalPadding: settingsHorizontalPadding,
-                    verticalPadding: settingsVerticalPadding,
-                    gap: settingsGap,
-                  )
-                : _SettingsRootPage(
-                    controller: widget.controller,
-                    strings: widget.strings,
-                    horizontalPadding: settingsHorizontalPadding,
-                    verticalPadding: settingsVerticalPadding,
-                    gap: settingsGap,
-                    onOpenNotifications: _showNotificationSettings,
-                  ),
+            child: switch (_page) {
+              _SettingsPage.notifications => NotificationSettingsSubPage(
+                controller: widget.controller,
+                strings: widget.strings,
+                onBack: _showRootSettings,
+                horizontalPadding: settingsHorizontalPadding,
+                verticalPadding: settingsVerticalPadding,
+                gap: settingsGap,
+              ),
+              _SettingsPage.updates => UpdatesSettingsSubPage(
+                controller: widget.controller,
+                strings: widget.strings,
+                onBack: _showRootSettings,
+                horizontalPadding: settingsHorizontalPadding,
+                verticalPadding: settingsVerticalPadding,
+                gap: settingsGap,
+              ),
+              _SettingsPage.root => _SettingsRootPage(
+                controller: widget.controller,
+                strings: widget.strings,
+                horizontalPadding: settingsHorizontalPadding,
+                verticalPadding: settingsVerticalPadding,
+                gap: settingsGap,
+                onOpenNotifications: _showNotificationSettings,
+                onOpenUpdates: _showUpdateSettings,
+              ),
+            },
           ),
         );
       },
@@ -95,6 +106,12 @@ class _SettingsPageBodyState extends State<SettingsPageBody> {
   void _showNotificationSettings() {
     setState(() {
       _page = _SettingsPage.notifications;
+    });
+  }
+
+  void _showUpdateSettings() {
+    setState(() {
+      _page = _SettingsPage.updates;
     });
   }
 }
@@ -135,6 +152,7 @@ class _SettingsRootPage extends StatelessWidget {
     required this.verticalPadding,
     required this.gap,
     required this.onOpenNotifications,
+    required this.onOpenUpdates,
   });
 
   final VpnController controller;
@@ -143,6 +161,7 @@ class _SettingsRootPage extends StatelessWidget {
   final double verticalPadding;
   final double gap;
   final VoidCallback onOpenNotifications;
+  final VoidCallback onOpenUpdates;
 
   @override
   Widget build(BuildContext context) {
@@ -174,6 +193,17 @@ class _SettingsRootPage extends StatelessWidget {
           child: NotificationSettingsTile(
             strings: strings,
             onTap: onOpenNotifications,
+          ),
+        ),
+        SizedBox(height: gap),
+        Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: horizontalPadding,
+            vertical: verticalPadding,
+          ),
+          child: UpdatesSettingsTile(
+            strings: strings,
+            onTap: onOpenUpdates,
           ),
         ),
         SizedBox(height: gap),

@@ -15,6 +15,7 @@ import 'services/vpn_controller.dart';
 
 part 'main_settings_common.dart';
 part 'main_settings_notifications.dart';
+part 'main_settings_updates.dart';
 part 'main_settings_dns.dart';
 part 'main_settings_split_tunnel.dart';
 part 'main_settings_about.dart';

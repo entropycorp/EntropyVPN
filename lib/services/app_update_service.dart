@@ -339,3 +339,68 @@ class AppUpdateService {
     return text.isEmpty ? null : text;
   }
 }
+
+/// State of the Windows in-app updater, as reported by the privileged service.
+enum WindowsUpdateState {
+  idle,
+  checking,
+  downloading,
+  ready,
+  applying,
+  error,
+}
+
+WindowsUpdateState windowsUpdateStateFromName(String name) {
+  switch (name) {
+    case 'checking':
+      return WindowsUpdateState.checking;
+    case 'downloading':
+      return WindowsUpdateState.downloading;
+    case 'ready':
+      return WindowsUpdateState.ready;
+    case 'applying':
+      return WindowsUpdateState.applying;
+    case 'error':
+      return WindowsUpdateState.error;
+    case 'idle':
+    default:
+      return WindowsUpdateState.idle;
+  }
+}
+
+/// A snapshot of the Windows updater's progress, polled from the service.
+class WindowsUpdateStatus {
+  const WindowsUpdateStatus({
+    required this.state,
+    this.availableVersion,
+    this.installedVersion,
+    this.progressBytes = 0,
+    this.totalBytes = 0,
+    this.error,
+  });
+
+  final WindowsUpdateState state;
+  final String? availableVersion;
+  /// The version recorded in `<install_dir>\manifest.json` /
+  /// `installed_manifest.json`. This is the service's source of truth for
+  /// "what's actually on disk" — distinct from the bundled `pubspec.yaml`
+  /// version, which is frozen at the time the running .exe was compiled.
+  final String? installedVersion;
+  final int progressBytes;
+  final int totalBytes;
+  final String? error;
+
+  /// Download progress in [0,1], or null when the total is not yet known.
+  double? get fraction {
+    if (totalBytes <= 0) {
+      return null;
+    }
+    final value = progressBytes / totalBytes;
+    return value < 0 ? 0 : (value > 1 ? 1 : value);
+  }
+
+  int get percent {
+    final value = fraction;
+    return value == null ? 0 : (value * 100).round();
+  }
+}

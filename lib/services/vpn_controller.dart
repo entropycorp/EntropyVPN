@@ -124,6 +124,7 @@ class VpnController extends ChangeNotifier {
   String? _subscriptionDeviceId;
   bool _showInAppUpdateNotifications = true;
   bool _showAndroidUpdateNotifications = true;
+  bool _autoInstallUpdateAfterDownload = true;
   bool _isCheckingAppUpdate = false;
   bool _killswitchEnabled = false;
 
@@ -173,6 +174,8 @@ class VpnController extends ChangeNotifier {
 
   bool get showInAppUpdateNotifications => _showInAppUpdateNotifications;
   bool get showAndroidUpdateNotifications => _showAndroidUpdateNotifications;
+  bool get autoInstallUpdateAfterDownload => _autoInstallUpdateAfterDownload;
+  bool get supportsAutoInstallUpdate => Platform.isWindows;
   bool get supportsAndroidUpdateNotifications => Platform.isAndroid;
   bool get supportsKillswitch => Platform.isAndroid || Platform.isWindows;
   bool get killswitchEnabled => _killswitchEnabled;
@@ -300,6 +303,15 @@ class VpnController extends ChangeNotifier {
       return;
     }
     _showInAppUpdateNotifications = enabled;
+    _queuePersistState();
+    notifyListeners();
+  }
+
+  void setAutoInstallUpdateAfterDownload(bool enabled) {
+    if (_autoInstallUpdateAfterDownload == enabled) {
+      return;
+    }
+    _autoInstallUpdateAfterDownload = enabled;
     _queuePersistState();
     notifyListeners();
   }
@@ -934,7 +946,23 @@ class VpnController extends ChangeNotifier {
     _isCheckingAppUpdate = true;
 
     try {
-      final currentVersion = await _appUpdateService.loadCurrentVersion();
+      // On Windows the source of truth for "what's actually installed" is the
+      // privileged service's installed manifest, not the running .exe's
+      // bundled pubspec.yaml — those drift apart after every update, because
+      // the .exe's bundled pubspec is frozen at compile time while the
+      // installed manifest is rewritten on each successful apply. Using the
+      // bundled pubspec here makes the dialog show stale "installed version"
+      // text and lie about whether an update is available.
+      String? currentVersion;
+      if (Platform.isWindows) {
+        try {
+          final status = await _runtimeService.windowsUpdateStatus();
+          currentVersion = status.installedVersion;
+        } catch (_) {
+          // Service unreachable — fall back to the bundled pubspec below.
+        }
+      }
+      currentVersion ??= await _appUpdateService.loadCurrentVersion();
       if (currentVersion == null) {
         return;
       }
@@ -977,6 +1005,23 @@ class VpnController extends ChangeNotifier {
 
   Future<void> openAppUpdateRelease(AppUpdateInfo update) {
     return _appUpdateService.openRelease(update);
+  }
+
+  /// Windows in-app updater: asks the privileged service to check for and
+  /// download an update. Returns false if the service is unreachable.
+  Future<bool> startWindowsUpdateDownload() {
+    return _runtimeService.windowsUpdateCheckNow(force: true);
+  }
+
+  /// Windows in-app updater: current download/apply progress.
+  Future<WindowsUpdateStatus> windowsUpdateStatus() {
+    return _runtimeService.windowsUpdateStatus();
+  }
+
+  /// Windows in-app updater: applies the staged update. The service closes the
+  /// UI to swap files, so the caller exits the app right after this returns.
+  Future<void> applyWindowsUpdate() {
+    return _runtimeService.windowsUpdateApply();
   }
 
   Future<void> _showAndroidAppUpdateNotificationIfNeeded([
@@ -1590,6 +1635,7 @@ class VpnController extends ChangeNotifier {
       _lastShownAndroidAppUpdateTag = state.lastShownAndroidAppUpdateTag;
       _showInAppUpdateNotifications = state.showInAppUpdateNotifications;
       _showAndroidUpdateNotifications = state.showAndroidUpdateNotifications;
+      _autoInstallUpdateAfterDownload = state.autoInstallUpdateAfterDownload;
       _killswitchEnabled = state.killswitchEnabled && supportsKillswitch;
       if (supportsKillswitch) {
         // Native layer doesn't persist the preference itself; push the
@@ -1647,6 +1693,7 @@ class VpnController extends ChangeNotifier {
         lastShownAndroidAppUpdateTag: _lastShownAndroidAppUpdateTag,
         showInAppUpdateNotifications: _showInAppUpdateNotifications,
         showAndroidUpdateNotifications: _showAndroidUpdateNotifications,
+        autoInstallUpdateAfterDownload: _autoInstallUpdateAfterDownload,
         killswitchEnabled: _killswitchEnabled,
         subscriptionDeviceId: _ensureSubscriptionDeviceId(),
       ),

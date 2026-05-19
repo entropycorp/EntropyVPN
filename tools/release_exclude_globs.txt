@@ -1,0 +1,28 @@
+# Shared release exclude globs.
+#
+# Consumed by BOTH:
+#   - installer/entropy_vpn.iss          ([Files] Excludes directive)
+#   - tools/build_release_manifest.ps1   (update manifest file walk)
+#
+# Editing this single file keeps the Inno Setup installer and the in-app
+# update manifest in lockstep. Drift between the two lists is the most
+# likely cause of "update breaks installer" bugs, so there is intentionally
+# no second copy of these patterns anywhere.
+#
+# Format: one glob per line. Blank lines and lines starting with '#' are
+# ignored. A pattern with no '/' is matched against a file's base name;
+# a pattern containing '/' is matched against its POSIX-style path relative
+# to the Release directory. Matching is case-insensitive. '*' matches any
+# run of characters, '?' matches a single character.
+#
+# Note: manifest.json and installed_manifest.json are deliberately NOT
+# excluded here. The installer ships manifest.json (picked up by the Release
+# wildcard); build_release_manifest.ps1 skips both by name on its own so the
+# manifest never lists itself.
+
+*.pdb
+*.lib
+*.exp
+*.ilk
+entropy_vpn_icon_preview.png
+EntropyVPN-*-portable.zip

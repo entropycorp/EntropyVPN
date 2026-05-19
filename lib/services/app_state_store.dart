@@ -24,6 +24,7 @@ class PersistedAppState {
     this.lastShownAndroidAppUpdateTag,
     this.showInAppUpdateNotifications = true,
     this.showAndroidUpdateNotifications = true,
+    this.autoInstallUpdateAfterDownload = true,
     this.killswitchEnabled = false,
     this.subscriptionDeviceId,
   });
@@ -41,6 +42,7 @@ class PersistedAppState {
   final String? lastShownAndroidAppUpdateTag;
   final bool showInAppUpdateNotifications;
   final bool showAndroidUpdateNotifications;
+  final bool autoInstallUpdateAfterDownload;
   final bool killswitchEnabled;
   final String? subscriptionDeviceId;
 
@@ -62,6 +64,7 @@ class PersistedAppState {
         'lastShownAndroidReleaseTag': lastShownAndroidAppUpdateTag,
         'inAppNotificationsEnabled': showInAppUpdateNotifications,
         'androidNotificationsEnabled': showAndroidUpdateNotifications,
+        'autoInstallAfterDownload': autoInstallUpdateAfterDownload,
       },
       'sources': sources
           .map((source) => source.toJson())
@@ -124,6 +127,10 @@ class PersistedAppState {
       ),
       showAndroidUpdateNotifications: _parseBool(
         appUpdate?['androidNotificationsEnabled'],
+        fallback: true,
+      ),
+      autoInstallUpdateAfterDownload: _parseBool(
+        appUpdate?['autoInstallAfterDownload'],
         fallback: true,
       ),
       killswitchEnabled: _parseBool(killswitch?['enabled'], fallback: false),

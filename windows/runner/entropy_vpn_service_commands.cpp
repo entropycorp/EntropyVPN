@@ -3,6 +3,7 @@
 #include "entropy_vpn_killswitch.h"
 #include "entropy_vpn_service_common.h"
 #include "entropy_vpn_service_tun.h"
+#include "entropy_vpn_service_updater.h"
 
 #include <mutex>
 #include <thread>
@@ -375,6 +376,15 @@ std::string HandleRequest(const std::string& request_text) {
   }
   if (command->second == "disengage_killswitch") {
     return DisengageKillswitchCommand(fields);
+  }
+  if (command->second == "update_check_now") {
+    return UpdateCheckNow(fields);
+  }
+  if (command->second == "update_status") {
+    return UpdateStatus(fields);
+  }
+  if (command->second == "update_apply") {
+    return UpdateApply(fields);
   }
   return ErrorResponse("Unknown service command.", ERROR_INVALID_PARAMETER);
 }

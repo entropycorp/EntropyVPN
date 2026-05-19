@@ -102,10 +102,14 @@ class AppStrings {
   String get logsCopiedMessage => _ru ? 'Логи скопированы.' : 'Logs copied.';
   String get notificationsSettingsLabel =>
       _ru ? 'Уведомления' : 'Notifications';
+  String get updatesSettingsLabel => _ru ? 'Обновления' : 'Updates';
   String get inAppUpdateNotificationsLabel =>
       _ru ? 'In-app update notifications' : 'In-app update notifications';
   String get androidUpdateNotificationsLabel =>
       _ru ? 'Push notifications for updates' : 'Push notifications for updates';
+  String get autoInstallUpdateLabel => _ru
+      ? 'Automatically install update after downloading'
+      : 'Automatically install update after downloading';
   String get checkForUpdatesAction =>
       _ru ? 'Проверить обновления' : 'Check for updates';
   String get appUpdateUpToDateMessage =>
@@ -123,6 +127,21 @@ class AppStrings {
   String get appUpdateOpenFailedMessage => _ru
       ? 'Could not open the release page.'
       : 'Could not open the release page.';
+  String get appUpdateDownloadAction =>
+      _ru ? 'Download update' : 'Download update';
+  String get appUpdateApplyAction =>
+      _ru ? 'Install and restart' : 'Install and restart';
+  String appUpdateDownloadingMessage(int percent) =>
+      _ru ? 'Downloading update… $percent%' : 'Downloading update… $percent%';
+  String get appUpdatePreparingMessage =>
+      _ru ? 'Preparing update…' : 'Preparing update…';
+  String get appUpdateReadyMessage => _ru
+      ? 'Update downloaded. The app will close to finish installing.'
+      : 'Update downloaded. The app will close to finish installing.';
+  String get appUpdateInstallingMessage =>
+      _ru ? 'Installing update…' : 'Installing update…';
+  String appUpdateFailedMessage(String error) =>
+      _ru ? 'Update failed: $error' : 'Update failed: $error';
   String get inputLabel =>
       _ru ? 'Добавить конфиг или подписку' : 'Add a config or subscription';
   String get inputHint => _ru

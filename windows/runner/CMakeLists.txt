@@ -34,6 +34,16 @@ add_executable(entropy_vpn_service
   "entropy_vpn_service_commands.cpp"
   "entropy_vpn_service_pipe.cpp"
   "entropy_vpn_service_tun.cpp"
+  "entropy_vpn_service_apply.cpp"
+  "entropy_vpn_service_http.cpp"
+  "entropy_vpn_service_log.cpp"
+  "entropy_vpn_service_manifest.cpp"
+  "entropy_vpn_service_sha256.cpp"
+  "entropy_vpn_service_updater.cpp"
+)
+
+add_executable(entropy_vpn_updater
+  "entropy_vpn_updater.cpp"
 )
 
 
@@ -41,6 +51,7 @@ add_executable(entropy_vpn_service
 apply_standard_settings(${BINARY_NAME})
 apply_standard_settings(entropy_vpn_windows_native)
 apply_standard_settings(entropy_vpn_service)
+apply_standard_settings(entropy_vpn_updater)
 
 
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
@@ -53,6 +64,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION_BUILD=${FLUTT
 target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 target_compile_definitions(entropy_vpn_windows_native PRIVATE "NOMINMAX")
 target_compile_definitions(entropy_vpn_service PRIVATE "NOMINMAX")
+target_compile_definitions(entropy_vpn_updater PRIVATE "NOMINMAX")
 
 
 
@@ -79,8 +91,16 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 target_link_libraries(entropy_vpn_service PRIVATE entropy_vpn_windows_native)
 target_link_libraries(entropy_vpn_service PRIVATE "advapi32.lib")
+target_link_libraries(entropy_vpn_service PRIVATE "bcrypt.lib")
 target_link_libraries(entropy_vpn_service PRIVATE "iphlpapi.lib")
 target_link_libraries(entropy_vpn_service PRIVATE "shell32.lib")
+target_link_libraries(entropy_vpn_service PRIVATE "userenv.lib")
+target_link_libraries(entropy_vpn_service PRIVATE "winhttp.lib")
+target_link_libraries(entropy_vpn_service PRIVATE "wtsapi32.lib")
 target_link_libraries(entropy_vpn_service PRIVATE "ws2_32.lib")
+
+target_link_libraries(entropy_vpn_updater PRIVATE "advapi32.lib")
+target_link_libraries(entropy_vpn_updater PRIVATE "userenv.lib")
+target_link_libraries(entropy_vpn_updater PRIVATE "wtsapi32.lib")
 
 add_dependencies(${BINARY_NAME} flutter_assemble)

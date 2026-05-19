@@ -150,7 +150,25 @@ bool Win32Window::Create(const std::wstring& title,
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, SW_SHOWNORMAL);
+  const bool was_visible = ShowWindow(window_handle_, SW_SHOWNORMAL) != 0;
+
+  // ShowWindow alone doesn't reliably bring the window to the foreground
+  // when the parent process isn't itself foreground — most notably our
+  // SYSTEM service / entropy_vpn_updater.exe relaunching us after an
+  // auto-update finishes. In that case Windows' focus-stealing prevention
+  // kicks in and the window just flashes in the taskbar.
+  //
+  // The brief HWND_TOPMOST -> HWND_NOTOPMOST flip is the standard
+  // workaround: it bumps z-order without being subject to the foreground
+  // restrictions, and SetForegroundWindow + BringWindowToTop then take
+  // input focus and tie everything off.
+  SetWindowPos(window_handle_, HWND_TOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE);
+  SetWindowPos(window_handle_, HWND_NOTOPMOST, 0, 0, 0, 0,
+               SWP_NOMOVE | SWP_NOSIZE);
+  SetForegroundWindow(window_handle_);
+  BringWindowToTop(window_handle_);
+  return was_visible;
 }
 
 

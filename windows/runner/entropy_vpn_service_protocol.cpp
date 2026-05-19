@@ -156,6 +156,14 @@ bool BuildWindowsServiceRequest(const std::vector<std::string>& args,
     }
   } else if (command == "disengage-killswitch") {
     AppendServiceField(request, "command", "disengage_killswitch");
+  } else if (command == "update-check-now") {
+    AppendServiceField(request, "command", "update_check_now");
+    AppendServiceField(request, "force",
+                       WindowsServiceOptionValue(args, "--force", "0"));
+  } else if (command == "update-status") {
+    AppendServiceField(request, "command", "update_status");
+  } else if (command == "update-apply") {
+    AppendServiceField(request, "command", "update_apply");
   } else {
     *error = "Unknown EntropyVPN service command: " + command;
     return false;

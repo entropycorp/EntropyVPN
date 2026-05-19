@@ -6,6 +6,7 @@
 #include "entropy_vpn_service_pipe.h"
 #include "entropy_vpn_service_protocol.h"
 #include "entropy_vpn_service_tun.h"
+#include "entropy_vpn_service_updater.h"
 
 #include <atomic>
 #include <string>
@@ -80,9 +81,18 @@ void WINAPI ServiceMain(DWORD argc, LPWSTR* argv) {
 
   StopActiveCore();
   ReleasePrewarmTunAdapter();
+  ShutdownUpdater();
 
   CloseHandleIfValid(&g_stop_event);
   SetServiceState(SERVICE_STOPPED);
+}
+
+void RequestServiceStop() {
+  g_stop_requested.store(true);
+  if (g_stop_event != nullptr) {
+    SetEvent(g_stop_event);
+  }
+  NudgePipeServer();
 }
 
 bool ResponseIsOk(const std::string& response) {
@@ -124,7 +134,7 @@ std::vector<std::wstring> CommandLineArguments() {
 
 int ClientMain(const std::vector<std::wstring>& args) {
   if (args.size() < 2) {
-    WriteStderr("Usage: entropy_vpn_service.exe service|ping|start-core|stop-core|status-core|run-process|prepare-ipv4-server-route|prepare-domain-server-route|prepare-xray-tun-ipv4-routes|prewarm-tun-adapter|release-tun-adapter\n");
+    WriteStderr("Usage: entropy_vpn_service.exe service|ping|start-core|stop-core|status-core|run-process|prepare-ipv4-server-route|prepare-domain-server-route|prepare-xray-tun-ipv4-routes|prewarm-tun-adapter|release-tun-adapter|update-check-now|update-status|update-apply\n");
     return 64;
   }
 

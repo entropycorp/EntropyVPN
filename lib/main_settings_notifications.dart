@@ -88,17 +88,6 @@ class _NotificationSettingsSubPageState
             ),
           ),
         ],
-        SizedBox(height: widget.gap),
-        Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: widget.horizontalPadding,
-            vertical: widget.verticalPadding,
-          ),
-          child: _CheckForUpdatesTile(
-            controller: widget.controller,
-            strings: widget.strings,
-          ),
-        ),
       ],
     );
   }
@@ -111,109 +100,5 @@ class _NotificationSettingsSubPageState
   void _setAndroidUpdateNotifications(bool value) {
     widget.controller.setShowAndroidUpdateNotifications(value);
     setState(() {});
-  }
-}
-
-class _CheckForUpdatesTile extends StatefulWidget {
-  const _CheckForUpdatesTile({
-    required this.controller,
-    required this.strings,
-  });
-
-  final VpnController controller;
-  final AppStrings strings;
-
-  @override
-  State<_CheckForUpdatesTile> createState() => _CheckForUpdatesTileState();
-}
-
-class _CheckForUpdatesTileState extends State<_CheckForUpdatesTile> {
-  bool _isChecking = false;
-
-  Future<void> _check() async {
-    if (_isChecking) {
-      return;
-    }
-    setState(() => _isChecking = true);
-    final messenger = ScaffoldMessenger.of(context);
-
-    await widget.controller.checkForAppUpdate(force: true);
-
-    if (!mounted) {
-      return;
-    }
-    setState(() => _isChecking = false);
-
-    final update = widget.controller.availableAppUpdate;
-    if (update == null) {
-      messenger.showSnackBar(
-        SnackBar(content: Text(widget.strings.appUpdateUpToDateMessage)),
-      );
-      return;
-    }
-
-    // The auto-flow in main_shell will show the dialog when in-app
-    // notifications are enabled and this update hasn't been shown yet.
-    // Otherwise, surface it manually so tapping the button always gives
-    // feedback when an update is available.
-    if (widget.controller.pendingAppUpdateNotification != null) {
-      return;
-    }
-    await showAppUpdateNotificationDialog(
-      context,
-      controller: widget.controller,
-      strings: widget.strings,
-      update: update,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final disabledColor = scheme.onSurface.withValues(alpha: 0.38);
-    final titleColor = _isChecking ? disabledColor : scheme.onSurface;
-    final iconColor = _isChecking ? disabledColor : scheme.primary;
-
-    return Material(
-      color: scheme.surfaceContainer,
-      borderRadius: BorderRadius.circular(18),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: _isChecking ? null : () => unawaited(_check()),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: <Widget>[
-              SizedBox.square(
-                dimension: 24,
-                child: Center(
-                  child: _isChecking
-                      ? SizedBox.square(
-                          dimension: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: scheme.primary,
-                          ),
-                        )
-                      : Icon(Icons.refresh_rounded, color: iconColor),
-                ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Text(
-                  widget.strings.checkForUpdatesAction,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    color: titleColor,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 }

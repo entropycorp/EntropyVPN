@@ -13,6 +13,7 @@ import '../models/vpn_profile.dart';
 import '../models/dns_settings.dart';
 import '../models/split_tunnel.dart';
 import 'android_vpn_bridge.dart';
+import 'app_update_service.dart';
 import 'core_config_builder.dart';
 import 'core_runtime_service_windows_helpers.dart';
 import 'core_runtime_service_windows_types.dart';
