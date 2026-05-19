@@ -192,6 +192,8 @@ class AppStrings {
   String get profileInfoTlsLabel => _ru ? 'Шифрование' : 'Security';
   String get profileInfoServerLabel => _ru ? 'Сервер' : 'Server';
   String get aboutAppLabel => _ru ? 'О приложении' : 'About';
+  String get aboutAppVersionLabel =>
+      _ru ? 'Версия приложения' : 'App version';
   String get subscriptionExpiresLabel => _ru ? 'Истекает' : 'Expires';
   String get closeAction => _ru ? 'Закрыть' : 'Close';
   String autoUpdateIntervalValue(Duration interval) {

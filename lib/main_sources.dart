@@ -1784,10 +1784,23 @@ class _QuickSourceTile extends StatelessWidget {
                         const SizedBox(width: 8),
                       ],
                       if (showSourceState) ...<Widget>[
-                        _SourceCardSelectionIndicator(
-                          selected: selected,
-                          updating: source.isUpdating,
-                        ),
+                        // Subscription rows keep the radio/check indicator —
+                        // their per-profile pings live inside the profile
+                        // dropdown. Standalone configs only have one profile,
+                        // so they get the ping button right here where the
+                        // radio used to be.
+                        if (source.isSubscription)
+                          _SourceCardSelectionIndicator(
+                            selected: selected,
+                            updating: source.isUpdating,
+                          )
+                        else
+                          _ProfilePingButton(
+                            controller: controller,
+                            strings: strings,
+                            source: source,
+                            profileIndex: 0,
+                          ),
                         const SizedBox(width: 6),
                       ],
                       if (showProfileInfo) ...<Widget>[

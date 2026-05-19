@@ -112,8 +112,22 @@ bool IsServiceInstalledCorrectly(const std::wstring& install_dir) {
   bool match = false;
   if (QueryServiceConfigW(service, config, bytes_needed, &bytes_needed) != 0 &&
       config->lpBinaryPathName != nullptr) {
-    const std::wstring expected = BuildBinPath(install_dir);
-    match = NormalizePath(config->lpBinaryPathName) == NormalizePath(expected);
+    // Both forms below point at the same exe — the SCM accepts either:
+    //   <path>\entropy_vpn_service.exe service       (the installer's
+    //                                                 sc.exe-friendly form)
+    //   "<path>\entropy_vpn_service.exe" service     (CreateServiceW's
+    //                                                 quoted form)
+    // Strip an optional leading quote, then check that the stored binPath
+    // starts with our expected exe path. Equal-string compare would treat
+    // these as different and trigger a re-install every launch.
+    const std::wstring expected_exe = NormalizePath(
+        install_dir + L"\\" + std::wstring(kEntropyServiceExe));
+    std::wstring stored = NormalizePath(config->lpBinaryPathName);
+    if (!stored.empty() && stored.front() == L'"') {
+      stored.erase(0, 1);
+    }
+    match = stored.size() >= expected_exe.size() &&
+            stored.compare(0, expected_exe.size(), expected_exe) == 0;
   }
 
   CloseServiceHandle(service);
@@ -122,10 +136,6 @@ bool IsServiceInstalledCorrectly(const std::wstring& install_dir) {
 }
 
 DWORD InstallService(const std::wstring& install_dir) {
-  // Replace any existing registration first — handles the "user moved the
-  // portable folder" case where the old binPath now points at nothing.
-  UninstallService();
-
   SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr,
                                  SC_MANAGER_CONNECT | SC_MANAGER_CREATE_SERVICE);
   if (scm == nullptr) {
@@ -133,21 +143,57 @@ DWORD InstallService(const std::wstring& install_dir) {
   }
 
   const std::wstring bin_path = BuildBinPath(install_dir);
-  SC_HANDLE service = CreateServiceW(
-      scm, kEntropyServiceName, kServiceDisplay, SERVICE_ALL_ACCESS,
-      SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
-      bin_path.c_str(),
-      /*load order group*/ nullptr,
-      /*tag id*/ nullptr,
-      /*dependencies*/ nullptr,
-      /*service start name (LocalSystem)*/ nullptr,
-      /*password*/ nullptr);
-  if (service == nullptr) {
-    const DWORD err = GetLastError();
-    CloseServiceHandle(scm);
-    return err;
-  }
 
+  // Update the registration IN PLACE when the service already exists. The
+  // old code did UninstallService() first and then CreateService(), but if
+  // the service was currently running (which it is during an auto-update,
+  // since the post-update relaunch triggers this whole code path),
+  // DeleteService only marks it for deletion and CreateService then fails
+  // with ERROR_SERVICE_MARKED_FOR_DELETE — leaving the registration in a
+  // wedged state that triggers UAC on every launch.
+  SC_HANDLE service = OpenServiceW(
+      scm, kEntropyServiceName,
+      SERVICE_CHANGE_CONFIG | WRITE_DAC | READ_CONTROL);
+  bool created = false;
+  if (service != nullptr) {
+    if (ChangeServiceConfigW(
+            service,
+            SERVICE_WIN32_OWN_PROCESS,
+            SERVICE_DEMAND_START,
+            SERVICE_ERROR_NORMAL,
+            bin_path.c_str(),
+            /*load order group*/ nullptr,
+            /*tag id*/ nullptr,
+            /*dependencies*/ nullptr,
+            /*service start name (keep current — LocalSystem)*/ nullptr,
+            /*password*/ nullptr,
+            kServiceDisplay) == 0) {
+      const DWORD err = GetLastError();
+      CloseServiceHandle(service);
+      CloseServiceHandle(scm);
+      return err;
+    }
+  } else {
+    service = CreateServiceW(
+        scm, kEntropyServiceName, kServiceDisplay, SERVICE_ALL_ACCESS,
+        SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+        bin_path.c_str(),
+        /*load order group*/ nullptr,
+        /*tag id*/ nullptr,
+        /*dependencies*/ nullptr,
+        /*service start name (LocalSystem)*/ nullptr,
+        /*password*/ nullptr);
+    if (service == nullptr) {
+      const DWORD err = GetLastError();
+      CloseServiceHandle(scm);
+      return err;
+    }
+    created = true;
+  }
+  (void)created;
+
+  // Both branches re-apply description and DACL — these are idempotent
+  // and cheap, and bring drift back into line if either drifted.
   SERVICE_DESCRIPTIONW desc{};
   desc.lpDescription = const_cast<LPWSTR>(kServiceDescription);
   ChangeServiceConfig2W(service, SERVICE_CONFIG_DESCRIPTION, &desc);

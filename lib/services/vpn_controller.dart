@@ -1007,6 +1007,15 @@ class VpnController extends ChangeNotifier {
     return _appUpdateService.openRelease(update);
   }
 
+  /// Current app version, read from the bundled `pubspec.yaml`. This is the
+  /// version of the running .exe (frozen at compile time) — distinct from the
+  /// Windows service's installed-manifest version, which can drift across
+  /// updates. For an About page "this is what you're running" line, this is
+  /// the right number.
+  Future<String?> loadAppVersion() {
+    return _appUpdateService.loadCurrentVersion();
+  }
+
   /// Windows in-app updater: asks the privileged service to check for and
   /// download an update. Returns false if the service is unreachable.
   Future<bool> startWindowsUpdateDownload() {

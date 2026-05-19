@@ -49,6 +49,7 @@ class _AboutAppDialog extends StatefulWidget {
 }
 
 class _AboutAppDialogState extends State<_AboutAppDialog> {
+  String? _appVersion;
   String? _xrayVersion;
   String? _singBoxVersion;
   bool _versionsLoaded = false;
@@ -56,11 +57,12 @@ class _AboutAppDialogState extends State<_AboutAppDialog> {
   @override
   void initState() {
     super.initState();
-    unawaited(_loadCoreVersions());
+    unawaited(_loadVersions());
   }
 
-  Future<void> _loadCoreVersions() async {
+  Future<void> _loadVersions() async {
     final results = await Future.wait<String?>(<Future<String?>>[
+      widget.controller.loadAppVersion(),
       widget.controller.probeCoreVersion(CoreFlavor.xray),
       widget.controller.probeCoreVersion(CoreFlavor.singBox),
     ]);
@@ -68,8 +70,9 @@ class _AboutAppDialogState extends State<_AboutAppDialog> {
       return;
     }
     setState(() {
-      _xrayVersion = results[0];
-      _singBoxVersion = results[1];
+      _appVersion = results[0];
+      _xrayVersion = results[1];
+      _singBoxVersion = results[2];
       _versionsLoaded = true;
     });
   }
@@ -119,6 +122,11 @@ class _AboutAppDialogState extends State<_AboutAppDialog> {
             ),
           ),
           const SizedBox(height: 4),
+          _CoreVersionRow(
+            label: widget.strings.aboutAppVersionLabel,
+            version: _appVersion,
+            loaded: _versionsLoaded,
+          ),
           _CoreVersionRow(
             label: 'Xray',
             version: _xrayVersion,
